@@ -218,7 +218,6 @@ async def test_already_pumped_excessively(settings, db):
 async def test_insufficient_narrative_evidence(settings, db):
     p = strong_providers()
     p.dex.metas = []  # nothing trending matches
-    p.reddit = None
     out = await run(settings, db, p, profile=False)
     assert out.action != Action.AUTO_POST
     nar = out.report["narrative"]
@@ -229,13 +228,13 @@ async def test_insufficient_narrative_evidence(settings, db):
 # 15 ----------------------------------------------------------------------------------------
 async def test_missing_social_apis(settings, db):
     p = strong_providers()
-    p.reddit = None
+    p.socials = None
     out = await run(settings, db, p)
     nar = out.report["narrative"]
     assert nar["social_status"] == "UNAVAILABLE"
     comp = nar["component"]
     assert any("social attention not measured" in m for m in comp["missing"])
-    assert "independent attention 0.0/8" in comp["evidence"][0], "no points for unavailable data"
+    assert "social attention 0.0/4" in comp["evidence"][0], "no points for unavailable data"
     assert out.report["score"]["completeness"] < 1
 
 

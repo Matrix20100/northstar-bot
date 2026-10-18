@@ -69,7 +69,6 @@ class Providers:
     dex: Any = None
     rugcheck: Any = None
     rpc: Any = None
-    reddit: Any = None
     sol_price: Any = None  # SolUsdPrice: converts curve (SOL) values to USD for display
     socials: Any = None    # FreeSocials: token metadata links + public Telegram counts (free)
     coingecko: Any = None  # CoinGeckoOnchain: 1-minute candles + trending pools
@@ -1866,20 +1865,6 @@ class Researcher:
             except ProviderError as e:
                 log.info("competitor search failed for %s: %s", mint, e)
 
-        posts = None
-
-        if self.p.reddit is not None:
-            try:
-                query = f'"{mint}"'
-
-                if pair.base_symbol:
-                    query += f' OR "${pair.base_symbol}"'
-
-                posts = await self.p.reddit.search(query)
-
-            except ProviderError as e:
-                log.info("reddit search failed for %s: %s", mint, e)
-
         profile = self._profile(mint)
         social_ev = None
         if self.p.socials is not None:
@@ -1894,7 +1879,6 @@ class Researcher:
             profile,
             metas,
             competitors,
-            posts,
             self.s.w_narrative,
             social=social_ev,
         )
@@ -1943,11 +1927,6 @@ class Researcher:
         elif nr.social_status != DataStatus.OBSERVED:
             caveats.append(
                 "no social data: narrative attention is unmeasured"
-            )
-        else:
-            caveats.append(
-                "social coverage is Reddit only; "
-                "X/Telegram activity is not measured"
             )
 
         if ms.snapshots_used < 4:

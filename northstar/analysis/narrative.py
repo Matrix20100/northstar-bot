@@ -4,24 +4,20 @@ Evidence sources actually used (nothing else is claimed):
   * Token identity: name, symbol, DexScreener profile description/links/image          (OBSERVED)
   * Timeliness: DexScreener trending metas (/metas/trending/v1) — category-level market
     cap/volume momentum and token counts                                              (OBSERVED)
-  * Independent attention: Reddit search (optional, OAuth) — unique authors, original vs
-    duplicate posts, subreddit spread, time-bucketed mentions over 5m/15m/1h/6h/24h     (OBSERVED)
   * Saturation: DexScreener search for tokens sharing the ticker/name                  (OBSERVED)
   * Paid promotion (DexScreener boosts) is recorded but never counted as organic demand.
 
   * Free social checks (analysis/socials.py): the token's own X/Telegram/website links, links
     RECYCLED from other recent tokens (serial-launcher sign), and public Telegram member counts
-    (weak; can be botted). Worth at most 4 of the 8 attention points.
+    (weak; can be botted). Worth at most 4 points.
 
-If social data is unavailable the attention sub-score is 0 and confidence is lowered.
+Without free social evidence the attention sub-score is 0 and confidence is lowered.
 X activity (posts, followers, engagement) is NOT measured (no free X read access) — stated in output.
 """
 from __future__ import annotations
 
 import re
-import statistics
 import time
-from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -86,7 +82,7 @@ def categorize(name: str, symbol: str, desc: str) -> str:
 
 
 def analyze_narrative(pair: PairInfo, profile: Optional[dict], metas: Optional[list[dict]],
-                      competitors: Optional[list[PairInfo]], posts: Optional[list[dict]],
+                      competitors: Optional[list[PairInfo]],
                       weight: float, now: Optional[float] = None, social=None) -> NarrativeResult:
     now = now or time.time()
     name, sym = pair.base_name or "", pair.base_symbol or ""
@@ -174,52 +170,12 @@ def analyze_narrative(pair: PairInfo, profile: Optional[dict], metas: Optional[l
             miss.append("no trending DexScreener meta matches this token's name/description")
     timeliness = max(0.0, min(timeliness, 7))
 
-    # ---- C. independent attention (0-8) — Reddit
+    # ---- C. attention (0-4): free social checks only
     attention = 0.0
     windows: dict = {}
-    if posts is None:
-        social_status = DataStatus.UNAVAILABLE
-        miss.append("social attention not measured (no social provider configured); X/Telegram never analysed")
-    else:
-        social_status = DataStatus.OBSERVED
-        relevant = [p for p in posts if _mentions(p, pair.base_mint, sym, name)]
-        titles = Counter(_norm(p.get("title", "")) for p in relevant)
-        authors = Counter(p.get("author") for p in relevant if p.get("author") not in (None, "[deleted]"))
-        originals = [p for p in relevant if titles[_norm(p.get("title", ""))] == 1]
-        dup_share = 1 - len(originals) / len(relevant) if relevant else 0
-        uniq = len(authors)
-        subs = len({p.get("subreddit") for p in relevant})
-        for label, secs in (("5m", 300), ("15m", 900), ("1h", 3600), ("6h", 21600), ("24h", 86400)):
-            windows[label] = len({p.get("author") for p in relevant if now - (_num(p.get("created_utc")) or 0) <= secs})
-        if relevant and dup_share > 0.5:
-            flags.append(Flag("COORDINATED_POSTS", Severity.MEDIUM,
-                              f"{dup_share*100:.0f}% of social posts are duplicates — likely coordinated promotion",
-                              DataStatus.INFERRED, EvidenceStrength.WEAK))
-            pen.append("duplicate/coordinated posts excluded")
-        else:
-            if uniq >= 12:
-                attention += 6
-            elif uniq >= 6:
-                attention += 4
-            elif uniq >= 3:
-                attention += 2
-            if uniq >= 3:
-                evidence_items += 1
-                ev.append(f"{uniq} independent Reddit authors in 24h across {subs} subreddit(s)")
-            else:
-                miss.append(f"only {uniq} independent Reddit author(s) in 24h")
-            if subs >= 3:
-                attention += 1
-            comments = [(_num(p.get("num_comments")) or 0) for p in originals]
-            if comments and statistics.median(comments) >= 2:
-                attention += 1
-            # momentum: last 6h vs previous 18h, normalized per hour
-            recent, earlier = windows.get("6h", 0), windows.get("24h", 0) - windows.get("6h", 0)
-            if recent / 6 > (earlier / 18 if earlier else 0) * 1.5 and recent >= 3:
-                ev.append(f"attention accelerating ({recent} authors in last 6h vs {earlier} in prior 18h)")
-            elif earlier and recent / 6 < earlier / 18 * 0.5:
-                pen.append("social attention fading versus prior 18h")
-                attention -= 1
+    social_status = DataStatus.UNAVAILABLE
+    if social is None:
+        miss.append("social attention not measured; X posts/followers are never analysed")
     # free social checks: own links, recycled links, public Telegram size (max 4 points)
     from .socials import score_attention
     free_pts, free_ev, free_pen, free_items = score_attention(social)
@@ -231,7 +187,7 @@ def analyze_narrative(pair: PairInfo, profile: Optional[dict], metas: Optional[l
         flags.append(Flag("RECYCLED_SOCIALS", Severity.HIGH,
                           "token reuses X/Telegram/website links from other recent tokens: "
                           + ", ".join(social.recycled), DataStatus.OBSERVED, EvidenceStrength.STRONG))
-    attention = max(0.0, min(attention, 8))
+    attention = max(0.0, min(attention, 4))
 
     # ---- D. saturation / distinct identity (0-5)
     saturation = 0.0
@@ -263,9 +219,7 @@ def analyze_narrative(pair: PairInfo, profile: Optional[dict], metas: Optional[l
     raw = clarity + timeliness + attention + saturation  # out of 25
     points = round(raw / 25 * weight, 2)
     category = categorize(name, sym, desc)
-    if social_status == DataStatus.OBSERVED and meta_status == DataStatus.OBSERVED and evidence_items >= 2:
-        conf = Confidence.HIGH
-    elif social_status == DataStatus.OBSERVED or free_items or (meta_status == DataStatus.OBSERVED and evidence_items >= 1):
+    if free_items or (meta_status == DataStatus.OBSERVED and evidence_items >= 1):
         conf = Confidence.MEDIUM
     else:
         conf = Confidence.LOW
@@ -280,13 +234,6 @@ def analyze_narrative(pair: PairInfo, profile: Optional[dict], metas: Optional[l
     narrative_risks = []
     if matched:
         catalyst_evidence.append(f"Possible trend connection: {matched.get('name')} (name/description token overlap; not proof of a catalyst)")
-    if windows.get("6h", 0) >= 3 and windows.get("24h", 0) > windows.get("6h", 0):
-        recent_rate = windows["6h"] / 6
-        prior_rate = (windows["24h"] - windows["6h"]) / 18
-        if recent_rate > prior_rate * 1.5:
-            catalyst_evidence.append("Reddit author activity is accelerating versus the prior 18h")
-        elif recent_rate < prior_rate * 0.5:
-            narrative_risks.append("Reddit author activity is fading versus the prior 18h")
     if not desc:
         narrative_risks.append("No profile description; project purpose and narrative claims are hard to verify")
     if not social_links and not pair.websites:
@@ -297,20 +244,9 @@ def analyze_narrative(pair: PairInfo, profile: Optional[dict], metas: Optional[l
         narrative_risks.append(f"Crowded ticker/name space: {n_comp} competing tokens found")
     if social is not None and social.recycled:
         narrative_risks.append("Socials recycled from other recent tokens (serial-launcher pattern)")
-    if social_status != DataStatus.OBSERVED and not free_items:
+    if not free_items:
         narrative_risks.append("Independent social attention unavailable; do not infer community demand")
     attention_direction = "UNKNOWN"
-    if social_status == DataStatus.OBSERVED:
-        recent = windows.get("6h", 0)
-        prior = windows.get("24h", 0) - recent
-        if recent >= 3 and recent / 6 > ((prior / 18) if prior else 0) * 1.5:
-            attention_direction = "ACCELERATING"
-        elif prior > 0 and recent / 6 < (prior / 18) * 0.5:
-            attention_direction = "FADING"
-        elif windows.get("24h", 0) > 0:
-            attention_direction = "PRESENT_NOT_ACCELERATING"
-        else:
-            attention_direction = "NO_RELEVANT_ACTIVITY_FOUND"
     identity_quality = "SUPPORTED" if desc and (social_links or pair.websites) else "PARTIAL" if (desc or social_links or pair.websites) else "WEAK"
     thesis = f"Hypothesis: {category.lower()} narrative."
     if matched:
@@ -324,24 +260,11 @@ def analyze_narrative(pair: PairInfo, profile: Optional[dict], metas: Optional[l
 
     comp = ScoreComponent("narrative", points, weight, ev, pen, miss)
     comp.evidence.insert(0, f"sub-scores: clarity {clarity:.1f}/5, timeliness {timeliness:.1f}/7, "
-                            f"independent attention {attention:.1f}/8, distinctness {saturation:.1f}/5")
+                            f"social attention {attention:.1f}/4, distinctness {saturation:.1f}/5")
     return NarrativeResult(category, summary, comp, conf, evidence_items, social_status, meta_status,
                            windows, n_comp, (matched or {}).get("name"), flags, thesis,
                            catalyst_evidence, narrative_risks, attention_direction, identity_quality,
                            social.to_dict() if social is not None else None)
-
-
-def _mentions(p: dict, mint: str, sym: str, name: str) -> bool:
-    text = f"{p.get('title', '')} {p.get('selftext', '')}"
-    if mint and mint in text:
-        return True
-    if sym and re.search(rf"\${re.escape(sym)}\b", text, re.I):
-        return True
-    return bool(name and len(name) >= 5 and name.lower() in text.lower() and "sol" in text.lower())
-
-
-def _norm(t: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", (t or "").lower())[:80]
 
 
 def _num(v) -> Optional[float]:

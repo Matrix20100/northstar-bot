@@ -4,13 +4,13 @@
 
 Northstar keeps three questions separate:
 
-1. **Narrative hypothesis:** What theme does the name/profile suggest, is there a distinctive connection to a tracked trending meta, is there independent Reddit attention, and how crowded is the ticker/name space?
+1. **Narrative hypothesis:** What theme does the name/profile suggest, is there a distinctive connection to a tracked trending meta, what do the token's own socials show (own X/Telegram links, recycled links, Telegram size), and how crowded is the ticker/name space?
 2. **Market evidence:** Does the available price-change, volume and transaction-count data support the thesis, and do Northstar's stored observations show extension, fading, drawdown, consolidation, or market-cap growth unsupported by liquidity?
 3. **Risk and decision:** Do the existing security/holder/creator/wallet gates permit further consideration? A strong narrative or chart never overrides a failed risk gate or critical unknown.
 
 ## Narrative data and limitations
 
-- Reads token name, symbol, DexScreener description, listed websites/social links, tracked trending-meta data, competing same-ticker/name tokens, and Reddit results when configured.
+- Reads token name, symbol, DexScreener description, listed websites/social links, tracked trending-meta data, competing same-ticker/name tokens, and the free social checks.
 - Distinctive meta-word overlap is required before describing a possible trend match; generic overlap such as only `AI`, `meme`, `dog`, or `solana` is not enough.
 - Produces a transparent narrative hypothesis, evidence items, attention direction, identity quality and narrative risks.
 - Paid boosts are explicitly promotion, not organic demand.

@@ -406,7 +406,7 @@ class ResearchTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.s = Settings(_env_file=None, data_dir=self.tmp.name, dry_run=True, discord_enabled=False,
-                          enable_pumpportal=False, enable_reddit=False, log_json=False)
+                          enable_pumpportal=False, log_json=False)
         self.db = Database(Path(self.tmp.name) / "t.db")
         self.db.open()
         self.addCleanup(self.db.close)

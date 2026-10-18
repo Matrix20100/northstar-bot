@@ -120,17 +120,17 @@ def test_narrative_uses_free_socials_and_flags_recycling():
     pair = make_pair()
     good = SOC.SocialEvidence(links=SOC.collect(None, None, {"telegram": "https://t.me/owntg123"}),
                               telegram_members=900, telegram_handle="owntg123")
-    nr = analyze_narrative(pair, None, [], [], None, 20.0, social=good)
+    nr = analyze_narrative(pair, None, [], [], 20.0, social=good)
     assert nr.evidence_items >= 1 and nr.free_socials["telegram_members"] == 900
-    base = analyze_narrative(pair, None, [], [], None, 20.0)
+    base = analyze_narrative(pair, None, [], [], 20.0)
     assert nr.component.points > base.component.points
     bad = SOC.SocialEvidence(links=good.links, reuse={"telegram:owntg123": 3})
-    nr_bad = analyze_narrative(pair, None, [], [], None, 20.0, social=bad)
+    nr_bad = analyze_narrative(pair, None, [], [], 20.0, social=bad)
     assert any(f.code == "RECYCLED_SOCIALS" for f in nr_bad.flags)
 
 
 def test_unreachable_narrative_threshold_is_reported():
-    s = Settings(_env_file=None, min_narrative_score=18, enable_free_socials=False, enable_reddit=False)
+    s = Settings(_env_file=None, min_narrative_score=18, enable_free_socials=False)
     assert any("cannot be reached" in p for p in s.config_problems())
     assert not any("cannot be reached" in p for p in
                    Settings(_env_file=None, min_narrative_score=18).config_problems())
@@ -153,7 +153,7 @@ def early_out():
 ])
 async def test_early_watch_channel_routing(tmp_path, db, mode, free, expect_channel, expect_status):
     s = Settings(_env_file=None, data_dir=str(tmp_path), dry_run=False, discord_enabled=False,
-                 enable_pumpportal=False, enable_reddit=False, early_watch_channel=mode,
+                 enable_pumpportal=False, early_watch_channel=mode,
                  discord_free_channel_id=free)
     pub = MemoryPublisher()
     await AlertService(s, db, pub).publish_early_watch(early_out())

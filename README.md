@@ -17,7 +17,7 @@ A read-only Solana memecoin research engine. It discovers new tokens, verifies t
                                                                                ▼
        holders (top-20, raw vs adjusted) ─ trade sample (unique buyers, trend, creator sells)
        launch sample (bundles) ─ wallet tracing (age, funders, clusters) ─ creator history
-       market structure (extension, fading, snapshots) ─ narrative (metas, Reddit, saturation)
+       market structure (extension, fading, snapshots) ─ narrative (metas, free socials, saturation)
                                                                                │
                                                                                ▼
                     100-pt opportunity score  +  separate risk level  +  confidence
@@ -68,12 +68,11 @@ python -m northstar run         # continuous engine (dry-run by default)
 |---|---|---|
 | Discord bot token + channel ID | free | Dry-run only |
 | Helius API key (free tier) | free | Public RPC: slow, strict limits, may refuse holder queries, which makes many tokens INSUFFICIENT_DATA |
-| Reddit app credentials | free | Narrative attention is UNAVAILABLE, so it earns 0 of 8 attention points and **few tokens can reach 85** |
 | DexScreener, RugCheck, PumpPortal launch/migration feed | generally free/keyless endpoints where documented | PumpPortal token-trade streaming is metered and opt-in |
 
 ## Honest limits (read before trusting a callout)
 
-- **Social coverage is Reddit only.** X/Twitter and Telegram are not analysed because there is no free, permitted API, and the embed says so. Reddit coverage of brand-new memecoins is thin.
+- **Social coverage is the free checks only:** the token's own X/Telegram/website links, links recycled from other recent tokens, and public Telegram member counts. X posts, followers and engagement are not analysed because there is no free, permitted API, and the embed says so.
 - **No candle data.** DexScreener's free API has no OHLC data. Chart structure uses window price changes plus Northstar's own snapshots, so pullback and consolidation detection improves only after a token has been watched a few times.
 - **No 15-minute volume.** DexScreener provides m5/h1/h6/h24 only. The 15m field is shown as unavailable rather than invented.
 - **Holder data is top-20 only.** Both RPC and RugCheck expose only the 20 largest accounts.
@@ -91,7 +90,7 @@ northstar/
   models.py            Datum (value+status+source+ts), states, flags, gates
   net.py               rate limits, cache, coalescing, retries/backoff, budgets, circuit breaker
   db.py                SQLite (WAL, transactions, corruption quarantine, outbox for alerts)
-  providers/           dexscreener, rugcheck, solana_rpc, reddit, pumpportal
+  providers/           dexscreener, rugcheck, solana_rpc, pumpportal, coingecko, socials
   analysis/            identity, security, holders, wallets, creator, market, narrative, scoring, decision
   research.py          per-candidate pipeline (cheap -> expensive)
   discovery.py         multi-feed discovery, dedup by mint
@@ -116,7 +115,7 @@ Mock tests are not live validation. [docs/TESTING.md](docs/TESTING.md) shows wha
 
 ## Strict callout profile (quality over quantity)
 
-The default profile is intentionally conservative: opportunity score >= 92/100, HIGH evidence confidence, LOW_DETECTED risk only, at least three independent narrative evidence items, >= $25,000 liquidity, >= 12% liquidity/market-cap ratio, verified LP lock/burn status, stricter holder/creator/cluster limits, and at most two alerts per day. Tokens that fail critical checks or have unresolved critical data should not be auto-posted. They may be held for research or rejected.
+The default profile is intentionally conservative: opportunity score >= 88/100, HIGH evidence confidence, LOW_DETECTED risk only, at least three independent narrative evidence items, >= $25,000 liquidity, >= 12% liquidity/market-cap ratio, verified LP lock/burn status, stricter holder/creator/cluster limits, and at most two alerts per day. Tokens that fail critical checks or have unresolved critical data should not be auto-posted. They may be held for research or rejected.
 
 **A 70–80% win rate is a target to measure, not a guarantee.** These thresholds have not been statistically calibrated on a sufficiently large, out-of-sample dataset. A token can still collapse after a callout, liquidity can disappear, and price quotes do not guarantee executable exits. Define a win before evaluating the system (for example: reaching +20% before hitting -20% within 24 hours, after estimated fees/slippage), log every eligible alert including rejected candidates, and evaluate on chronological holdout data. Do not loosen gates simply to increase alert count.
 

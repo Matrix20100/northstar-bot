@@ -13,7 +13,8 @@ async def test_engine_end_to_end_with_mocks(settings, db):
     async def profiles():
         return [{"chainId": "solana", "tokenAddress": MINT,
                  "description": "Mock Frog is a community frog meme on Solana with daily art drops.",
-                 "links": [{"type": "twitter", "url": "https://x.invalid/mock"}]}]
+                 "links": [{"type": "twitter", "url": "https://x.com/mockfrogsol"},
+                           {"type": "telegram", "url": "https://t.me/mockfrogportal"}]}]
 
     async def broken():
         raise RuntimeError("MOCK: unexpected feed bug")  # must not kill the loop
@@ -39,7 +40,6 @@ async def test_engine_end_to_end_with_mocks(settings, db):
 
 async def test_engine_publishes_nothing_when_nothing_qualifies(settings, db):
     p = strong_providers()
-    p.reddit = None
     p.dex.metas = []
 
     async def profiles():

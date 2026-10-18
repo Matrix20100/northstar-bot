@@ -31,10 +31,7 @@ notepad .env
 
 Fill in at least:
 - `NORTHSTAR_HELIUS_API_KEY`: free key from helius.dev (strongly recommended)
-- `NORTHSTAR_REDDIT_CLIENT_ID` / `NORTHSTAR_REDDIT_CLIENT_SECRET`: optional, see below
 - Keep `NORTHSTAR_DRY_RUN=true` for now
-
-**Reddit credentials (optional, free):** log in to reddit.com, open https://www.reddit.com/prefs/apps, choose **create another app**, pick type **script**, use `http://localhost:8080` as the redirect URI, then copy the ID shown under the app name and the secret.
 
 ## 4. Check and try
 

@@ -6,7 +6,7 @@ No existing Northstar repository was available, so this is a standalone project 
 
 ## Implementation plan (as executed)
 
-1. Verify real APIs and schemas: DexScreener, RugCheck, Solana RPC, Helius, PumpPortal, Reddit. See [DATA_SOURCES.md](DATA_SOURCES.md).
+1. Verify real APIs and schemas: DexScreener, RugCheck, Solana RPC, Helius, PumpPortal, CoinGecko. See [DATA_SOURCES.md](DATA_SOURCES.md).
 2. Core: typed config, provenance-carrying data model, SQLite with transactions, shared HTTP layer.
 3. Discovery from four DexScreener feeds plus the PumpPortal websocket, deduplicated by mint.
 4. Security gates: mint account, authorities, Token-2022 extensions, liquidity/LP, RugCheck cross-checks.

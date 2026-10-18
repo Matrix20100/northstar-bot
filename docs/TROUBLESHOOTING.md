@@ -12,7 +12,7 @@ Start with `python -m northstar health`. It shows config problems, database stat
 | Many `HTTP 429` warnings | Rate limits too high for your plan | Lower the matching `*_RPM` value. Northstar backs off automatically, but lower limits waste fewer calls |
 | `daily budget … exhausted` | Daily budget reached | Raise `*_DAILY_BUDGET` if your plan allows, or reduce `SWAP_SAMPLE_SIGNATURES` / `FUNDING_TRACE_WALLETS` |
 | `circuit open after repeated failures` | Provider down; requests paused for 2 minutes | Nothing. It retries automatically. Check the provider's status page if it persists |
-| Runs for days with zero callouts | Working as designed when nothing qualifies, **or** Reddit is not configured, so attention scores 0 and few tokens reach 85 | Check `python -m northstar candidates` for the blockers. Add Reddit credentials. Do not lower the threshold just to get alerts |
+| Runs for days with zero callouts | Working as designed when nothing qualifies, or the thresholds are stricter than the market allows | Check `python -m northstar candidates` for the blockers. Do not lower the threshold just to get alerts |
 | `pumpportal stream error; reconnecting` | Websocket dropped | Automatic exponential reconnect. Persistent errors may mean a temporary PumpPortal ban (they lift hourly) |
 | `database corrupt; quarantined and recreated` | Disk or power issue corrupted the SQLite file | The old file is kept as `northstar.db.corrupt-<time>`. History in it is not migrated automatically |
 | Callout price shows `(UNAVAILABLE)` / state STALE | Pool returned no price; last valid price is kept, never zero | Usually a dead or delisted pool. Watch the warnings channel |

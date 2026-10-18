@@ -44,9 +44,6 @@ class Settings(BaseSettings):
     enable_coingecko: bool = True
     coingecko_peak_check_seconds: int = 300      # candle-high check per open call
     coingecko_trending_seconds: int = 300        # trending-pools attention feed
-    reddit_client_id: Optional[SecretStr] = None
-    reddit_client_secret: Optional[SecretStr] = None
-    reddit_user_agent: str = "northstar-alpha-engine/1.0 (research bot)"
 
     # ---------------------------------------------------------------- Providers
     enable_dexscreener: bool = True
@@ -57,7 +54,6 @@ class Settings(BaseSettings):
     enable_pumpportal_trades: bool = False
     max_pumpportal_trade_subscriptions: int = 100
     pumpportal_trade_subscription_ttl_seconds: int = 300
-    enable_reddit: bool = True  # only active when credentials are supplied
     enable_free_socials: bool = True  # token links, recycled-link check, public Telegram counts (no API key)
     social_reuse_days: int = 7  # lookback for 'same X/Telegram/website used by other tokens'
 
@@ -67,13 +63,11 @@ class Settings(BaseSettings):
     dexscreener_fast_rpm: int = 200
     rugcheck_rpm: int = 30
     rpc_rpm: int = 240
-    reddit_rpm: int = 60
 
     # Daily request budgets (0 = unlimited). Protects free tiers.
     dexscreener_daily_budget: int = 150_000
     rugcheck_daily_budget: int = 10_000
     rpc_daily_budget: int = 200_000
-    reddit_daily_budget: int = 20_000
 
     http_timeout_seconds: float = 15.0
     http_max_retries: int = 4
@@ -122,7 +116,7 @@ class Settings(BaseSettings):
     reject_on_rugcheck_danger: bool = True
 
     # ---------------------------------------------------------------- Publication policy
-    min_opportunity_score: float = 92.0
+    min_opportunity_score: float = 88.0  # a flawless token scores about 89 (social attention is capped at 4 of 25)
     watchlist_min_score: float = 75.0
     min_narrative_score: float = 18.0  # 0-25 scale (fraction of the narrative weight x 25), NOT 0-100
     min_narrative_evidence_items: int = 3
@@ -299,7 +293,7 @@ class Settings(BaseSettings):
             problems.append(f"NORTHSTAR_MIN_OPPORTUNITY_SCORE={self.min_opportunity_score:g} exceeds 100; AUTO_POST is impossible")
         if self.watchlist_min_score > self.min_opportunity_score:
             problems.append("NORTHSTAR_WATCHLIST_MIN_SCORE is above NORTHSTAR_MIN_OPPORTUNITY_SCORE")
-        attention_max = 8.0 if self.enable_reddit and self.reddit_client_id else (4.0 if self.enable_free_socials else 0.0)
+        attention_max = 4.0 if self.enable_free_socials else 0.0
         narrative_max = 5 + 7 + 5 + attention_max
         if self.min_narrative_score <= 25 and self.min_narrative_score > narrative_max:
             problems.append(
@@ -328,7 +322,7 @@ class Settings(BaseSettings):
     def secrets(self) -> list[str]:
         out = []
         for s in (self.discord_token, self.helius_api_key, self.pumpportal_api_key,
-                  self.reddit_client_id, self.reddit_client_secret, self.coingecko_api_key):
+                  self.coingecko_api_key):
             if s is not None and s.get_secret_value():
                 out.append(s.get_secret_value())
         return out

@@ -103,7 +103,7 @@ async def _health(s: Settings) -> int:
     print("Configuration")
     print(f"  dry_run={s.dry_run} discord_enabled={s.discord_enabled}")
     print(f"  discord token set: {bool(s.discord_token)}  channel: {s.discord_channel_id or 'NOT SET'}")
-    print(f"  rpc: {s.rpc_label}  helius key: {bool(s.helius_api_key)}  reddit: {bool(s.reddit_client_id)}")
+    print(f"  rpc: {s.rpc_label}  helius key: {bool(s.helius_api_key)}")
     if not s.dry_run and s.discord_enabled and not (s.discord_token and s.discord_channel_id):
         print("  !! Discord token/channel missing (set them or NORTHSTAR_DRY_RUN=true)")
         ok = False
@@ -122,8 +122,6 @@ async def _health(s: Settings) -> int:
         checks.append(("rugcheck", providers.rugcheck.summary("So11111111111111111111111111111111111111112")))
     if providers.rpc:
         checks.append(("solana_rpc", providers.rpc.call("getSlot", [])))
-    if providers.reddit:
-        checks.append(("reddit", providers.reddit.search("solana", limit=5)))
     for name, coro in checks:
         t = time.monotonic()
         try:
@@ -132,8 +130,6 @@ async def _health(s: Settings) -> int:
         except Exception as e:  # noqa: BLE001
             print(f"  {name:<12} FAIL {type(e).__name__}: {e}")
             ok = False
-    if not providers.reddit:
-        print("  reddit       DISABLED (no credentials) — narrative attention will be UNAVAILABLE")
     for c in clients:
         await c.close()
     print("\nRecorded provider health")

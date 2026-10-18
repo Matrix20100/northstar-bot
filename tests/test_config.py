@@ -12,7 +12,7 @@ def test_env_example_loads_with_blank_values(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     s = Settings()
     assert s.discord_channel_id is None and s.helius_api_key is None
-    assert s.dry_run is True and s.min_opportunity_score == 92
+    assert s.dry_run is True and s.min_opportunity_score == 88
     assert sum(s.weights.values()) == 100
 
 

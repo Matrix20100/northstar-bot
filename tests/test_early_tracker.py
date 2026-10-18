@@ -70,7 +70,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.s = Settings(_env_file=None, data_dir=self.tmp.name, dry_run=True, discord_enabled=False,
-                          enable_pumpportal=False, enable_reddit=False, log_json=False)
+                          enable_pumpportal=False, log_json=False)
         self.db = Database(Path(self.tmp.name) / "t.db")
         self.db.open()
         self.rpc, self.pub = FakeRpc(), FakePub()

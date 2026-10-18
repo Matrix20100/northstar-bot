@@ -24,7 +24,6 @@ from .net import ProviderClient
 from .performance import OutcomeTracker
 from .providers.dexscreener import DexScreener
 from .providers.pumpportal import PumpPortalStream
-from .providers.reddit import Reddit
 from .providers.rugcheck import RugCheck
 from .providers.solana_rpc import SolanaRpc
 from .research import Providers, Researcher
@@ -122,10 +121,6 @@ def build_providers(s: Settings, db: Optional[Database],
         from .providers.socials import FreeSocials
         p.socials = FreeSocials(timeout=min(8.0, float(s.http_timeout_seconds)), transport=transport)
         clients.append(p.socials)  # closed with the other clients
-    if s.enable_reddit and s.reddit_client_id and s.reddit_client_secret:
-        p.reddit = Reddit(mk("reddit", "https://oauth.reddit.com", s.reddit_rpm, s.reddit_daily_budget),
-                          s.reddit_client_id.get_secret_value(), s.reddit_client_secret.get_secret_value(),
-                          s.reddit_user_agent, transport)
     return p, clients
 
 
@@ -214,8 +209,7 @@ class Engine:
                                       trade_subscription_ttl_seconds=self.s.pumpportal_trade_subscription_ttl_seconds)
             self._pumpportal_stream = stream
             tasks.append(asyncio.create_task(stream.run(self.stop), name="pumpportal"))
-        log.info("northstar engine running (dry_run=%s, rpc=%s, reddit=%s)", self.s.dry_run, self.s.rpc_label,
-                 self.p.reddit is not None)
+        log.info("northstar engine running (dry_run=%s, rpc=%s)", self.s.dry_run, self.s.rpc_label)
         try:
             await self.stop.wait()
         finally:

@@ -6,11 +6,11 @@ Every setting is an environment variable with the `NORTHSTAR_` prefix, read from
 
 | Setting | Default | Trade-off |
 |---|---|---|
-| `MIN_OPPORTUNITY_SCORE` | 85 | Higher means fewer, better-supported alerts. Without Reddit credentials, 85 is hard to reach by design, because unmeasured attention earns no points. |
+| `MIN_OPPORTUNITY_SCORE` | 88 | Higher means fewer, better-supported alerts. A flawless token scores about 89, because social attention is capped at 4 of the 25 narrative points. |
 | `WATCHLIST_MIN_SCORE` | 65 | Watchlist tokens are re-researched every `WATCHLIST_RECHECK_SECONDS` (twice as often at ≥75). |
 | `MAX_ALLOWED_RISK` | MODERATE | `LOW_DETECTED` is stricter: one HIGH finding then blocks posting. |
 | `MIN_CONFIDENCE` | MEDIUM | `HIGH` requires ≥80% evidence completeness plus narrative confidence. |
-| `MIN_NARRATIVE_SCORE` / `MIN_NARRATIVE_EVIDENCE_ITEMS` | 18 / 3 | Blocks tokens with momentum but no narrative evidence. **`MIN_NARRATIVE_SCORE` is on a 0–25 scale** (it is multiplied by `W_NARRATIVE / 25`); a value above 25 makes AUTO_POST impossible and is reported at startup as a CONFIGURATION PROBLEM. Without Reddit credentials a token can earn at most 2 narrative evidence items (trending-meta match and distinct ticker). |
+| `MIN_NARRATIVE_SCORE` / `MIN_NARRATIVE_EVIDENCE_ITEMS` | 18 / 3 | Blocks tokens with momentum but no narrative evidence. **`MIN_NARRATIVE_SCORE` is on a 0–25 scale** (it is multiplied by `W_NARRATIVE / 25`); a value above 25 makes AUTO_POST impossible and is reported at startup as a CONFIGURATION PROBLEM. Narrative evidence items come from a trending-meta match, a distinct ticker, and a Telegram with 500+ public members. |
 | `ALERT_COOLDOWN_HOURS` | 24 | Prevents re-alerting the same mint. |
 | `MAX_DAILY_ALERTS` | 5 | A cap, never a quota. There is no minimum, and thresholds never drop because the bot has been quiet. |
 

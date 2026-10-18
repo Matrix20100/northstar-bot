@@ -8,7 +8,6 @@ Endpoints were checked against provider documentation and live responses on **20
 | Solana JSON-RPC (public or Helius) | optional (Helius) | mint account, authorities, Token-2022 extensions, supply, top-20 holders, swap transactions, wallet age and funders | VERIFIED |
 | RugCheck API | none | LP lock %, lockers, insider labels, creator, prior creator tokens, risk list, rugged flag, cross-checks | OBSERVED |
 | PumpPortal websocket | none for free streams | pump.fun launches and migrations | OBSERVED |
-| Reddit API (OAuth) | free app credentials | independent attention, duplicate-post detection, time-bucketed mentions | OBSERVED |
 
 ## DexScreener
 
@@ -47,10 +46,6 @@ Many fields are `null` for young tokens, and Northstar treats null as UNKNOWN. R
 ## PumpPortal
 
 `wss://pumpportal.fun/api/data`, one connection, `{"method":"subscribeNewToken"}` and `{"method":"subscribeMigration"}`. Both streams are documented as free. Message fields are not formally documented, so Northstar only relies on `mint` (validated) and treats `name`, `symbol` and `traderPublicKey` as OBSERVED hints. New launches are researched after `NEW_TOKEN_INITIAL_DELAY_SECONDS` (default 10 min); migrations are researched immediately. PumpPortal times out clients that open many connections, so Northstar uses exactly one, with exponential reconnect backoff.
-
-## Reddit
-
-`POST https://www.reddit.com/api/v1/access_token` (client_credentials) then `GET https://oauth.reddit.com/search?q=…&sort=new&t=day&limit=100&type=link`. The query matches the exact mint OR the `$TICKER`. Only posts mentioning the mint, the `$TICKER`, or the name together with "sol" count. Duplicate titles are treated as coordinated promotion and excluded.
 
 ## What is NOT used, and why
 

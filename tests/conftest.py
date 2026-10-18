@@ -44,7 +44,7 @@ CREATOR = addr("creator")
 @pytest.fixture
 def settings(tmp_path) -> Settings:
     return Settings(_env_file=None, data_dir=str(tmp_path), dry_run=True, discord_enabled=False,
-                    enable_pumpportal=False, enable_reddit=False, log_json=False)
+                    enable_pumpportal=False, log_json=False)
 
 
 @pytest.fixture
@@ -300,30 +300,28 @@ def strong_metas() -> list[dict]:
              "marketCapChange": {"m5": 1, "h1": 5, "h6": 30, "h24": 50}}]
 
 
-def strong_posts(n_authors: int = 15) -> list[dict]:
-    subs = ["solana", "memecoins", "CryptoMoonShots", "SolanaMemeCoins"]
-    return [{"id": f"p{i}", "author": f"user{i}", "title": f"Thoughts on $MOCK #{i} frog {i * 7}",
-             "selftext": f"mint {MINT}", "subreddit": subs[i % 4], "created_utc": NOW - i * 1200,
-             "score": 5, "num_comments": 4, "permalink": "/r/x"} for i in range(n_authors)]
+class FakeSocials:
+    """Free social checks: the token's own Telegram reports a public member count."""
+    def __init__(self, members: int = 2500):
+        self.members = members
 
+    async def metadata(self, uri):
+        return None
 
-class FakeReddit:
-    def __init__(self, posts):
-        self.posts = posts
-
-    async def search(self, q, window="day", limit=100):
-        return self.posts
+    async def telegram_members(self, handle):
+        return self.members
 
 
 def strong_providers() -> Providers:
     return Providers(dex=FakeDex(metas=strong_metas()), rugcheck=FakeRugCheck(rc_report()), rpc=FakeRpc(),
-                     reddit=FakeReddit(strong_posts()))
+                     socials=FakeSocials())
 
 
 def seed_profile(db: Database, mint: str = MINT) -> None:
     db.upsert_discovery(mint, "dexscreener_profile", 2.0, payload={
         "description": "Mock Frog is a community frog meme on Solana with daily art drops.",
-        "links": [{"type": "twitter", "url": "https://x.invalid/mock"}]})
+        "links": [{"type": "twitter", "url": "https://x.com/mockfrogsol"},
+                  {"type": "telegram", "url": "https://t.me/mockfrogportal"}]})
 
 
 # --------------------------------------------------------------------------- publisher
