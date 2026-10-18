@@ -47,6 +47,11 @@ class Monitor:
             log.warning("monitor market refresh failed: %s", e)
             pairs, fetch_ok = [], False
         by_pool = {p.pair_address: p for p in pairs}
+        open_ids = {a["id"] for a in alerts}
+        for d in (self._last_creator_check, self._last_holder_check, self._last_candle_check, self._slow_warnings,
+                  self._slow_top10, self._candle_peaks):
+            for k in [k for k in d if k not in open_ids]:
+                d.pop(k, None)
         started = time.monotonic()
         priced = 0
         for a in alerts:
@@ -107,7 +112,13 @@ class Monitor:
         candle = self._candle_peaks.pop(a["id"], None)
         if candle and a.get("entry_mcap"):
             cmult, cat = candle
-            if cmult > (upd.get("max_multiple") or a["max_multiple"] or 1):
+            seen = max(upd.get("max_multiple") or 0, a["max_multiple"] or 0, mult or 0, 1.0)
+            if cmult > 3 * seen:
+                # a candle 3x above anything observed is almost certainly wrong data (e.g. quote/base
+                # mix-up); never let it fire milestones or exits
+                log.warning("ignoring implausible candle peak %.2fx for alert %s (observed max %.2fx)",
+                            cmult, a["id"], seen)
+            elif cmult > (upd.get("max_multiple") or a["max_multiple"] or 1):
                 upd["max_multiple"] = cmult
                 self._raise_peak(a, upd, cmult, cat)
 
@@ -178,8 +189,10 @@ class Monitor:
     async def _candle_check(self, a: dict) -> None:
         from .providers.coingecko import peak_after
         since = a.get("sent_at") or a["created_at"]
+        urgent = time.time() - since < 3600      # first hour: your CoinGecko key; afterwards the free API
         try:
-            candles = await asyncio.wait_for(self.cg.candles(a["pool_address"], since, urgent=True), timeout=60)
+            candles = await asyncio.wait_for(
+                self.cg.candles(a["pool_address"], since, urgent=urgent, token=a["mint"]), timeout=60)
         except Exception:  # noqa: BLE001 - optional data source
             log.debug("candle check failed for alert %s", a["id"], exc_info=True)
             return

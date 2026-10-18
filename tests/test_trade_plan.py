@@ -65,7 +65,7 @@ def test_plan_levels_and_text():
     assert P.max_entry_mcap == 125_000
     lines = "\n".join(TP.plan_lines(P, fmt))
     for part in ("up to $125.0K", "TP1:** 1.5x ($150.0K) → sell 50%", "TP2:** 2x ($200.0K) → sell 25%",
-                 "Stop:** $70.0K (-30%)", "not 1.3x within 30 min"):
+                 "Stop:** $70.0K (-30%)", "below 1.3x after 30 min"):
         assert part in lines, part
     assert TP.build_plan(None, S) is None and TP.build_plan(0, S) is None
 
@@ -92,8 +92,10 @@ def test_stop_loss_and_time_stop():
     assert kinds(TP.evaluate(P, 0.65, 1.1, 120, set(), fmt)) == ["STOP"]
     assert TP.evaluate(P, 1.1, 1.2, 29 * 60, set(), fmt) == []
     ev = TP.evaluate(P, 1.1, 1.2, 31 * 60, set(), fmt)
-    assert kinds(ev) == ["TIME"] and "never reached 1.3x" in ev[0][1]
-    assert TP.evaluate(P, 1.1, 1.35, 31 * 60, set(), fmt) == []      # it did reach 1.3x: no time stop
+    assert kinds(ev) == ["TIME"] and "isn't holding 1.3x" in ev[0][1]
+    # a past wick to 1.35x does not cancel the time stop: it is judged on where the coin is now
+    assert kinds(TP.evaluate(P, 1.1, 1.35, 31 * 60, set(), fmt)) == ["TIME"]
+    assert "TIME" not in kinds(TP.evaluate(P, 1.4, 1.45, 31 * 60, set(), fmt))   # holding above 1.3x
 
 
 def test_entry_closed_and_jump_straight_through_levels():

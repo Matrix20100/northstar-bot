@@ -59,13 +59,18 @@ class CoinGeckoOnchain:
         return None
 
     async def candles(self, pool: str, start: float, end: Optional[float] = None, urgent: bool = False,
-                      timeframe: str = "minute") -> list[tuple[float, float, float, float, float, float]]:
-        """1-minute OHLCV (ts, open, high, low, close, volume_usd) for start..end, oldest first."""
+                      timeframe: str = "minute", token: Optional[str] = None
+                      ) -> list[tuple[float, float, float, float, float, float]]:
+        """1-minute OHLCV (ts, open, high, low, close, volume_usd) for start..end, oldest first.
+
+        ``token`` must be the coin's mint: a pool's "base" side is the pool's own token order, which on
+        some DEXes is SOL, and candles for SOL would look like a 1,000,000x move.
+        """
         end = end or time.time()
         span_min = max(1, int((end - start) / 60) + 2)
         data = await self._get(f"/networks/{NETWORK}/pools/{pool}/ohlcv/{timeframe}",
                                {"aggregate": 1, "before_timestamp": int(end) + 60, "limit": min(1000, span_min),
-                                "currency": "usd", "token": "base"}, urgent, cache_ttl=30)
+                                "currency": "usd", "token": token or "base"}, urgent, cache_ttl=30)
         rows = (((data or {}).get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
         out = []
         for r in rows:
@@ -103,7 +108,7 @@ def peak_after(candles, entry_value: float, since: float) -> Optional[tuple[floa
     """(highest multiple of ``entry_value``, its unix time) from candles at or after ``since``."""
     best = None
     for ts, _o, high, _l, _c, _v in candles:
-        if ts + 60 < since or not entry_value:
+        if ts < since or not entry_value:       # only whole candles after the call (no pre-call highs)
             continue
         mult = high / entry_value
         if best is None or mult > best[0]:

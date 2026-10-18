@@ -306,8 +306,12 @@ class Settings(BaseSettings):
                 f"NORTHSTAR_MIN_NARRATIVE_SCORE={self.min_narrative_score:g} cannot be reached: with the social "
                 f"sources enabled the narrative sub-scores add up to at most {narrative_max:g}/25 "
                 "(clarity 5 + timeliness 7 + distinctness 5 + attention). No token can AUTO_POST.")
-        if self.trade_plan_enabled and not (0 < self.plan_stop < 1 < self.plan_tp1 <= self.plan_tp2):
-            problems.append("trade plan levels must satisfy 0 < NORTHSTAR_PLAN_STOP < 1 < PLAN_TP1 <= PLAN_TP2")
+        if self.trade_plan_enabled:
+            from .trade_plan import plan_values, valid_values
+            for profile, env in (("standard", "PLAN"), ("scalp", "SCALP")):
+                if not valid_values(plan_values(self, profile)):
+                    problems.append(f"trade plan levels must satisfy 0 < NORTHSTAR_{env}_STOP < 1 < "
+                                    f"1 + {env}_MAX_ENTRY_PCT/100 < {env}_TP1 <= {env}_TP2")
         if self.trade_plan_enabled and max(self.monitor_interval_seconds, self.early_watch_refresh_seconds) > 60:
             problems.append("exit signals are checked only every "
                             f"{max(self.monitor_interval_seconds, self.early_watch_refresh_seconds)}s; "

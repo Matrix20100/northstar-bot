@@ -58,7 +58,8 @@ def test_path_from_candles():
 
 def feats(**kw):
     base = {"score": 50, "risk": "MODERATE", "confidence": "MEDIUM", "vol_acc": 2.0, "bs_h1": 1.5, "extended": False,
-            "failed": [], "unknown_critical": [], "surge": False}
+            "failed": [], "unknown_critical": [], "unknown": [], "surge": False,
+            "passed": ["mint_authority", "freeze_authority", "lp_lock", "liquidity_removal"]}
     base.update(kw)
     return base
 
@@ -102,7 +103,7 @@ def test_evaluate_due_stores_path_and_gives_up_after_three_tries(db):
              "REJECT", None, False, now=now - 3 * 3600)
 
     class CG:
-        async def candles(self, pool, start, end=None, urgent=False):
+        async def candles(self, pool, start, end=None, urgent=False, **kw):
             if pool == addr("p2"):
                 return []
             return [(start + 60 * i, 1, 1 + i * 0.1, 0.95, 1 + i * 0.05, 0) for i in range(5)]
@@ -188,3 +189,22 @@ def test_backfill_from_research_snapshots(db):
                    (MINT, ts, "WATCHLIST", 45, "MODERATE", json.dumps(rep)))
     assert L.backfill_from_snapshots(db, now=now) == 2          # one per coin per 2h
     assert L.backfill_from_snapshots(db, now=now) == 0          # only once
+
+
+def test_review_off_grid_value_moves_to_nearest_grid_point_only(db):
+    s = Settings(_env_file=None, min_opportunity_score=92, min_confidence="MEDIUM", max_allowed_risk="MODERATE",
+                 min_callout_market_cap=0, min_volume_acceleration=0, min_buy_sell_ratio_h1=0, block_extended_moves=False)
+    now = time.time()
+    _seed(db, 60, now)
+    L.tune(db, s, min_samples=20, now=now)
+    assert s.min_opportunity_score in (92, 80)          # never 70 in one run
+    assert s.min_callout_market_cap in (0, 30_000)      # never skips 30k
+
+
+def test_review_tuning_never_produces_an_inverted_plan(db):
+    s = Settings(_env_file=None, plan_tp1=2.0, plan_tp2=2.0)
+    assert not L._plan_ok(s, "plan_tp1", 2.5)          # TP1 above TP2
+    assert not L._plan_ok(s, "plan_tp1", 1.2)          # TP1 inside the +25% entry zone
+    assert not L._plan_ok(Settings(_env_file=None), "scalp_tp1", 1.1)   # scalp entry zone is +10%
+    assert not L._plan_ok(Settings(_env_file=None), "scalp_tp2", 1.2)  # below scalp TP1 (1.3)
+    assert L._plan_ok(Settings(_env_file=None), "plan_tp1", 1.5)

@@ -51,6 +51,16 @@ def build_plan(entry_mcap: Optional[float], s=None, profile: str = "standard",
                 v["time_stop_multiple"])
 
 
+def valid_values(v: dict) -> bool:
+    """A plan that makes sense: stop below entry, entry zone below TP1, TP1 not above TP2."""
+    try:
+        return (0 < v["stop"] < 1 < 1 + v["max_entry_pct"] / 100 < v["tp1"] <= v["tp2"]
+                and 0 < v["tp1_sell_pct"] <= 100 and 0 <= v["tp2_sell_pct"] <= 100
+                and v["trail_pct"] > 0 and v["time_stop_minutes"] > 0 and v["time_stop_multiple"] > 1)
+    except (KeyError, TypeError):
+        return False
+
+
 def sells_everything(p: Plan) -> bool:
     return p.tp1_sell_pct + p.tp2_sell_pct >= 100
 
@@ -65,7 +75,7 @@ def plan_lines(p: Plan, fmt) -> list[str]:
         f"🎯 **TP2:** {p.tp2:g}x ({fmt(p.entry_mcap * p.tp2)}) → sell "
         f"{min(p.tp2_sell_pct, 100 - p.tp1_sell_pct)}% {rest}",
         f"🛑 **Stop:** {fmt(p.entry_mcap * p.stop)} ({(p.stop - 1) * 100:+.0f}%)",
-        f"⏱️ **Time stop:** not {p.time_stop_multiple:g}x within {p.time_stop_min:g} min → exit",
+        f"⏱️ **Time stop:** below {p.time_stop_multiple:g}x after {p.time_stop_min:g} min → exit",
     ]
 
 
@@ -114,9 +124,12 @@ def evaluate(p: Plan, multiple: Optional[float], peak: float, age_seconds: float
                                "and keep the profit.")
     elif multiple <= p.stop:
         exit_event = ("STOP", f"Down to {multiple:.2f}x ({fmt(mc)}), below the {(p.stop - 1) * 100:+.0f}% stop. Exit.")
-    elif (age_seconds >= p.time_stop_min * 60 and peak < p.time_stop_multiple and "TP1" not in sent):
-        exit_event = ("TIME", f"{age_seconds / 60:.0f} min and it never reached {p.time_stop_multiple:g}x "
-                              f"(now {multiple:.2f}x, {fmt(mc)}). Exit — most failed calls die soon after.")
+    elif (age_seconds >= p.time_stop_min * 60 and multiple < p.time_stop_multiple and not tp1_done):
+        # judged on where it IS, not on a past wick: a coin that touched 1.35x and now sits at 0.8x
+        # must still be told to exit
+        exit_event = ("TIME", f"{age_seconds / 60:.0f} min in and it isn't holding {p.time_stop_multiple:g}x "
+                              f"(now {multiple:.2f}x, {fmt(mc)}; high {peak:.2f}x). Exit — "
+                              "calls that stall like this usually fade.")
     if exit_event:
         out.append(exit_event)
     return out

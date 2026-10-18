@@ -22,7 +22,9 @@ SCALPABLE = {"holder_concentration", "creator_holdings", "creator_dumping", "lau
              "rugcheck_danger", "wallet_clusters"}
 # failed (or unknown) checks that can trap a buyer: never posted
 TRAPS = {"mint_authority", "freeze_authority", "token_extensions", "lp_lock", "liquidity_removal",
-         "rugcheck_rugged", "source_consistency"}
+         "rugcheck_rugged", "source_consistency", "rugcheck"}
+# these checks must be present AND passed (a check that never ran counts as a trap)
+MUST_PASS = {"mint_authority", "freeze_authority", "lp_lock", "liquidity_removal"}
 
 PLAIN = {
     "holder_concentration": "a few wallets hold a big share of supply",
@@ -43,6 +45,8 @@ def check(report: dict, pair, s, surge: Optional[dict] = None) -> Optional[dict]
     """Scalp verdict for a REJECTED post-migration coin, or None when it must not be posted."""
     if not getattr(s, "scalp_enabled", False) or pair is None:
         return None
+    if s.allow_active_mint_authority or s.allow_active_freeze_authority:
+        return None             # authorities could then PASS while still active: no scalps in that mode
     gates = _gates(report)
     failed = [g for g in gates if g.get("status") == "FAIL"]
     if not failed:
@@ -51,13 +55,18 @@ def check(report: dict, pair, s, surge: Optional[dict] = None) -> Optional[dict]
     unknown_traps = {g.get("name") for g in gates if g.get("status") == "UNKNOWN" and g.get("name") in TRAPS}
     if names - SCALPABLE or unknown_traps:
         return None                                        # a trap (or unchecked trap): never post
+    # The trap checks must have actually RUN and passed. A missing check (e.g. RugCheck down, LP check
+    # switched off) is treated exactly like a failed one.
+    passed = {g.get("name") for g in gates if g.get("status") == "PASS"}
+    if not MUST_PASS <= passed:
+        return None
     mc, liq = pair.market_cap, pair.liquidity_usd
     if not mc or mc < s.scalp_min_market_cap or not liq or liq < s.scalp_min_liquidity:
         return None
     ms = report.get("market_structure") or {}
     acc, bs = ms.get("volume_acceleration"), ms.get("buy_sell_ratio_h1")
     strong = isinstance(acc, (int, float)) and acc >= 2.0 and isinstance(bs, (int, float)) and bs >= 1.3
-    if s.scalp_require_surge and not surge and not strong:
+    if s.scalp_require_surge and not surge:
         return None
     if not surge and not strong:
         return None

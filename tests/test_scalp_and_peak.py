@@ -24,7 +24,8 @@ SURGE = {"line": "⚡ Surge: $30,050 volume in 5 min (2.7x the hour's pace), 277
 def rug_report(*failed, unknown=(), acc=None, bs=None):
     gates = [{"name": n, "status": "FAIL", "reason": f"{n} failed"} for n in failed]
     gates += [{"name": n, "status": "UNKNOWN", "reason": "unknown"} for n in unknown]
-    gates += [{"name": "mint_authority", "status": "PASS"}, {"name": "freeze_authority", "status": "PASS"}]
+    gates += [{"name": n, "status": "PASS"} for n in ("mint_authority", "freeze_authority", "lp_lock", "liquidity_removal")
+              if n not in failed and n not in unknown]
     return {"mint": MINT, "gates": gates, "market_structure": {"volume_acceleration": acc, "buy_sell_ratio_h1": bs}}
 
 
@@ -60,7 +61,7 @@ def test_scalp_embed_is_unmistakable():
     names = [f["name"] for f in e["fields"]]
     assert "☠️ Why this is a rug" in names and "📋 Scalp plan" in names and "Why Northstar selected it" not in names
     text = json.dumps(e)
-    assert "-15%" in text and "trade done" in text and "not 1.15x within 10 min" in text
+    assert "-15%" in text and "trade done" in text and "below 1.15x after 10 min" in text
 
 
 def test_scalp_plan_sells_everything_and_stops():
@@ -130,9 +131,10 @@ async def test_candle_high_raises_peak_between_checks(settings, db):
     aid, pub, p, out = await published(settings, db)
 
     class CG:
-        async def candles(self, pool, start, end=None, urgent=False):
-            t = time.time()
-            return [(t - 60, 1, out.pair.price_usd * 2.6, 1, out.pair.price_usd * 1.1, 1000.0)]
+        async def candles(self, pool, start, end=None, urgent=False, **kw):
+            t = time.time() + 1
+            return [(t - 120, 1, out.pair.price_usd * 9.0, 1, 1, 1.0),            # before the call: ignored
+                    (t, 1, out.pair.price_usd * 2.6, 1, out.pair.price_usd * 1.1, 1000.0)]
     mon = Monitor(settings, db, pub, p.dex, None, CG())
     await mon.run_once()                                   # schedules the candle check
     await asyncio.gather(*list(mon._candle_tasks.values()))
@@ -190,3 +192,55 @@ def test_coingecko_plan_setting_validated():
     with pytest.raises(Exception):
         Settings(_env_file=None, coingecko_plan="gold")
     assert "secret-key" in Settings(_env_file=None, coingecko_api_key="secret-key").secrets()
+
+
+# ---------------------------------------------------------------- regression tests from the independent review
+def test_review_scalp_needs_surge_when_required_and_all_trap_checks_run():
+    pair = make_pair(market_cap=120_000.0, liquidity_usd=30_000.0)
+    strong = rug_report("holder_concentration", acc=3.0, bs=1.6)
+    assert scalp.check(strong, pair, S, None) is None                       # require_surge=True by default
+    no_lp = rug_report("holder_concentration")
+    no_lp["gates"] = [g for g in no_lp["gates"] if g["name"] != "lp_lock"]   # LP check never ran
+    assert scalp.check(no_lp, pair, S, SURGE) is None
+    rc_down = rug_report("holder_concentration", unknown=("rugcheck",))
+    assert scalp.check(rc_down, pair, S, SURGE) is None
+    allow = Settings(_env_file=None, allow_active_freeze_authority=True)
+    assert scalp.check(rug_report("holder_concentration"), pair, allow, SURGE) is None
+
+
+async def test_review_implausible_candle_peak_ignored(settings, db):
+    aid, pub, p, out = await published(settings, db)
+
+    class CG:
+        async def candles(self, pool, start, end=None, urgent=False, **kw):
+            return [(time.time() + 1, 1, out.pair.price_usd * 1_000_000, 1, 1, 1.0)]   # SOL-price mix-up
+    mon = Monitor(settings, db, pub, p.dex, None, CG())
+    await mon.run_once()
+    await asyncio.gather(*list(mon._candle_tasks.values()))
+    await mon.run_once()
+    assert db.get_alert(aid)["max_multiple"] < 2
+    assert not any("hit" in e["title"] for _, e in pub.sent)
+
+
+async def test_review_call_held_when_it_dumps_during_research(settings, db):
+    from conftest import strong_providers, seed_profile, MemoryPublisher
+    from northstar.alerts import AlertService
+    from northstar.research import Researcher
+    p = strong_providers()
+    seed_profile(db)
+    out = await Researcher(settings, db, p).research(MINT)
+    p.dex.pairs = [make_pair(price_usd=out.pair.price_usd * 0.7, market_cap=out.pair.market_cap * 0.7)]
+    pub = MemoryPublisher()
+    assert await AlertService(settings, db, pub, p.dex).publish(out) is None
+    assert pub.sent == [] and db.get_candidate(MINT)["state"] == "WATCHLIST"
+
+
+async def test_review_stale_scalp_never_resent(settings, db):
+    from northstar.alerts import AlertService
+    from conftest import MemoryPublisher
+    db.upsert_discovery(MINT, "pumpportal_migration", 3.0)
+    aid = db.create_alert_intent(MINT, 0, call_type="RUG_SCALP", entry_mcap=100_000.0)
+    db.execute("UPDATE alerts SET created_at=? WHERE id=?", (time.time() - 180, aid))
+    pub = MemoryPublisher()
+    await AlertService(settings, db, pub).resume_pending()
+    assert pub.sent == [] and db.get_alert(aid)["status"] == "FAILED"

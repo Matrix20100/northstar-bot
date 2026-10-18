@@ -93,3 +93,9 @@ def test_engine_researches_surge_immediately(settings, db, monkeypatch):
         await asyncio.gather(*list(eng._radar_tasks))
     asyncio.run(go())
     assert seen == [MINT]
+
+
+def test_review_new_or_lagging_pools_are_not_surges():
+    assert detect(pair(pair_created_at=time.time() - 120), S) is None              # 2-minute-old pool
+    assert detect(pair(vol={"m5": 12_000.0, "h1": 12_000.0}), S) is None           # 1h == 5m: no baseline
+    assert detect(pair(vol={"m5": 12_000.0, "h1": None}), S) is None

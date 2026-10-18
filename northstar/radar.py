@@ -64,8 +64,16 @@ def detect(pair, s) -> Optional[Surge]:
         return None
     if v5 < s.radar_min_volume_m5:
         return None
-    baseline = max(0.0, ((v1 or v5) - v5) / 11.0)        # average 5-min volume over the previous 55 min
-    spike = v5 / baseline if baseline > 0 else float("inf")
+    # Average 5-min volume over the previous 55 minutes. A pool younger than ~10 minutes (or lagging
+    # DexScreener data where 1h <= 5m) has no real baseline: every trade would look like an infinite
+    # spike, so that is never treated as a surge.
+    created = getattr(pair, "pair_created_at", None)
+    if created and time.time() - created < 600:
+        return None
+    if not v1 or v1 <= v5:
+        return None
+    baseline = (v1 - v5) / 11.0
+    spike = v5 / baseline
     if spike < s.radar_volume_spike:
         return None
     if b5 < s.radar_min_buys_m5 or b5 < s.radar_buy_sell_ratio * max(1, s5):

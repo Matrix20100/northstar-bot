@@ -119,6 +119,15 @@ class AlertService:
             if moved is not None:
                 market["moved_during_research_pct"] = round(moved, 1)
                 log.info("%s moved %+.1f%% during research; call uses the post-time market cap", out.mint, moved)
+                # dumping while we checked, or (for a scalp) already ran away: don't post it now
+                limit_down = -12.0 if call_type == "RUG_SCALP" else -20.0
+                limit_up = 40.0 if call_type == "RUG_SCALP" else None
+                if moved <= limit_down or (limit_up is not None and moved >= limit_up):
+                    log.info("holding %s: moved %+.1f%% during research", out.mint, moved)
+                    self.db.set_state(out.mint, "WATCHLIST",
+                                      next_research_at=time.time() + self.s.watchlist_recheck_seconds,
+                                      reasons=[f"pre-flight hold: price moved {moved:+.0f}% during research"])
+                    return None
         now = time.time()
         plan_vals = TP.plan_values(self.s, profile) if getattr(self.s, "trade_plan_enabled", False) else None
         if out.snapshot_id and (call_type != "STANDARD" or pair is not out.pair):
@@ -756,8 +765,12 @@ class AlertService:
                 )
                 continue
 
+            # A call resent late would show a stale entry and plan levels. Scalps are minutes-long trades,
+            # so they are abandoned after 2 minutes; normal calls after 5. The coin is re-researched
+            # right away and, if it still qualifies, posted fresh with current prices.
+            max_age = 120 if (alert.get("call_type") or "STANDARD") == "RUG_SCALP" else 300
             too_old = (
-                time.time() - alert["created_at"] > 1800
+                time.time() - alert["created_at"] > max_age
             )
             attempts_exhausted = (
                 alert["publish_attempts"] >= MAX_ATTEMPTS
@@ -816,7 +829,11 @@ class AlertService:
                     values = json.loads(alert.get("plan_json") or "null")
                 except (TypeError, ValueError):
                     values = None
-                await self._send(
+                delivered = await self._send(
                     alert["id"],
                     callout_embed(report, plan=self._callout_plan(report, values)),
                 )
+                if delivered and report["call_type"] == "STANDARD" and self.s.discord_free_channel_id:
+                    self.db.schedule_free_channel_post(
+                        alert["id"], time.time() + max(0, self.s.free_callout_delay_minutes) * 60,
+                        self.s.discord_free_channel_id)

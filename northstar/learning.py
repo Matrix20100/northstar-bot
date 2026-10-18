@@ -139,6 +139,8 @@ def features_from(report: dict, pair, surge: Optional[dict]) -> dict:
         "extended": ms.get("extended"),
         "failed": sorted({g.get("name") for g in gates if g.get("status") == "FAIL"}),
         "unknown_critical": sorted({g.get("name") for g in gates if g.get("status") == "UNKNOWN" and g.get("critical")}),
+        "unknown": sorted({g.get("name") for g in gates if g.get("status") == "UNKNOWN"}),
+        "passed": sorted({g.get("name") for g in gates if g.get("status") == "PASS"}),
         "top10": holders.get("top10_adj"),
         "surge": bool(surge),
         "surge_spike": (surge or {}).get("spike"),
@@ -208,10 +210,12 @@ async def evaluate_due(db, cg, limit: int = 20, now: Optional[float] = None) -> 
     for row in db.fetchall("SELECT * FROM shadow_calls WHERE evaluated=0 AND ts < ? ORDER BY called DESC, ts "
                            "LIMIT ?", (now - EVAL_DELAY, limit)):
         try:
-            candles = await cg.candles(row["pool"], row["ts"], row["ts"] + PATH_MINUTES * 60)
+            candles = await cg.candles(row["pool"], row["ts"], row["ts"] + PATH_MINUTES * 60, token=row["mint"])
         except Exception:  # noqa: BLE001
             candles = []
         path = path_from(candles, row["entry_price"], row["ts"])
+        if path and not (0.2 <= path[0][3] <= 5):
+            path = []          # first candle far from the recorded price: wrong pool/token data, not usable
         if not path:
             attempts = row["attempts"] + 1
             db.execute("UPDATE shadow_calls SET attempts=?, evaluated=? WHERE id=?",
@@ -230,7 +234,7 @@ def path_from(candles, entry_price: float, ts: float) -> list[list[float]]:
         return []
     out = []
     for c_ts, _o, high, low, close, _v in candles:
-        if c_ts + 60 <= ts or c_ts > ts + PATH_MINUTES * 60:
+        if c_ts < ts or c_ts > ts + PATH_MINUTES * 60:      # whole candles after the decision only
             continue
         out.append([round(max(0.0, (c_ts - ts) / 60), 1), round(high / entry_price, 4),
                     round(low / entry_price, 4), round(close / entry_price, 4)])
@@ -270,7 +274,7 @@ def simulate(path: list, v: dict) -> Optional[float]:
         if held <= 1e-9:
             break
         peak = max(peak, high)
-        if not tp1 and minute >= v["time_stop_minutes"] and peak < v["time_stop_multiple"]:
+        if not tp1 and minute >= v["time_stop_minutes"] and close < v["time_stop_multiple"]:
             pnl += held * (close - 1)
             held = 0.0
             break
@@ -308,10 +312,11 @@ def standard_eligible(f: dict, entry_mcap: Optional[float], s, overrides: dict) 
 
 
 def scalp_eligible(f: dict, entry_mcap, liquidity, s) -> bool:
-    from .scalp import SCALPABLE
+    from .scalp import MUST_PASS, SCALPABLE, TRAPS
     failed = set(f.get("failed") or [])
-    if not failed or failed - SCALPABLE or set(f.get("unknown_critical") or []) & {"lp_lock"}:
-        return False
+    unknown = set(f.get("unknown") or []) | set(f.get("unknown_critical") or [])
+    if not failed or failed - SCALPABLE or unknown & TRAPS or not MUST_PASS <= set(f.get("passed") or []):
+        return False                       # same rules as live posting (scalp.check)
     if not entry_mcap or entry_mcap < s.scalp_min_market_cap or not liquidity or liquidity < s.scalp_min_liquidity:
         return False
     strong = (f.get("vol_acc") or 0) >= 2.0 and (f.get("bs_h1") or 0) >= 1.3
@@ -355,6 +360,13 @@ def _total(rows, s, kind: str, overrides: dict) -> tuple[float, int]:
     return total, n
 
 
+def _plan_ok(s, key: str, value) -> bool:
+    profile = "scalp" if key.startswith("scalp_") else "standard"
+    v = TP.plan_values(s, profile)
+    v[key.split("_", 1)[1]] = value
+    return TP.valid_values(v)
+
+
 def _per_trade(total: float, n: int) -> float:
     return total / n if n else float("-inf")
 
@@ -379,6 +391,8 @@ def tune(db, s, days: float = 14, min_samples: int = 20, now: Optional[float] = 
         for val in t.grid:
             if val == cur:
                 continue
+            if kind != "select" and not _plan_ok(s, t.key, val):
+                continue                                   # never learn a plan that contradicts itself
             tot_fit, n_fit = _total(fit, s, kind, {t.key: val})
             tot_chk, n_chk = _total(check, s, kind, {t.key: val})
             if n_fit < max(5, min_samples // 3) or n_chk < 3:
@@ -398,12 +412,14 @@ def tune(db, s, days: float = 14, min_samples: int = 20, now: Optional[float] = 
                 best = (val, gain_fit, gain_chk, tot_fit, n_fit)
         if best is None:
             continue
-        # move one grid step toward the best value (never jump across the range in one go)
+        # move to the NEXT grid value toward the best one (never jump across the range in one go,
+        # and if the current value sits between grid points, stop at the nearest one on that side)
         grid = sorted(t.grid)
-        here = min(range(len(grid)), key=lambda i: abs(grid[i] - cur))
-        step = here + (1 if best[0] > cur else -1)
-        new = grid[max(0, min(len(grid) - 1, step))]
-        if new == cur:
+        if best[0] > cur:
+            new = min((g for g in grid if g > cur), default=None)
+        else:
+            new = max((g for g in grid if g < cur), default=None)
+        if new is None or new == cur or (kind != "select" and not _plan_ok(s, t.key, new)):
             continue
         if isinstance(cur, int) and not isinstance(cur, bool):
             new = int(new)
