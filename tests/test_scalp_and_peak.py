@@ -244,3 +244,21 @@ async def test_review_stale_scalp_never_resent(settings, db):
     pub = MemoryPublisher()
     await AlertService(settings, db, pub).resume_pending()
     assert pub.sent == [] and db.get_alert(aid)["status"] == "FAILED"
+
+
+async def test_deleted_message_stops_embed_edits(settings, db):
+    from northstar.discord_bot.publisher import PublishError
+    settings.embed_edit_min_seconds = 0
+    aid, pub, p, out = await published(settings, db)
+    calls = []
+
+    async def gone(channel_id, message_id, embed):
+        calls.append(message_id)
+        raise PublishError("message/channel not found", False)
+    pub.edit = gone
+    mon = Monitor(settings, db, pub, p.dex, None)
+    for mult in (1.3, 1.5, 1.7):
+        p.dex.pairs = [make_pair(price_usd=out.pair.price_usd * mult, market_cap=out.pair.market_cap * mult)]
+        await mon.run_once()
+    assert len(calls) == 1, "a deleted message is tried once, then left alone"
+    assert db.get_alert(aid)["max_multiple"] >= 1.7 - 1e-9, "tracking continues"

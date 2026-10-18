@@ -318,9 +318,16 @@ class Monitor:
                               "ORDER BY ts LIMIT 1", (alert_id,))
         if not ev:
             return
+        if self.db.fetchone("SELECT 1 FROM alert_events WHERE alert_id=? AND kind='message_missing' LIMIT 1",
+                            (alert_id,)):
+            return  # the Discord message was deleted; stop trying to edit it
         original = json.loads(ev["detail"]).get("embed") or {}
         try:
             await self.pub.edit(a["channel_id"], a["message_id"], updated_callout(original, a))
             self.db.update_alert(alert_id, last_embed_edit_at=time.time())
         except PublishError as e:
+            if "not found" in str(e):
+                log.info("alert %s: Discord message was deleted; no more embed edits for it", alert_id)
+                self.db.add_alert_event(alert_id, "message_missing", {"error": str(e)})
+                return
             log.warning("embed edit failed for alert %s: %s", alert_id, e)

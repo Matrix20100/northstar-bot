@@ -36,6 +36,8 @@ from .analysis.scoring import (
     score_momentum,
     score_wallet_quality,
 )
+from .analysis import lp_onchain as LPC
+from .analysis.lp_onchain import pumpswap_lp_burn
 from .analysis.security import (
     assess_liquidity,
     check_authorities,
@@ -48,6 +50,7 @@ from .models import (
     Action,
     Confidence,
     DataStatus,
+    Datum,
     Flag,
     GateResult,
     GateStatus,
@@ -457,6 +460,7 @@ class Researcher:
         f3, g3 = rugcheck_findings(rc, s, pair.price_usd, supply_ui)
         history = self.db.market_history(mint, now - 24 * 3600)
         la = assess_liquidity(pair, rc, history, s, now)
+        await self._verify_lp_onchain(pair, mint, la, report)
 
         gates += g1 + g2 + g3 + la.gates
         flags += f1 + f2 + f3 + la.flags
@@ -1882,6 +1886,36 @@ class Researcher:
             self.s.w_narrative,
             social=social_ev,
         )
+
+    async def _verify_lp_onchain(self, pair: PairInfo, mint: str, la, report: dict) -> None:
+        """When RugCheck can't confirm the LP, read the PumpSwap pool on-chain. Confirms burns only."""
+        gate = next((g for g in la.gates if g.name == "lp_lock"), None)
+        if gate is None or gate.status == GateStatus.PASS or self.p.rpc is None:
+            return
+        try:
+            res = await pumpswap_lp_burn(self.p.rpc, pair.pair_address, mint)
+        except Exception as e:  # noqa: BLE001 - optional evidence; never break research
+            log.info("on-chain LP check failed for %s: %s", mint, e)
+            return
+        if res is None:
+            return
+        pct = res["burned_pct"]
+        report["sources"]["lp_onchain"] = "OK"
+        if pct >= LPC.BURNED_PCT:
+            text = f"BURNED — {pct:.1f}% of LP tokens burned (VERIFIED on-chain, PumpSwap pool)"
+            la.lp_status = Datum(text, DataStatus.VERIFIED, "solana_rpc")
+            la.lp_locked_pct = pct
+            gate.status, gate.reason = GateStatus.PASS, text
+            la.flags[:] = [f for f in la.flags if f.code != "LP_STATUS_UNKNOWN"]
+        else:
+            text = f"PARTIAL — only {pct:.0f}% of LP burned (VERIFIED on-chain); the rest is withdrawable"
+            la.lp_status = Datum(text, DataStatus.VERIFIED, "solana_rpc")
+            la.lp_locked_pct = pct
+            gate.reason = text
+            la.flags[:] = [f for f in la.flags if f.code != "LP_STATUS_UNKNOWN"]
+            la.flags.append(Flag("LP_NOT_LOCKED", Severity.HIGH if pct < 50 else Severity.MEDIUM,
+                                 f"only {pct:.0f}% of LP burned on-chain — remaining liquidity is withdrawable",
+                                 DataStatus.VERIFIED))
 
     async def _free_social(self, mint: str, *, pair: Optional[PairInfo] = None, profile: Optional[dict] = None,
                            uri: Optional[str] = None) -> Optional["SOC.SocialEvidence"]:
