@@ -32,7 +32,11 @@ import httpx
 
 log = logging.getLogger("northstar.events")
 
-UA = {"User-Agent": "NorthstarBot/2.2 (memecoin research; contact via Discord)"}
+UA = {"User-Agent": "NorthstarBot/2.4 (memecoin research; contact via Discord)"}
+# Wikimedia's REST API returns 403 to a User-Agent without a contact URL, per their policy:
+# https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy
+WIKI_UA = {"User-Agent": "NorthstarBot/2.4 (+https://github.com/northstar-bot; research tool) httpx",
+           "Accept": "application/json"}
 NEWS_FEEDS = {
     "top": "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
     "world": "https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en",
@@ -93,9 +97,9 @@ class EventFeeds:
         self.status: dict[str, dict] = {}
         self._last: dict[str, float] = {}
 
-    async def _get(self, url: str) -> Optional[str]:
+    async def _get(self, url: str, headers: Optional[dict] = None) -> Optional[str]:
         try:
-            async with httpx.AsyncClient(timeout=12, headers=UA, transport=self._transport,
+            async with httpx.AsyncClient(timeout=12, headers=headers or UA, transport=self._transport,
                                          follow_redirects=True) as c:
                 r = await c.get(url)
             if r.status_code != 200:
@@ -144,7 +148,8 @@ class EventFeeds:
             got = None
             for back in (0, 1):
                 t = time.gmtime(now - back * 86400)
-                text = await self._get(WIKI_FEED.format(y=t.tm_year, m=f"{t.tm_mon:02d}", d=f"{t.tm_mday:02d}"))
+                text = await self._get(
+                    WIKI_FEED.format(y=t.tm_year, m=f"{t.tm_mon:02d}", d=f"{t.tm_mday:02d}"), WIKI_UA)
                 if text:
                     try:
                         import json

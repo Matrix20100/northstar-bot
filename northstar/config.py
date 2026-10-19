@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     max_pumpportal_trade_subscriptions: int = 100
     pumpportal_trade_subscription_ttl_seconds: int = 300
     enable_jupiter: bool = True             # free, keyless: can you actually sell this coin?
-    jupiter_rpm: int = 50
+    jupiter_rpm: int = 20                   # the keyless lite API throttles well below 50/min
     jupiter_sell_sizes_usd: str = "100,500,1000"
     enable_free_socials: bool = True  # token links, recycled-link check, public Telegram counts (no API key)
     social_reuse_days: int = 7  # lookback for 'same X/Telegram/website used by other tokens'
