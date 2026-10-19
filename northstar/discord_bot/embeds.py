@@ -104,7 +104,11 @@ def callout_embed(report: dict, detected_at: Optional[float] = None, plan: Optio
     why_lines = [narrative.get("thesis") or narrative.get("summary") or "Narrative thesis unavailable."]
     why_lines.extend((narrative_component.get("evidence") or [])[1:3])
     why_lines.extend((demand_component.get("evidence") or [])[:2])
-    risk_label = (report.get("risk") or "INCOMPLETE").replace("_", " ")
+    # the unified engine's risk class is the one shown on the decision panel; using the older
+    # RiskLevel here as well put two different risk words in the same message
+    u_risk = ((report.get("unified") or {}).get("risk")
+              if isinstance(report.get("unified"), dict) else None)
+    risk_label = (u_risk or report.get("risk") or "INCOMPLETE").replace("_", " ")
     caveats = report.get("caveats") or score.get("could_be_wrong") or []
     scalp = report.get("scalp") if report.get("call_type") == "RUG_SCALP" else None
     top = [

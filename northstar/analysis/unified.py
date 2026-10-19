@@ -806,7 +806,9 @@ def _assemble(led: Ledger, report: dict, s: Any, model: Optional[dict], ai: Opti
                      f"-> {tilt:+.1f} points")
     suspicions = [v for v in led.vetoes if v.severity == UNVERIFIED_SUSPICION]
     penalty = round(min(9.0, 3.0 * len(suspicions)), 1)   # unproven concerns still cost something
-    score = round(max(0.0, min(100.0, base + tilt - penalty)), 1)
+    # 99 is the ceiling on purpose: a score of 100 reads as certainty, and nothing here is
+    # certain. The brain's tilt can otherwise push an already strong coin past the top.
+    score = round(max(0.0, min(99.0, base + tilt - penalty)), 1)
     completeness = _completeness(led.checks)
     verdict = report.get("verdict") if isinstance(report.get("verdict"), dict) else {}
     risk = _risk(led.vetoes, verdict, completeness)
