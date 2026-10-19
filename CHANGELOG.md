@@ -3,6 +3,11 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.0.1 — 2026-10-19
+
+- Trade plan text: "sell 33%, then trail the rest" (a comma was missing).
+- Includes everything in 2.0.0 and earlier.
+
 ## 2.0.0 — 2026-10-19 — second brain
 
 Rug detection (a pro's checklist, automated)

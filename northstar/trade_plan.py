@@ -67,13 +67,13 @@ def sells_everything(p: Plan) -> bool:
 
 def plan_lines(p: Plan, fmt) -> list[str]:
     """Human text. ``fmt`` turns a market cap into display text ($ or SOL)."""
-    rest = ("— that's everything, trade done" if sells_everything(p)
-            else f"trail the rest (exit if it drops {p.trail_pct:g}% from its high)")
+    rest = (" — that's everything, trade done" if sells_everything(p)
+            else f", then trail the rest (exit if it drops {p.trail_pct:g}% from its high)")
     return [
         f"🟢 **Entry:** up to {fmt(p.max_entry_mcap)} MC — don't chase above that",
         f"🎯 **TP1:** {p.tp1:g}x ({fmt(p.entry_mcap * p.tp1)}) → sell {p.tp1_sell_pct}%",
         f"🎯 **TP2:** {p.tp2:g}x ({fmt(p.entry_mcap * p.tp2)}) → sell "
-        f"{min(p.tp2_sell_pct, 100 - p.tp1_sell_pct)}% {rest}",
+        f"{min(p.tp2_sell_pct, 100 - p.tp1_sell_pct)}%{rest}",
         f"🛑 **Stop:** {fmt(p.entry_mcap * p.stop)} ({(p.stop - 1) * 100:+.0f}%)",
         f"⏱️ **Time stop:** below {p.time_stop_multiple:g}x after {p.time_stop_min:g} min → exit",
     ]
