@@ -3,6 +3,39 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.4.1 — 2026-10-19 — what the first live day found
+
+Everything here came from watching v2.4.0 run on Wispbyte, not from a test.
+
+- **Every actively traded pump.fun curve was being thrown away.** The curve decoder worked out
+  whether a curve was SOL-quoted by checking that the account's own lamports covered its
+  `real_sol_reserves`. Pump.fun keeps the reserves elsewhere: read from mainnet, curve
+  `CgfbhqzqSHoygUwdywzRo8o9wZEbLtRAVYw8fXkPjiaF` held 1,493,520 lamports of rent against
+  870,873,131 lamports of reserves. Since `real_sol` is zero until the first buy, dead coins
+  passed and coins with real buying were dropped as "not SOL-backed" — precisely the coins the
+  early-call path exists to find. `tests/test_curve_quote.py` now pins the decode against that
+  real 166-byte account.
+- **New launches are no longer researched on a timer.** The bot was researching 1,740 coins an
+  hour, 44% of them returning INSUFFICIENT DATA because they had neither a pool nor a trade yet.
+  A launch is now recorded and left alone until the curve radar sees it in the early band with
+  real buy flow — one DexScreener batch call covers every recent launch — and only then is it
+  researched. `NORTHSTAR_RESEARCH_NEW_LAUNCHES_ON_TIMER=true` restores the old behaviour.
+- **Top holders and a thesis block on every callout.** The top wallets by share of supply, each
+  with what the bubblemap actually traced — age, fresh, launch buyer, connected group, insider —
+  then the narrative, what attention is behind it, what argues against it, and the AI's verdict
+  with its reasoning.
+- **One risk verdict per message.** A callout could show the unified engine's risk class on the
+  decision panel and the older RiskLevel below it, so the same message said LOW and INCOMPLETE
+  at once. The unified score is also capped at 99: a round 100 reads as certainty.
+- **Secrets no longer reach the screen through error messages.** A Discord token pasted with a
+  trailing space produced an "Illegal header value" error that quoted the whole Authorization
+  header onto the dashboard. Errors are redacted, and the self-test now detects the whitespace.
+- **Wikipedia's most-read feed was dead** since it shipped: Wikimedia rejects a User-Agent with
+  no contact URL, so it returned 403 every time. Fixed.
+- **Jupiter's default rate drops to 20/min**; at 50 the keyless API throttled within seconds of
+  starting, and a throttled exit check costs the sellability signal.
+- Includes everything in 2.4.0 and earlier. 408 tests pass, 4 skipped.
+
 ## 2.4.0 — 2026-10-19 — one decision engine
 
 Northstar answered the same question four times: an opportunity score, a risk level, a rug
