@@ -30,6 +30,15 @@ attention, timing (early·peak·late·dead), red flags, a 0–100 score and CALL
   recorded per call in `ai_judgements`. Results are cached per coin for 30 minutes, or until the
   market cap moves 1.5x.
 - No API key → no early calls at all (everything else keeps working).
+- **The judge does not have to be Claude.** Set `NORTHSTAR_AI_PROVIDER` and paste that provider's
+  key in `northstar.env`: `groq` (default, free tier, fast), `gemini`, `openrouter` (free `:free`
+  models), `cerebras`, `mistral`, `github` (free with a GitHub account), `local` (a model running on
+  your own machine, no key) or `anthropic` (paid). Model and endpoint come from the preset unless you
+  set `NORTHSTAR_AI_MODEL` / `NORTHSTAR_AI_BASE_URL`. Everything downstream — the prompt, the strict
+  parsing, the caps, the caching — is identical, so you can switch providers whenever one runs out.
+  Run the self-test (NARRATIVE section) after switching: that is what proves the key really works.
+- The attention feed also includes **CoinGecko trending coins and the hottest sectors by 24 h
+  market-cap change**, so the judge can tell a world-news narrative from a crypto-native one.
 
 ## The call
 

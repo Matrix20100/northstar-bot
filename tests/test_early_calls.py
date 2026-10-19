@@ -83,7 +83,9 @@ GOOD = {"narrative": "Tesla Roadster flight meme", "event": "Roadster flew", "ev
 
 
 def judge(db, handler, **kw):
-    s = Settings(_env_file=None, anthropic_api_key="sk-test-not-real", **kw)
+    kw.setdefault("ai_price_input_per_mtok", 0.10)
+    kw.setdefault("ai_price_output_per_mtok", 0.50)
+    s = Settings(_env_file=None, ai_key="test-key-not-real", ai_provider="anthropic", **kw)
     return s, AJ.AIJudge(s, db, httpx.MockTransport(handler))
 
 
@@ -103,7 +105,7 @@ def test_judge_parses_caches_and_costs(db):
     res = asyncio.run(j.judge(MINT, coin, {"waves": []}, {}, NOW))
     assert res["verdict"] == "CALL" and res["score"] == 82
     assert abs(res["cost_usd"] - (1200 / 1e6 * 0.10 + 120 / 1e6 * 0.50)) < 1e-9
-    assert calls[0]["model"] == s.ai_model and calls[0]["max_tokens"] == 400
+    assert calls[0]["model"] == j._endpoint()[1] == "claude-haiku-5-5" and calls[0]["max_tokens"] == 400
     again = asyncio.run(j.judge(MINT, coin, {"waves": []}, {}, NOW + 60))
     assert again["cached"] and len(calls) == 1                      # cached inside the recheck window
     moved = asyncio.run(j.judge(MINT, {**coin, "market_cap_usd": 90_000}, {"waves": []}, {}, NOW + 60))
@@ -169,7 +171,7 @@ def outcome(report):
 
 def caller(db, **kw):
     s = Settings(_env_file=None, discord_channel_id=111, discord_free_channel_id=222,
-                 anthropic_api_key="sk-test-not-real", **kw)
+                 ai_key="test-key-not-real", ai_provider="anthropic", **kw)
     pub = MemoryPublisher()
     ef = EV.EventFeeds(s, db)
     j = AJ.AIJudge(s, db, httpx.MockTransport(lambda r: reply(GOOD)))
@@ -212,7 +214,7 @@ def test_call_posted_only_on_ai_call_verdict(db):
 
 
 def test_pass_and_low_score_are_not_called(db):
-    s = Settings(_env_file=None, discord_channel_id=111, anthropic_api_key="sk-test-not-real")
+    s = Settings(_env_file=None, discord_channel_id=111, ai_key="test-key-not-real", ai_provider="anthropic")
     pub = MemoryPublisher()
     j = AJ.AIJudge(s, db, httpx.MockTransport(lambda r: reply({**GOOD, "verdict": "PASS", "score": 20})))
     assert asyncio.run(EC.EarlyCaller(s, db, pub, EV.EventFeeds(s, db), j).consider(outcome(curve_report()))) is None
@@ -330,3 +332,113 @@ def test_curve_radar_picks_coins_entering_the_band(db):
     assert asyncio.run(r.run_once(now)) == [MINT]
     assert "curve_radar" in db.get_candidate(MINT)["sources"]
     assert asyncio.run(r.run_once(now + 60)) == []          # 10-minute cooldown per coin
+
+
+# ----------------------------------------------------------------------------- free providers
+def openai_reply(payload, it=900, ot=90):
+    return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(payload)}}],
+                                     "usage": {"prompt_tokens": it, "completion_tokens": ot}})
+
+
+def gemini_reply(payload, it=900, ot=90):
+    return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": json.dumps(payload)}]}}],
+                                     "usageMetadata": {"promptTokenCount": it, "candidatesTokenCount": ot}})
+
+
+@pytest.mark.parametrize("provider,host,path,reply_fn", [
+    ("groq", "api.groq.com", "/openai/v1/chat/completions", openai_reply),
+    ("openrouter", "openrouter.ai", "/api/v1/chat/completions", openai_reply),
+    ("cerebras", "api.cerebras.ai", "/v1/chat/completions", openai_reply),
+    ("gemini", "generativelanguage.googleapis.com", "/v1beta/models/gemini-2.5-flash:generateContent", gemini_reply),
+])
+def test_free_providers_work(db, provider, host, path, reply_fn):
+    seen = {}
+
+    def handler(req):
+        seen["url"] = str(req.url)
+        seen["auth"] = req.headers.get("Authorization")
+        seen["body"] = json.loads(req.content)
+        return reply_fn(GOOD)
+    s = Settings(_env_file=None, ai_provider=provider, ai_key="free-key")
+    j = AJ.AIJudge(s, db, httpx.MockTransport(handler))
+    assert j.enabled
+    res = asyncio.run(j.judge(MINT, {"symbol": "X", "market_cap_usd": 40_000}, {}, {}, NOW))
+    assert res["verdict"] == "CALL" and res["score"] == 82
+    assert host in seen["url"] and path in seen["url"]
+    assert res["cost_usd"] == 0                                  # free tiers cost nothing
+    if provider == "gemini":
+        assert "key=free-key" in seen["url"] and seen["body"]["system_instruction"]["parts"][0]["text"] == AJ.SYSTEM
+    else:
+        assert seen["auth"] == "Bearer free-key"
+        assert seen["body"]["messages"][0]["role"] == "system"
+
+
+def test_provider_retries_without_unsupported_options(db):
+    tries = []
+
+    def handler(req):
+        body = json.loads(req.content)
+        tries.append(body)
+        if "response_format" in body:
+            return httpx.Response(400, text="response_format is not supported by this model")
+        return openai_reply(GOOD)
+    s = Settings(_env_file=None, ai_provider="groq", ai_key="k")
+    res = asyncio.run(AJ.AIJudge(s, db, httpx.MockTransport(handler)).judge(MINT, {"symbol": "X"}, {}, {}, NOW))
+    assert res["verdict"] == "CALL" and len(tries) == 2 and "response_format" not in tries[1]
+
+
+def test_local_provider_needs_no_key(db):
+    s = Settings(_env_file=None, ai_provider="local")
+    j = AJ.AIJudge(s, db, httpx.MockTransport(lambda r: openai_reply(GOOD)))
+    assert j.enabled and "127.0.0.1" in j._endpoint()[0]
+    assert asyncio.run(j.judge(MINT, {"symbol": "X"}, {}, {}, NOW))["verdict"] == "CALL"
+
+
+def test_unknown_provider_is_rejected():
+    with pytest.raises(Exception):
+        Settings(_env_file=None, ai_provider="not-a-provider")
+
+
+def test_rate_limited_provider_is_not_a_call(db):
+    s = Settings(_env_file=None, ai_provider="groq", ai_key="k")
+    j = AJ.AIJudge(s, db, httpx.MockTransport(lambda r: httpx.Response(429, text="rate limit")))
+    assert asyncio.run(j.judge(MINT, {"symbol": "X"}, {}, {}, NOW)) is None
+
+
+# ----------------------------------------------------------------------------- CoinGecko narratives
+class FakeCG:
+    def __init__(self, fail=False):
+        self.fail = fail
+
+    async def trending(self):
+        if self.fail:
+            raise RuntimeError("coingecko down")
+        return {"coins": [{"name": "Roadster Coin", "symbol": "ROADSTER", "rank": 0, "change_24h": 120.0}],
+                "categories": [{"name": "Meme", "change_24h": 8.0}]}
+
+    async def hot_categories(self, limit=12):
+        if self.fail:
+            raise RuntimeError("coingecko down")
+        return [{"name": "AI Agents", "change_24h": 14.2, "volume_24h": 5e8, "top": ["a"]},
+                {"name": "Roadster memes", "change_24h": 9.1, "volume_24h": 2e7, "top": []}]
+
+
+def test_coingecko_narratives_feed_the_judge(db):
+    s = Settings(_env_file=None, events_news=False, events_trends=False, events_wikipedia=False)
+    ef = EV.EventFeeds(s, db, cg_markets=FakeCG())
+    asyncio.run(ef.refresh(NOW))
+    assert ef.metas[0]["name"] == "AI Agents" and ef.cg_coins[0]["symbol"] == "ROADSTER"
+    snap = ef.snapshot()
+    assert "AI Agents +14.2% (24h market cap)" in snap["metas"] and "ROADSTER (Roadster Coin)" in snap["cg_coins"]
+    assert ef.status["coingecko"]["ok"]
+    rel = ef.related("Roadster", "ROADSTER")
+    assert rel["metas"] == ["Roadster memes +9.1% (24h)"]
+    prompt = AJ.build_prompt({"symbol": "ROADSTER"}, snap, rel)
+    assert "Hot crypto sectors right now" in prompt and "AI Agents +14.2%" in prompt
+
+
+def test_coingecko_failure_is_not_fatal(db):
+    s = Settings(_env_file=None, events_news=False, events_trends=False, events_wikipedia=False)
+    ef = EV.EventFeeds(s, db, cg_markets=FakeCG(fail=True))
+    asyncio.run(ef.refresh(NOW))
+    assert ef.metas == [] and ef.status["coingecko"]["ok"] is False

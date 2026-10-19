@@ -91,6 +91,7 @@ LABELS = {
     "log_tx_h24": "trades in 24 h (fewer = earlier)", "log_tx_h1": "trades in the last hour",
     "vol_to_mc_h1": "1-hour volume vs market cap (churn)", "ticker_crowd": "hot ticker (copies launched in 6 h)",
     "cto": "DexScreener community takeover",
+    "sell_impact": "price impact to sell", "sell_blocked": "sell size that cannot be filled",
 }
 FEATURES = list(LABELS)
 # Candidate signals the brain keeps testing itself. Each training run it tries adding one of these
@@ -227,6 +228,9 @@ def vector(report: dict, ts: Optional[float] = None) -> dict:
         "vol_to_mc_h1": _clip(_num(vol.get("h1")) / mcap, 0, 20) if _num(vol.get("h1")) and mcap else None,
         "ticker_crowd": math.log10(1 + ctx["ticker_crowding_6h"]) if ctx.get("ticker_crowding_6h") is not None else None,
         "cto": (1.0 if ctx.get("cto") else 0.0) if ctx else None,
+        "sell_impact": _clip((report.get("sellability") or {}).get("worst_impact_pct"), 0, 100),
+        "sell_blocked": (1.0 if (report.get("sellability") or {}).get("no_route_at_usd") is not None else 0.0)
+        if report.get("sellability") else None,
         "acc_1_6": _clip(_num(vol.get("h1")) * 6 / _num(vol.get("h6")), 0, 20)
         if _num(vol.get("h1")) and _num(vol.get("h6")) else None,
         "chg_h24": _clip(pc.get("h24"), -99, 5000),

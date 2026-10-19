@@ -114,3 +114,54 @@ def peak_after(candles, entry_value: float, since: float) -> Optional[tuple[floa
         if best is None or mult > best[0]:
             best = (mult, ts)
     return best
+
+
+class CoinGeckoMarkets:
+    """CoinGecko's main API: which crypto NARRATIVES (categories) and coins are hot right now.
+
+    Free with a Demo key (the same one the on-chain client uses) and keyless at a lower rate.
+      /search/trending   coins and categories people are searching for on CoinGecko
+      /coins/categories  every sector with its 24h market-cap change ("AI agents", "memecoins"...)
+    This is crypto-sector attention, which complements (never replaces) the real-world event feeds.
+    """
+
+    def __init__(self, client=None, prefix: str = ""):
+        self.client, self.prefix = client, prefix
+
+    async def _get(self, path: str, params: Optional[dict] = None, cache_ttl: float = 300):
+        if self.client is None:
+            return None
+        try:
+            return await self.client.request("GET", self.prefix + path, params=params or {}, cache_ttl=cache_ttl)
+        except ProviderError as exc:
+            log.info("coingecko %s failed: %s", path, exc)
+            return None
+
+    async def trending(self) -> dict:
+        """{'coins': [{name, symbol, rank, market_cap_change_24h}], 'categories': [{name, change_24h}]}"""
+        data = await self._get("/search/trending")
+        if not isinstance(data, dict):
+            return {"coins": [], "categories": []}
+        coins = []
+        for item in (data.get("coins") or [])[:15]:
+            c = (item or {}).get("item") or {}
+            pct = ((c.get("data") or {}).get("price_change_percentage_24h") or {}).get("usd")
+            coins.append({"name": c.get("name"), "symbol": (c.get("symbol") or "").upper(),
+                          "rank": c.get("score"), "change_24h": _f(pct)})
+        cats = [{"name": (c or {}).get("name"), "change_24h": _f((c or {}).get("market_cap_1h_change"))}
+                for c in (data.get("categories") or [])[:10] if (c or {}).get("name")]
+        return {"coins": coins, "categories": cats}
+
+    async def hot_categories(self, limit: int = 12) -> list[dict]:
+        """Sectors ranked by 24h market-cap change: the crypto meta that is moving today."""
+        data = await self._get("/coins/categories", {"order": "market_cap_change_24h_desc"}, cache_ttl=900)
+        if not isinstance(data, list):
+            return []
+        out = []
+        for c in data[:limit]:
+            change = _f(c.get("market_cap_change_24h"))
+            if change is None:
+                continue
+            out.append({"name": c.get("name"), "change_24h": round(change, 1),
+                        "volume_24h": _f(c.get("volume_24h")), "top": [t for t in (c.get("top_3_coins_id") or [])][:3]})
+        return out

@@ -60,6 +60,8 @@ MEDIUM_FLAGS = {
     "TRANSFER_FEE_MUTABLE": "the transfer tax can be changed",
 }
 W = {"critical": 100, "high": 25, "medium": 10}
+# not being able to get out at a normal size is serious on its own, whatever else looks good
+EXIT_BLOCKING = {"cannot_sell", "sell_limit"}
 
 
 def _num(x) -> Optional[float]:
@@ -181,6 +183,26 @@ def assess(report: dict, s=None, stats: Optional[dict] = None) -> dict:
         else:
             green.append("no heavy launch bundle")
 
+    # ---- can you actually sell? (live Jupiter routes)
+    sell = report.get("sellability") or {}
+    checked = sell.get("checked") or []
+    if checked:
+        blocked, worst, best = sell.get("no_route_at_usd"), sell.get("worst_impact_pct"), sell.get("max_sellable_usd")
+        smallest = min(c["usd"] for c in checked)
+        if blocked is not None and blocked <= smallest:
+            r("critical", f"cannot sell even ${smallest:,.0f} right now (no route)", "cannot_sell")
+        elif blocked is not None:
+            r("high", f"a ${blocked:,.0f} sell cannot be filled (max about ${best:,.0f})", "sell_limit")
+        elif worst is not None and worst >= 15:
+            r("high", f"selling ${max(c['usd'] for c in checked):,.0f} costs {worst:.0f}% in price impact",
+              "high_slippage")
+        elif worst is not None and worst >= 5:
+            r("medium", f"selling costs {worst:.0f}% in price impact", "slippage")
+        elif worst is not None:
+            green.append(f"exit checked: ${max(c['usd'] for c in checked):,.0f} sells for {worst:.1f}% impact")
+    else:
+        unknown.append("exit cost not checked")
+
     # ---- holders
     top10 = _num(hold.get("top10_adj"))
     single = _num(hold.get("max_single_adj"))
@@ -245,7 +267,7 @@ def assess(report: dict, s=None, stats: Optional[dict] = None) -> dict:
     key_unknown = [u for u in unknown if u.startswith(("mint", "freeze", "LP", "wallet", "holder"))]
     if crit:
         level, head = "RUG LIKELY", "Trap found: " + crit[0] + "."
-    elif raw >= 50 or len(highs) >= 2:
+    elif raw >= 50 or len(highs) >= 2 or any(x["key"] in EXIT_BLOCKING for x in red):
         level, head = "HIGH RISK", "Several serious red flags: " + "; ".join(highs[:2] or [x["text"] for x in red][:2]) + "."
     elif red:
         level, head = "CAUTION", "Red flag" + ("s" if len(red) > 1 else "") + ": " + "; ".join(

@@ -9,6 +9,10 @@ Four free sources, each optional and refreshed on its own timer:
   2. NEWS          - Google News RSS (top stories + world, technology, entertainment).
   3. TRENDS        - Google Trends "trending now" RSS (what people are searching).
   4. WIKIPEDIA     - most-read English Wikipedia articles (viral people, events, memes).
+  5. COINGECKO     - which crypto NARRATIVES are hot: trending searches and the sectors with the
+     biggest 24h market-cap moves ("AI agents", "memecoins", "DePIN"). Free with the Demo key the
+     bot already uses. This is crypto-sector attention; it complements the real-world feeds above
+     rather than replacing them (CoinGecko will not tell you a Tesla Roadster just flew).
 
 ``snapshot()`` returns everything for the AI judge and the dashboard; ``related(name, symbol,
 description)`` finds which live events a coin's name/description overlaps with. Nothing here
@@ -76,13 +80,16 @@ def _rss_titles(xml_text: str, limit: int = 40) -> list[dict]:
 
 
 class EventFeeds:
-    def __init__(self, s, db, transport: Optional[httpx.AsyncBaseTransport] = None):
+    def __init__(self, s, db, transport: Optional[httpx.AsyncBaseTransport] = None, cg_markets=None):
         self.s, self.db = s, db
         self._transport = transport
+        self.cg = cg_markets
         self.news: list[dict] = []
         self.trends: list[dict] = []
         self.wiki: list[dict] = []
         self.waves: list[dict] = []
+        self.metas: list[dict] = []          # hot crypto sectors (CoinGecko categories)
+        self.cg_coins: list[dict] = []       # coins trending on CoinGecko
         self.status: dict[str, dict] = {}
         self._last: dict[str, float] = {}
 
@@ -152,6 +159,20 @@ class EventFeeds:
             if got:
                 self.wiki = got
             self._mark("wiki", bool(got), len(self.wiki), now)
+        if self.s.events_coingecko and self.cg is not None and self._due("coingecko", 900, now):
+            ok = False
+            try:
+                tr = await self.cg.trending()
+                cats = await self.cg.hot_categories()
+            except Exception:  # noqa: BLE001 - optional feed
+                tr, cats = None, None
+            if tr and (tr.get("coins") or tr.get("categories")):
+                self.cg_coins = tr["coins"]
+                ok = True
+            if cats:
+                self.metas = cats
+                ok = True
+            self._mark("coingecko", ok, len(self.metas) + len(self.cg_coins), now)
 
     # ------------------------------------------------------------------ launch waves
     def launch_waves(self, now: Optional[float] = None, recent_min: float = 30, base_h: float = 6,
@@ -213,10 +234,13 @@ class EventFeeds:
             "news": [n["title"] for n in self.news if hit(n["title"])][:5],
             "trends": [t["title"] for t in self.trends if hit(t["title"])][:5],
             "wiki": [w["title"] for w in self.wiki if hit(w["title"] + " " + (w.get("about") or ""))][:5],
+            "metas": [f"{m['name']} {m['change_24h']:+.1f}% (24h)" for m in self.metas if hit(m["name"])][:3],
         }
 
     def snapshot(self, news: int = 25, trends: int = 20, wiki: int = 20) -> dict:
-        return {"waves": self.waves[:15], "news": [n["title"] for n in self.news[:news]],
+        return {"metas": [f"{m['name']} {m['change_24h']:+.1f}% (24h market cap)" for m in self.metas[:10]],
+                "cg_coins": [f"{c['symbol']} ({c['name']})" for c in self.cg_coins[:10]],
+                "waves": self.waves[:15], "news": [n["title"] for n in self.news[:news]],
                 "trends": [f"{t['title']}" + (f" ({t['traffic']})" if t.get("traffic") else "") for t in self.trends[:trends]],
                 "wiki": [f"{w['title']}" + (f" — {w['about']}" if w.get("about") else "") for w in self.wiki[:wiki]],
                 "status": self.status}

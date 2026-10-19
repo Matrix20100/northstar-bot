@@ -3,6 +3,30 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.3.0 — 2026-10-19 — free AI providers, CoinGecko narratives, real exit checks
+
+- **The AI judge now works without paying for Claude credits** (`ai_judge.py`). Set
+  `NORTHSTAR_AI_PROVIDER` to one of `groq`, `gemini`, `openrouter`, `cerebras`, `mistral`,
+  `github`, `local` or `anthropic` and paste a key; each preset carries its own endpoint and
+  model, and three API shapes are handled (Anthropic Messages, OpenAI-compatible, Gemini
+  generateContent). The hourly cap, daily budget, strict answer parsing and caching are
+  unchanged — only where the answer comes from. Free tiers cost nothing, so the price settings
+  default to 0. These endpoints are blocked from the build container, so the request shapes are
+  covered by tests against fakes; the live call has to be confirmed on the host that runs the bot
+  (the self-test NARRATIVE section does that in one click).
+- **CoinGecko narratives** (`providers/coingecko.py`, `events.py`): the attention feed now also
+  carries CoinGecko trending coins and the sectors with the strongest 24 h market-cap change, so
+  the judge sees which *crypto* narratives are hot, not only world news. Uses the CoinGecko key
+  the bot already has.
+- **Exit check / sellability** (`providers/jupiter.py`, free, no key): before a coin can be called,
+  the bot asks Jupiter what a $100 / $500 / $1,000 sell back to SOL would actually return, and
+  records the price impact, the biggest size that still routes, and the first size that cannot be
+  filled. New red flags: cannot sell even the smallest size (critical), a normal size cannot be
+  filled (high risk on its own), 15%+ impact (high), 5%+ impact (medium). The exit cost is shown
+  on the call, and `sell_impact` / `sell_blocked` are now learning signals.
+  This closes the biggest gap in the audit: a 3x on $5k of liquidity you cannot exit is not a win.
+- Includes everything in 2.2.0 and earlier.
+
 ## 2.2.0 — 2026-10-19 — early narrative calls (30–50k)
 
 - **Live attention feed** (`events.py`, free, no keys): pump.fun launch waves (a word appearing in

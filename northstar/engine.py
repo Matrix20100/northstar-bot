@@ -117,6 +117,13 @@ def build_providers(s: Settings, db: Optional[Database],
         keyless = mk("geckoterminal", "https://api.geckoterminal.com/api/v2", s.geckoterminal_rpm, 20_000,
                      headers={"Accept": "application/json;version=20230302"})
         p.coingecko = CoinGeckoOnchain(keyed, keyless, keyed_prefix="/onchain", keyless_prefix="")
+        # the same CoinGecko key also serves the crypto-narrative feeds (trending + hot categories)
+        from .providers.coingecko import CoinGeckoMarkets
+        markets = keyed or mk("coingecko_markets", "https://api.coingecko.com/api/v3", 10, 5_000)
+        p.coingecko_markets = CoinGeckoMarkets(markets)
+    if s.enable_jupiter:
+        from .providers.jupiter import Jupiter
+        p.jupiter = Jupiter(mk("jupiter", "https://lite-api.jup.ag", s.jupiter_rpm, 50_000))
     if s.enable_free_socials:
         from .providers.socials import FreeSocials
         p.socials = FreeSocials(timeout=min(8.0, float(s.http_timeout_seconds)), transport=transport)
@@ -149,7 +156,7 @@ class Engine:
         from .ai_judge import AIJudge
         from .early_calls import CurveRadar, EarlyCaller, EarlyCallTracker
         from .events import EventFeeds
-        self.events = EventFeeds(s, db)
+        self.events = EventFeeds(s, db, cg_markets=getattr(providers, "coingecko_markets", None))
         self.judge = AIJudge(s, db)
         self.early = EarlyCaller(s, db, publisher, self.events, self.judge)
         self.early_calls = EarlyCallTracker(s, db, publisher, providers.rpc, providers.dex, providers.sol_price)

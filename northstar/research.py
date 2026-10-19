@@ -73,7 +73,9 @@ class Providers:
     rugcheck: Any = None
     rpc: Any = None
     sol_price: Any = None  # SolUsdPrice: converts curve (SOL) values to USD for display
-    socials: Any = None    # FreeSocials: token metadata links + public Telegram counts (free)
+    socials: Any = None
+    coingecko_markets: Any = None
+    jupiter: Any = None    # FreeSocials: token metadata links + public Telegram counts (free)
     coingecko: Any = None  # CoinGeckoOnchain: 1-minute candles + trending pools
 
 
@@ -462,6 +464,7 @@ class Researcher:
         history = self.db.market_history(mint, now - 24 * 3600)
         la = assess_liquidity(pair, rc, history, s, now)
         await self._verify_lp_onchain(pair, mint, la, report)
+        await self._sellability(mint, mint_acc, pair, report)
 
         gates += g1 + g2 + g3 + la.gates
         flags += f1 + f2 + f3 + la.flags
@@ -1898,6 +1901,20 @@ class Researcher:
             self.s.w_narrative,
             social=social_ev,
         )
+
+    async def _sellability(self, mint: str, mint_acc, pair, report: dict) -> None:
+        """Could you actually get out? Live Jupiter quotes at real dollar sizes (free, keyless)."""
+        if self.p.jupiter is None:
+            return
+        try:
+            sizes = [float(x) for x in str(self.s.jupiter_sell_sizes_usd).split(",") if x.strip()]
+            res = await self.p.jupiter.sellability(mint, getattr(mint_acc, "decimals", None),
+                                                  pair.price_usd if pair else None, sizes or (100.0,))
+        except Exception:  # noqa: BLE001 - exit-cost evidence is optional, never fatal
+            log.info("sellability check failed for %s", mint, exc_info=True)
+            return
+        if res:
+            report["sellability"] = res
 
     def _flag_stats(self) -> dict:
         """Learned crash rates per rug-check flag (refreshed every 10 minutes)."""

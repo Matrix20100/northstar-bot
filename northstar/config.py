@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     enable_pumpportal_trades: bool = False
     max_pumpportal_trade_subscriptions: int = 100
     pumpportal_trade_subscription_ttl_seconds: int = 300
+    enable_jupiter: bool = True             # free, keyless: can you actually sell this coin?
+    jupiter_rpm: int = 50
+    jupiter_sell_sizes_usd: str = "100,500,1000"
     enable_free_socials: bool = True  # token links, recycled-link check, public Telegram counts (no API key)
     social_reuse_days: int = 7  # lookback for 'same X/Telegram/website used by other tokens'
 
@@ -248,18 +251,24 @@ class Settings(BaseSettings):
     curve_radar_max_tokens: int = 2400
     curve_radar_min_buys_m5: int = 12
     # ---------------------------------------------------------------- AI narrative judge (Claude)
-    ai_enabled: bool = True                 # active only when an API key is set
-    anthropic_api_key: Optional[SecretStr] = None
-    ai_model: str = "claude-haiku-5-5"
+    ai_enabled: bool = True                 # active only when a key is set (or provider=local)
+    # anthropic | groq | gemini | openrouter | cerebras | mistral | github | local | custom
+    # The free ones (groq, gemini, openrouter, cerebras, mistral, github) need no card.
+    ai_provider: str = "groq"
+    ai_key: Optional[SecretStr] = None              # key for the chosen provider
+    anthropic_api_key: Optional[SecretStr] = None   # kept for older .env files
+    ai_base_url: str = ""                   # override the provider's default URL (custom/local)
+    ai_model: str = ""                      # override the provider's default model
     ai_max_calls_per_hour: int = 120
     ai_daily_budget_usd: float = 1.0
     ai_recheck_minutes: float = 30.0
-    ai_price_input_per_mtok: float = 0.10   # for the spend cap; check your Anthropic console
-    ai_price_output_per_mtok: float = 0.50
+    ai_price_input_per_mtok: float = 0.0    # for the spend cap; free tiers are 0
+    ai_price_output_per_mtok: float = 0.0
     # ---------------------------------------------------------------- live event feeds (free)
     events_news: bool = True
     events_trends: bool = True
     events_wikipedia: bool = True
+    events_coingecko: bool = True           # trending coins + hot sectors (uses the CoinGecko key)
     events_news_seconds: int = 600
     liquidity_collapse_pct: float = 50.0
     severe_drawdown_pct: float = 50.0
@@ -338,6 +347,22 @@ class Settings(BaseSettings):
         """Log-safe RPC description (never contains the key)."""
         return "helius-rpc" if self.helius_api_key else self.solana_rpc_url
 
+    def ai_secret(self) -> str:
+        """The key for the chosen AI provider (NORTHSTAR_ANTHROPIC_API_KEY still works for anthropic)."""
+        for k in (self.ai_key, self.anthropic_api_key if self.ai_provider == "anthropic" else None):
+            if k is not None and k.get_secret_value():
+                return k.get_secret_value()
+        return ""
+
+    @field_validator("ai_provider", mode="before")
+    @classmethod
+    def _ai_provider(cls, v):
+        from .ai_judge import PRESETS
+        v = str(v or "groq").strip().lower()
+        if v not in PRESETS:
+            raise ValueError(f"ai_provider must be one of: {', '.join(sorted(PRESETS))}")
+        return v
+
     def config_problems(self) -> list[str]:
         """Settings that make part of the pipeline impossible or inconsistent.
 
@@ -364,6 +389,10 @@ class Settings(BaseSettings):
                 f"NORTHSTAR_MIN_NARRATIVE_SCORE={self.min_narrative_score:g} cannot be reached: with the social "
                 f"sources enabled the narrative sub-scores add up to at most {narrative_max:g}/25 "
                 "(clarity 5 + timeliness 7 + distinctness 5 + attention). No token can AUTO_POST.")
+        # a missing AI key is not a configuration problem: it just turns early narrative calls off
+        # (the self-test reports it), so only a provider that cannot work at all is flagged here
+        if self.ai_provider == "custom" and not self.ai_base_url:
+            problems.append("NORTHSTAR_AI_PROVIDER=custom needs NORTHSTAR_AI_BASE_URL")
         if self.trade_plan_enabled:
             from .trade_plan import plan_values, valid_values
             for profile, env in (("standard", "PLAN"), ("scalp", "SCALP")):
@@ -386,7 +415,8 @@ class Settings(BaseSettings):
     def secrets(self) -> list[str]:
         out = []
         for s in (self.discord_token, self.helius_api_key, self.pumpportal_api_key,
-                  self.coingecko_api_key, self.dashboard_password, self.anthropic_api_key):
+                  self.coingecko_api_key, self.dashboard_password, self.anthropic_api_key,
+                  self.ai_key):
             if s is not None and s.get_secret_value():
                 out.append(s.get_secret_value())
         return out

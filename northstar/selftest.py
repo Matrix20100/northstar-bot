@@ -118,11 +118,13 @@ def check_ai_and_events(s, db_path: str, now: Optional[float] = None) -> list[di
     out = []
     if not getattr(s, "early_call_enabled", False):
         return [_r("narrative", "Early narrative calls", SKIP, "turned off")]
-    has_key = bool(getattr(s, "anthropic_api_key", None) and s.anthropic_api_key.get_secret_value())
-    out.append(_r("narrative", "AI judge (Claude)", PASS if (has_key and s.ai_enabled) else WARN,
-                  f"on · model {s.ai_model} · caps {s.ai_max_calls_per_hour}/h, ${s.ai_daily_budget_usd:.2f}/day"
-                  if has_key and s.ai_enabled else
-                  "no NORTHSTAR_ANTHROPIC_API_KEY — early narrative calls are off"))
+    has_key = bool(s.ai_secret()) or s.ai_provider == "local"
+    from .ai_judge import PRESETS
+    model = s.ai_model or PRESETS.get(s.ai_provider, ("", "", ""))[1]
+    out.append(_r("narrative", "AI judge", PASS if (has_key and s.ai_enabled) else WARN,
+                  f"{s.ai_provider} · model {model} · caps {s.ai_max_calls_per_hour}/h, "
+                  f"${s.ai_daily_budget_usd:.2f}/day" if has_key and s.ai_enabled else
+                  f"no NORTHSTAR_AI_KEY for provider '{s.ai_provider}' — early narrative calls are off"))
     feeds = [n for n, on in (("news", s.events_news), ("trending searches", s.events_trends),
                              ("Wikipedia", s.events_wikipedia)) if on]
     out.append(_r("narrative", "Event feeds", PASS if feeds else WARN,
