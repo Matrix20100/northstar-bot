@@ -34,6 +34,16 @@ def _r(group: str, name: str, status: str, detail: str, ms: Optional[float] = No
             "ms": None if ms is None else round(ms)}
 
 
+def _safe(text: Optional[str], *secrets: str) -> Optional[str]:
+    """An error message with every secret taken out. Errors quote the request they failed on."""
+    if not text:
+        return text
+    for sec in secrets:
+        if sec:
+            text = text.replace(sec, "***")
+    return text
+
+
 async def _timed(coro):
     t = time.monotonic()
     try:
@@ -61,15 +71,24 @@ def check_config(s) -> list[dict]:
 
 # ----------------------------------------------------------------------------- discord
 async def check_discord(s, transport: Optional[httpx.AsyncBaseTransport] = None) -> list[dict]:
-    tok = s.discord_token.get_secret_value() if s.discord_token else ""
+    raw = s.discord_token.get_secret_value() if s.discord_token else ""
+    tok = raw.strip()
     if not tok:
         return [_r("discord", "Bot login", SKIP, "no Discord token set")]
+    out = []
+    if tok != raw:
+        # a token pasted with a stray space or newline makes an illegal HTTP header, and the
+        # error that comes back quotes the whole header - token included
+        out.append(_r("discord", "Token formatting", WARN,
+                      "the token in .env has whitespace around it; it was trimmed for this check, "
+                      "but remove the space and restart so the bot can log in"))
     out = []
     async with httpx.AsyncClient(base_url="https://discord.com/api/v10", timeout=10, transport=transport,
                                  headers={"Authorization": f"Bot {tok}"}) as c:
         r, err, ms = await _timed(c.get("/users/@me"))
         if err or r.status_code != 200:
-            return [_r("discord", "Bot login", FAIL, err or f"HTTP {r.status_code} — token rejected", ms)]
+            return out + [_r("discord", "Bot login", FAIL,
+                             _safe(err, tok) or f"HTTP {r.status_code} — token rejected", ms)]
         me = r.json()
         out.append(_r("discord", "Bot login", PASS, f"logged in as {me.get('username')}", ms))
         for label, cid in (("VIP channel", s.discord_channel_id), ("Free channel", s.discord_free_channel_id),
