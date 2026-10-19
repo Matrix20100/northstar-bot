@@ -92,6 +92,7 @@ class ResearchOutcome:
     confidence: Confidence = Confidence.LOW
     reasons: list[str] = field(default_factory=list)
     skipped_unchanged: bool = False
+    not_ready: bool = False      # nothing to judge yet: no pool, no trades. Not a decision.
 
 
 def data_hash(pair: Optional[PairInfo]) -> Optional[str]:
@@ -229,12 +230,7 @@ class Researcher:
                     mint, report, cand, now, sel.reason
                 )
 
-            return self._final(
-                mint,
-                Action.INSUFFICIENT_DATA,
-                report,
-                [f"no usable pool: {sel.reason}"],
-            )
+            return self._not_ready(mint, report, [f"no usable pool: {sel.reason}"])
 
         report["identity"] = {
             "symbol": pair.base_symbol,
@@ -1433,19 +1429,12 @@ class Researcher:
             not trades
             or len(trades) < self.s.min_curve_trade_events
         ):
-            return self._final(
-                mint,
-                Action.INSUFFICIENT_DATA,
-                report,
-                [
-                    f"pre-migration trade sample incomplete "
-                    f"({len(trades)}/{self.s.min_curve_trade_events}); "
-                    f"{rpc_diagnostics['note']}"
-                ],
-                score=score,
-                risk=RiskLevel.INCOMPLETE,
-                confidence=Confidence.LOW,
-            )
+            return self._not_ready(
+                mint, report,
+                [f"pre-migration trade sample incomplete "
+                 f"({len(trades)}/{self.s.min_curve_trade_events}); "
+                 f"{rpc_diagnostics['note']}"],
+                score=score)
 
         if not verified_source:
             return self._final(
@@ -2139,6 +2128,20 @@ class Researcher:
             score=sr.total,
             confidence=sr.confidence,
         )
+
+    def _not_ready(self, mint: str, report: dict, reasons: list[str],
+                   score: Optional[float] = None) -> ResearchOutcome:
+        """The coin has nothing to judge yet — no pool, or no trades at all.
+
+        This is not a verdict, so it is not written to the research history and does not appear
+        in the decision counts. Recording these as INSUFFICIENT DATA buried the real decisions:
+        on the live bot they were 61% of everything the panel showed. The coin stays a candidate
+        and comes back when the curve radar sees it trading.
+        """
+        report["final_action"] = "NOT_READY"
+        report["reasons"] = reasons
+        return ResearchOutcome(mint, Action.INSUFFICIENT_DATA, report, reasons=reasons,
+                               score=score, not_ready=True)
 
     def _final(
         self,

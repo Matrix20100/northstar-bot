@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -627,6 +628,20 @@ class Engine:
         now = time.time()
         if out.skipped_unchanged:
             self.db.set_state(mint, prev_state, next_research_at=now + self.s.rejected_recheck_seconds)
+            return
+        if out.not_ready:
+            # no pool and no trades: there is nothing to decide, so nothing is recorded. A coin
+            # known only from the launch feed waits for the curve radar; anything a DexScreener
+            # feed or a graduation also found is looked at again on the normal recheck.
+            self.stats["not_ready"] = self.stats.get("not_ready", 0) + 1
+            try:
+                sources = json.loads(cand["sources"] or "[]")
+            except (TypeError, ValueError):
+                sources = []
+            launch_only = sources and all(s == "pumpportal_new" for s in sources)
+            self.db.set_state(mint, prev_state,
+                              next_research_at=None if launch_only
+                              else now + self.s.rejected_recheck_seconds)
             return
         common = dict(last_research_at=now, research_count=cand["research_count"] + 1, last_data_hash=out.data_hash,
                       last_action=out.action.value, last_score=out.score, last_risk=out.risk.value,

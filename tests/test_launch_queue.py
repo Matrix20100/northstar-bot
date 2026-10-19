@@ -84,3 +84,24 @@ def test_a_launch_that_was_already_researched_keeps_its_schedule(settings, db):
     db.execute("UPDATE candidates SET next_research_at=?, last_research_at=?, research_count=1 "
                "WHERE mint=?", (time.time(), time.time(), mint))
     assert db.unschedule_stale_launches() == 0
+
+
+# nothing to judge yet is not a decision ----------------------------------------------------------
+def test_a_coin_with_no_pool_is_not_recorded_as_a_decision(settings, db):
+    """61% of the live panel was INSUFFICIENT DATA for coins that had nothing to look at."""
+    from conftest import strong_providers
+    from northstar.research import Researcher
+
+    p = strong_providers()
+    p.dex.pairs = []                                   # DexScreener knows no pool for this mint
+    mint = "So11111111111111111111111111111111111111112"
+    db.upsert_discovery(mint, "pumpportal_new", 1.0)
+
+    import asyncio
+    out = asyncio.new_event_loop().run_until_complete(
+        Researcher(settings, db, p).research(mint, db.get_candidate(mint)))
+
+    assert out.not_ready is True
+    assert out.report["final_action"] == "NOT_READY"
+    assert db.fetchall("SELECT id FROM research_snapshots WHERE mint=?", (mint,)) == [], \
+        "a coin with nothing to judge leaves no verdict behind"
