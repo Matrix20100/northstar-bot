@@ -609,6 +609,27 @@ class Database:
             [*fields.values(), mint],
         )
 
+    def unschedule_stale_launches(self) -> int:
+        """Drop queued pump.fun launches that have never been researched.
+
+        Changing the discovery rule only affects launches recorded from then on; the ones already
+        sitting in the queue keep their slot and go on producing INSUFFICIENT DATA for hours. This
+        clears exactly those: still DISCOVERED, never researched, and known only from the launch
+        feed. Anything the curve radar promoted, anything that graduated, and anything a
+        DexScreener feed also saw keeps its place.
+        """
+        where = ("state = 'DISCOVERED' AND next_research_at IS NOT NULL "
+                 "AND last_research_at IS NULL AND research_count = 0 "
+                 "AND sources LIKE '%pumpportal_new%' "
+                 "AND sources NOT LIKE '%curve_radar%' "
+                 "AND sources NOT LIKE '%migration%' "
+                 "AND sources NOT LIKE '%dexscreener%'")
+        row = self.fetchone(f"SELECT COUNT(*) AS n FROM candidates WHERE {where}")
+        n = int((row or {}).get("n") or 0)
+        if n:
+            self.execute(f"UPDATE candidates SET next_research_at = NULL WHERE {where}")
+        return n
+
     def recover_after_restart(self) -> int:
         """Re-queue candidates left RESEARCHING after a crash."""
         with self._lock:

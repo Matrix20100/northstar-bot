@@ -55,3 +55,32 @@ def test_the_radar_queues_a_launch_once_it_has_buyers(settings, db):
     promoted = asyncio.new_event_loop().run_until_complete(CurveRadar(settings, db, Dex()).run_once())
     assert promoted == [mint]
     assert db.get_candidate(mint)["next_research_at"] is not None, "now it earns a research slot"
+
+
+def test_launches_already_in_the_queue_are_released_on_start(settings, db):
+    """Changing the rule is not enough: the backlog keeps its slots until it is cleared."""
+    import time as _t
+
+    queued = "4nJjZR1D7koAtbfuwCPuQ91F5bkwqgA2ENNWun6Kpump"
+    promoted = "CgfbhqzqSHoygUwdywzRo8o9wZEbLtRAVYw8fXkPjiaFxx"
+    graduated = "So11111111111111111111111111111111111111112"
+    for m in (queued, promoted, graduated):
+        db.upsert_discovery(m, "pumpportal_new", 1.0)
+    db.upsert_discovery(promoted, "curve_radar", 9.0)
+    db.upsert_discovery(graduated, "pumpportal_migration", 3.0)
+    now = _t.time()
+    for m in (queued, promoted, graduated):
+        db.execute("UPDATE candidates SET next_research_at=? WHERE mint=?", (now, m))
+
+    assert db.unschedule_stale_launches() == 1
+    assert db.get_candidate(queued)["next_research_at"] is None
+    assert db.get_candidate(promoted)["next_research_at"] is not None, "the radar already chose it"
+    assert db.get_candidate(graduated)["next_research_at"] is not None, "it has a pool now"
+
+
+def test_a_launch_that_was_already_researched_keeps_its_schedule(settings, db):
+    mint = "4nJjZR1D7koAtbfuwCPuQ91F5bkwqgA2ENNWun6Kpump"
+    db.upsert_discovery(mint, "pumpportal_new", 1.0)
+    db.execute("UPDATE candidates SET next_research_at=?, last_research_at=?, research_count=1 "
+               "WHERE mint=?", (time.time(), time.time(), mint))
+    assert db.unschedule_stale_launches() == 0

@@ -200,6 +200,11 @@ class Engine:
         for problem in self.s.config_problems():
             log.warning("CONFIGURATION PROBLEM: %s", problem)
         recovered = self.db.recover_after_restart()
+        if not getattr(self.s, "research_new_launches_on_timer", False):
+            dropped = self.db.unschedule_stale_launches()
+            if dropped:
+                log.info("queue: released %d queued launches that had never been researched; "
+                         "the curve radar brings back the ones that start trading", dropped)
         if recovered:
             log.info("restart recovery: re-queued %d candidates interrupted mid-research", recovered)
         await self.pub.start()
