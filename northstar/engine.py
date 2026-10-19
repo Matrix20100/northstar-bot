@@ -145,6 +145,16 @@ class Engine:
         self.alerts = AlertService(s, db, publisher, providers.dex)
         self.monitor = Monitor(s, db, publisher, providers.dex, providers.rpc, getattr(providers, "coingecko", None))
         self.early_tracker = EarlyWatchTracker(s, db, publisher, providers.rpc, providers.sol_price)
+        # early narrative calls: live attention feed + Claude judge + curve radar + tracker
+        from .ai_judge import AIJudge
+        from .early_calls import CurveRadar, EarlyCaller, EarlyCallTracker
+        from .events import EventFeeds
+        self.events = EventFeeds(s, db)
+        self.judge = AIJudge(s, db)
+        self.early = EarlyCaller(s, db, publisher, self.events, self.judge)
+        self.early_calls = EarlyCallTracker(s, db, publisher, providers.rpc, providers.dex, providers.sol_price)
+        self.curve_radar = (CurveRadar(s, db, providers.dex)
+                            if s.early_call_enabled and s.curve_radar_enabled and providers.dex is not None else None)
         self.outcomes = OutcomeTracker(db, providers.dex) if providers.dex else None
         from .radar import SurgeRadar
         self.radar = (SurgeRadar(s, db, providers.dex, getattr(providers, "coingecko", None))
@@ -198,6 +208,15 @@ class Engine:
                  asyncio.create_task(self._loop("db-retention", 3600, self._prune))]
         if self.radar:
             tasks.append(asyncio.create_task(self._loop("surge-radar", self.s.radar_interval_seconds, self._radar)))
+        if self.s.early_call_enabled:
+            tasks.append(asyncio.create_task(self._loop("event-feeds", 60, self.events.refresh)))
+            tasks.append(asyncio.create_task(self._loop("early-call-tracker", self.s.early_watch_refresh_seconds,
+                                                        self._track_early_calls)))
+            if self.curve_radar is not None:
+                tasks.append(asyncio.create_task(self._loop("curve-radar", self.s.curve_radar_seconds,
+                                                            self._curve_radar)))
+            if not self.judge.enabled:
+                log.warning("early narrative calls need NORTHSTAR_ANTHROPIC_API_KEY (Claude) - AI judge is off")
         if self.s.learning_enabled:
             tasks.append(asyncio.create_task(self._loop("learning-sync", 60, self._learning_sync)))
             if getattr(self.p, "coingecko", None) is not None:
@@ -497,6 +516,12 @@ class Engine:
         except Exception:  # noqa: BLE001 - context is optional evidence
             log.debug("context failed for %s", mint, exc_info=True)
         brain_p = self._apply_brain(out)
+        early_called = None
+        if out.report.get("lifecycle") == "PRE_MIGRATION_BONDING_CURVE" and self.s.early_call_enabled:
+            try:
+                early_called = await self.early.consider(out)
+            except Exception:  # noqa: BLE001 - an early-call problem must never stop research
+                log.warning("early-call check failed for %s", mint, exc_info=True)
         verdict = None
         if out.action == Action.REJECT and out.pair is not None:
             from .scalp import check as scalp_check
@@ -517,7 +542,7 @@ class Engine:
             await self.alerts.publish(out)
         elif out.action == Action.WATCHLIST:
             self.stats["watchlist"] += 1
-            if (out.report.get("pre_migration") or {}).get("qualified_early_watch"):
+            if (out.report.get("pre_migration") or {}).get("qualified_early_watch") and not early_called:
                 await self.alerts.publish_early_watch(out)
             # high-potential candidates are re-checked more often
             interval = self.s.watchlist_recheck_seconds / (2 if (out.score or 0) >= 75 else 1)
@@ -535,6 +560,19 @@ class Engine:
         log.info("decision %s %s score=%s risk=%s", mint, out.action.value, out.score, out.risk.value,
                  extra={"ctx": {"mint": mint, "action": out.action.value, "score": out.score,
                                 "risk": out.risk.value, "reasons": out.reasons[:5]}})
+
+    async def _curve_radar(self) -> None:
+        for mint in await self.curve_radar.run_once():
+            if mint in self._inflight:
+                continue
+            task = asyncio.create_task(self._radar_research(mint))
+            self._radar_tasks.add(task)
+            task.add_done_callback(self._radar_tasks.discard)
+
+    async def _track_early_calls(self) -> None:
+        counts = await self.early_calls.run_once()
+        if counts["open"]:
+            log.info("early-call tracker: %s", counts)
 
     async def _track_early_watch(self) -> None:
         counts = await self.early_tracker.run_once()

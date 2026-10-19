@@ -402,3 +402,100 @@ def embed_size(e: dict) -> int:
     for f in e.get("fields", []):
         n += len(f.get("name", "")) + len(f.get("value", ""))
     return n
+
+
+# ----------------------------------------------------------------------------- early narrative calls
+COLOR_EARLY = 0xF1C40F
+SOURCE_LABEL = {"launch_wave": "pump.fun launch wave", "news": "news", "trend": "trending searches",
+                "wikipedia": "Wikipedia", "evergreen": "evergreen meme", "none": "no live event"}
+
+
+def _ai_block(ai: dict) -> str:
+    ev = ai.get("event")
+    lines = [f"**{ai.get('narrative') or 'Narrative'}**"]
+    if ev:
+        lines.append(f"📰 Rides: {ev} _({SOURCE_LABEL.get(ai.get('event_source'), ai.get('event_source'))})_")
+    lines.append(f"🤖 AI score **{ai.get('score', 0)}/100** · fit {ai.get('fit', 0)} · originality "
+                 f"{ai.get('originality', 0)} · attention {ai.get('attention', 0)} · timing {ai.get('timing', '?')}")
+    if ai.get("why"):
+        lines.append(ai["why"])
+    if ai.get("red_flags"):
+        lines.append("⚠️ " + "; ".join(ai["red_flags"][:3]))
+    return "\n".join(lines)
+
+
+def early_call_embed(report: dict, call: dict, plan: Optional[list[str]] = None) -> dict:
+    """⚡ EARLY NARRATIVE CALL. ``call``: entry_mcap, current_mcap, peak_mcap, peak_at, sent_at,
+    phase (CURVE/POOL), status_line, last_update_at. Rebuilt on every edit."""
+    mint = report.get("mint", "")
+    ident = report.get("identity") or {}
+    pm = report.get("pre_migration") or {}
+    ai = report.get("ai") or {}
+    ctx = report.get("context") or {}
+    symbol, name = ident.get("symbol") or "?", ident.get("name") or "Unknown"
+    entry, cur, peak = call.get("entry_mcap"), call.get("current_mcap"), call.get("peak_mcap")
+    mult = cur / entry if cur and entry else None
+    top = [
+        {"name": "Called at market cap", "value": money(entry), "inline": True},
+        {"name": "Current market cap", "value": money(cur) if cur else money(entry), "inline": True},
+        {"name": "Since callout", "value": f"{pct((mult - 1) * 100)} · {mult:.2f}x" if mult else "+0.0% · 1.00x",
+         "inline": True},
+        {"name": PEAK_FIELD, "value": peak_text({"entry_mcap": entry, "peak_mcap": peak or entry,
+                                                 "peak_at": call.get("peak_at"), "sent_at": call.get("sent_at")}),
+         "inline": True},
+        {"name": "Stage", "value": "🟣 Bonding curve" if call.get("phase", "CURVE") == "CURVE" else "🟢 Migrated (PumpSwap)",
+         "inline": True},
+    ]
+    if ai:
+        top.append({"name": "⚡ Narrative (AI)", "value": _clip(_ai_block(ai), 1024), "inline": False})
+    live = []
+    for w in (ctx.get("waves") or [])[:2]:
+        live.append(f"🌊 \"{w['term']}\": {w['launches_30m']} launches by {w.get('creators', '?')} creators in 30 min")
+    for k, label in (("news", "📰"), ("trends", "🔎"), ("wiki", "📚")):
+        for item in (ctx.get("related") or {}).get(k, [])[:1]:
+            live.append(f"{label} {item}")
+    if ctx.get("line"):
+        live.append(ctx["line"])
+    if live:
+        top.append({"name": "🌍 Live attention", "value": _clip("\n".join(live), 1024), "inline": False})
+    flow = (f"{pm.get('buys', 0)} buys / {pm.get('sells', 0)} sells · {pm.get('unique_buyers', 0)} buyers · "
+            f"{usd_or_sol(pm.get('buy_sol_5m'), pm.get('sol_usd'))} bought (5 min)")
+    top.append({"name": "📈 Flow", "value": flow, "inline": False})
+    if plan:
+        top.append({"name": "📋 Early plan", "value": _clip("\n".join(plan) + (
+            f"\n**Plan status:** {call['status_line']}" if call.get("status_line") else ""), 1024), "inline": False})
+    verdict = report.get("verdict")
+    if isinstance(verdict, dict) and verdict.get("level"):
+        from ..analysis.verdict import embed_text
+        top.append({"name": "🧠 Rug check", "value": _clip(embed_text(verdict, max_red=3, max_green=2), 1024),
+                    "inline": False})
+    top.append({"name": "Links", "value": links(mint, None) + f" · [Pump.fun](https://pump.fun/coin/{mint})",
+                "inline": False})
+    stamp = call.get("last_update_at") or call.get("sent_at") or time.time()
+    embed = {"title": f"⚡ EARLY NARRATIVE CALL — ${symbol}", "url": f"https://dexscreener.com/solana/{mint}",
+             "description": f"**{name}**\n`{mint}`\nEarly = higher risk: small size, follow the plan.",
+             "color": COLOR_EARLY, "fields": top,
+             "footer": {"text": f"Early narrative call · AI-judged, not financial advice · {DISCLAIMER} · mint:{mint}"},
+             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stamp)),
+             "_buttons": [{"label": "View on Axiom", "url": f"https://axiom.trade/t/{mint}"}]}
+    if isinstance(ident.get("image_url"), str) and ident["image_url"].startswith(("https://", "http://")):
+        embed["thumbnail"] = {"url": ident["image_url"]}
+    return fit(embed)
+
+
+def early_free_embed(report: dict, call: dict) -> dict:
+    """Free-channel proof post once a VIP early call passes the free threshold."""
+    mint = report.get("mint", "")
+    ident = report.get("identity") or {}
+    ai = report.get("ai") or {}
+    entry, peak = call.get("entry_mcap"), call.get("peak_mcap")
+    x = peak / entry if peak and entry else None
+    mins = (call.get("peak_at") or time.time()) - (call.get("sent_at") or time.time())
+    lines = [f"Called in **VIP** at **{money(entry)}** — reached **{money(peak)} ({x:.2f}x)** "
+             f"{max(0, mins) / 60:.0f} min later." if x else "Called in VIP.",
+             f"Narrative: {ai.get('narrative')}" + (f" — {ai.get('event')}" if ai.get("event") else "")
+             if ai else "", "", "Want the next one at the entry? Join VIP."]
+    return fit({"title": f"✅ VIP EARLY CALL UP {((x or 1) - 1) * 100:+.0f}% — ${ident.get('symbol') or '?'}",
+                "url": f"https://dexscreener.com/solana/{mint}", "description": "\n".join(l for l in lines if l is not None),
+                "color": COLOR_CALLOUT, "footer": {"text": f"{DISCLAIMER} · mint:{mint}"},
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})

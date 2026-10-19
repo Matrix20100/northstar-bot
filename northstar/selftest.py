@@ -112,6 +112,39 @@ async def check_providers(p) -> list[dict]:
     return out
 
 
+# ----------------------------------------------------------------------------- AI judge / events
+def check_ai_and_events(s, db_path: str, now: Optional[float] = None) -> list[dict]:
+    now = now or time.time()
+    out = []
+    if not getattr(s, "early_call_enabled", False):
+        return [_r("narrative", "Early narrative calls", SKIP, "turned off")]
+    has_key = bool(getattr(s, "anthropic_api_key", None) and s.anthropic_api_key.get_secret_value())
+    out.append(_r("narrative", "AI judge (Claude)", PASS if (has_key and s.ai_enabled) else WARN,
+                  f"on · model {s.ai_model} · caps {s.ai_max_calls_per_hour}/h, ${s.ai_daily_budget_usd:.2f}/day"
+                  if has_key and s.ai_enabled else
+                  "no NORTHSTAR_ANTHROPIC_API_KEY — early narrative calls are off"))
+    feeds = [n for n, on in (("news", s.events_news), ("trending searches", s.events_trends),
+                             ("Wikipedia", s.events_wikipedia)) if on]
+    out.append(_r("narrative", "Event feeds", PASS if feeds else WARN,
+                  "launch waves + " + ", ".join(feeds) if feeds else "launch waves only (news feeds off)"))
+    try:
+        c = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        c.row_factory = sqlite3.Row
+        day0 = now - (now % 86400)
+        a = c.execute("SELECT COUNT(*) n, COALESCE(SUM(cost_usd), 0) c FROM ai_judgements WHERE ts >= ?",
+                      (day0,)).fetchone()
+        calls = c.execute("SELECT COUNT(*) n, SUM(status IN ('SENT','DRY_RUN')) open FROM early_calls "
+                          "WHERE created_at >= ?", (now - 86400,)).fetchone()
+        c.close()
+        spent, budget = float(a["c"] or 0), float(s.ai_daily_budget_usd)
+        out.append(_r("narrative", "AI spend today", WARN if spent >= budget else PASS,
+                      f"${spent:.2f} of ${budget:.2f} · {a['n']} coins judged"))
+        out.append(_r("narrative", "Early calls (24 h)", PASS, f"{calls['n'] or 0} posted · {calls['open'] or 0} still tracked"))
+    except sqlite3.Error:
+        out.append(_r("narrative", "AI spend today", SKIP, "no judgements recorded yet"))
+    return out
+
+
 # ----------------------------------------------------------------------------- database
 def check_database(db_path: str) -> list[dict]:
     out = []
@@ -253,6 +286,7 @@ async def run_async(s, db_path: str, providers=None, engine=None, include_code: 
                 await c.close()
             except Exception:  # noqa: BLE001
                 pass
+    out += check_ai_and_events(s, db_path)
     out += check_database(db_path)
     out += check_engine(engine, db_path)
     out += check_learning(s, db_path)

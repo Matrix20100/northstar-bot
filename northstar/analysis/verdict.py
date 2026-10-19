@@ -265,11 +265,14 @@ EMOJI = {"RUG LIKELY": "☠️", "HIGH RISK": "🔴", "CAUTION": "🟠", "LOOKS 
 
 
 def embed_text(v: dict, max_red: int = 4, max_green: int = 3) -> str:
-    lines = [f"{EMOJI.get(v['level'], '')} **{v['level']}** · risk {v['score']}/100", v["headline"]]
-    lines += [("⛔ " if r["level"] == "critical" else "🔺 ") + r["text"]
+    level = v.get("level") or "NOT ENOUGH DATA"
+    lines = [f"{EMOJI.get(level, '')} **{level}** · risk {v.get('score', 0)}/100"]
+    if v.get("headline"):
+        lines.append(v["headline"])
+    lines += [("⛔ " if r.get("level") == "critical" else "🔺 ") + r["text"]
               + (f" _(crashed {r['crash_rate'] * 100:.0f}% of {r['seen']} times)_" if r.get("crash_rate") is not None else "")
-              for r in v["red"][:max_red]]
-    lines += ["✅ " + g for g in v["green"][:max_green]]
+              for r in (v.get("red") or [])[:max_red]]
+    lines += ["✅ " + g for g in (v.get("green") or [])[:max_green]]
     if v.get("bubblemap"):
         lines.append("🫧 " + v["bubblemap"].replace("Bubblemap: ", ""))
     return "\n".join(lines)

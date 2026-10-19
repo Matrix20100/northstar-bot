@@ -30,7 +30,7 @@ class Plan:
     time_stop_multiple: float
 
 
-PROFILES = {"standard": "plan_", "scalp": "scalp_"}
+PROFILES = {"standard": "plan_", "scalp": "scalp_", "early": "early_"}
 
 
 def plan_values(s, profile: str = "standard") -> dict:

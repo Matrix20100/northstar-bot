@@ -3,6 +3,28 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.2.0 — 2026-10-19 — early narrative calls (30–50k)
+
+- **Live attention feed** (`events.py`, free, no keys): pump.fun launch waves (a word appearing in
+  many launches by many DIFFERENT creators in 30 min vs the 6 h before), Google News, Google Trends
+  "trending now", most-read Wikipedia. Verified on real launch history: it surfaces the live waves
+  (e.g. 91 launches by 33 creators around one word) and ignores single-bot ticker spam.
+- **AI narrative judge** (`ai_judge.py`, Claude): judges a coin's narrative against that live feed —
+  fit, originality, attention, timing (early/peak/late/dead), red flags, 0–100 score, CALL/WATCH/PASS.
+  Deployer-written text is passed as quoted data and the answer is parsed strictly (bad JSON, unknown
+  verdict or missing score = no call). Hard hourly and daily-dollar caps with per-call spend recorded;
+  results cached 30 min or until the coin moves 1.5x. Roughly $0.0002 per judged coin.
+- **Early narrative calls** (`early_calls.py`): bonding-curve coins at 30–50k that pass flow, safety
+  and rug-check gates AND get a CALL from the judge are posted to **VIP** as "⚡ EARLY NARRATIVE CALL"
+  with the AI reasoning, live attention lines, flow, an early plan and the rug check.
+- **Curve radar**: scans recent launches every 2 min and researches coins entering the band immediately.
+- **Tracking through migration**: market cap from the bonding curve on-chain, then from the PumpSwap
+  pool; records the peak, posts plan pings, and posts a proof copy to the **free channel** at 1.5x.
+- Self-test gained a NARRATIVE section (API key, feeds, spend today, early calls in 24 h).
+- Fixes found by the new tests: a stored unparseable AI answer could be served as a cached verdict;
+  the rug-check text crashed on a partial verdict; the curve radar could run before its table existed.
+- Includes everything in 2.1.0 and earlier.
+
 ## 2.1.0 — 2026-10-19 — smarter coin finding
 
 Tested on 731 real tracked coins before shipping (accuracy = walk-forward AUC on coins the model had

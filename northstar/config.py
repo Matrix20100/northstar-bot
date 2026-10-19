@@ -217,6 +217,50 @@ class Settings(BaseSettings):
     scalp_trail_pct: float = 20.0
     scalp_time_stop_minutes: float = 10.0
     scalp_time_stop_multiple: float = 1.15
+    # ---------------------------------------------------------------- Early narrative calls
+    # Bonding-curve coins at 30-50k that ride a LIVE narrative (judged by Claude against launch waves,
+    # news, trending searches and Wikipedia). Posted to VIP tagged EARLY; a copy goes to the free
+    # channel once a call passes early_call_free_at.
+    early_call_enabled: bool = True
+    early_call_min_mc: float = 30_000
+    early_call_max_mc: float = 50_000
+    early_call_min_ai_score: int = 70
+    early_call_min_trades: int = 10         # last 5 min, verified pump.fun trades
+    early_call_min_buyers: int = 8
+    early_call_min_buy_sell_ratio: float = 1.2
+    early_call_min_buy_sol_5m: float = 1.0
+    early_call_max_per_hour: int = 0        # 0 = no limit (post every coin that qualifies)
+    early_call_free_at: float = 1.5         # post a copy to the free channel at this multiple
+    early_call_track_hours: float = 24.0
+    early_max_entry_pct: float = 20.0
+    early_tp1: float = 2.0
+    early_tp1_sell_pct: int = 40
+    early_tp2: float = 4.0
+    early_tp2_sell_pct: int = 30
+    early_stop: float = 0.6
+    early_trail_pct: float = 40.0
+    early_time_stop_minutes: float = 30.0
+    early_time_stop_multiple: float = 1.15
+    # curve radar: finds bonding-curve coins entering the early-call band
+    curve_radar_enabled: bool = True
+    curve_radar_seconds: int = 120
+    curve_radar_hours: float = 3.0          # look at launches from the last N hours
+    curve_radar_max_tokens: int = 2400
+    curve_radar_min_buys_m5: int = 12
+    # ---------------------------------------------------------------- AI narrative judge (Claude)
+    ai_enabled: bool = True                 # active only when an API key is set
+    anthropic_api_key: Optional[SecretStr] = None
+    ai_model: str = "claude-haiku-5-5"
+    ai_max_calls_per_hour: int = 120
+    ai_daily_budget_usd: float = 1.0
+    ai_recheck_minutes: float = 30.0
+    ai_price_input_per_mtok: float = 0.10   # for the spend cap; check your Anthropic console
+    ai_price_output_per_mtok: float = 0.50
+    # ---------------------------------------------------------------- live event feeds (free)
+    events_news: bool = True
+    events_trends: bool = True
+    events_wikipedia: bool = True
+    events_news_seconds: int = 600
     liquidity_collapse_pct: float = 50.0
     severe_drawdown_pct: float = 50.0
     max_tracking_hours: float = 72.0
@@ -342,7 +386,7 @@ class Settings(BaseSettings):
     def secrets(self) -> list[str]:
         out = []
         for s in (self.discord_token, self.helius_api_key, self.pumpportal_api_key,
-                  self.coingecko_api_key, self.dashboard_password):
+                  self.coingecko_api_key, self.dashboard_password, self.anthropic_api_key):
             if s is not None and s.get_secret_value():
                 out.append(s.get_secret_value())
         return out

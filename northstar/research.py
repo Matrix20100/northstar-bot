@@ -111,6 +111,7 @@ class Researcher:
         self.s, self.db, self.p = s, db, p
         self._metas: Optional[list[dict]] = None
         self._metas_at = 0.0
+        self._descriptions: dict[str, str] = {}   # token metadata descriptions, for the AI judge
 
     async def trending_metas(self) -> Optional[list[dict]]:
         if self.p.dex is None:
@@ -1274,6 +1275,9 @@ class Researcher:
             social_ev = await self._free_social(mint, uri=uri)
             if social_ev is not None:
                 report["pre_migration"]["socials"] = social_ev.to_dict()
+            desc = self._descriptions.pop(mint, None)
+            if desc:
+                report["identity"]["description"] = desc
 
         report["security"] = {
             **auth_disp,
@@ -1940,6 +1944,8 @@ class Researcher:
         """Links the token publishes, checked for reuse across recent tokens; never raises."""
         try:
             meta = await self.p.socials.metadata(uri) if uri else None
+            if meta and isinstance(meta.get("description"), str):
+                self._descriptions[mint] = meta["description"][:500]
             links = SOC.collect(pair.socials if pair else None, pair.websites if pair else None,
                                 (profile or {}).get("links"), meta)
             reusable = [l for l in links if l.kind in SOC.REUSE_KINDS]
