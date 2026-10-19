@@ -289,7 +289,14 @@ def _curve_with_quote(quote: bytes, cap_sol: float = 100.0, real_sol: int = 0, l
 
 
 class CurveQuoteTests(unittest.TestCase):
-    def test_sol_backing_decides_quote_not_byte_offsets(self):
+    def test_only_a_recognised_quote_mint_makes_a_curve_non_sol(self):
+        """Lamports say nothing about the quote asset.
+
+        Pump.fun keeps a curve's reserves outside the curve account: checked on-chain on
+        19 Oct 2026, a live curve held 1,493,520 lamports of rent against 870,873,131 lamports
+        of real reserves. Inferring the quote from lamports marked every actively traded curve
+        as foreign-quoted and dropped it.
+        """
         from northstar.analysis.pump_trades import b58decode
         from northstar.providers.solana_rpc import USDC_MINT
         from northstar.research import Researcher
@@ -297,20 +304,21 @@ class CurveQuoteTests(unittest.TestCase):
         legacy = parse(curve_account(100.0))                       # no lamports supplied
         self.assertTrue(legacy["quote_is_sol"])
         self.assertAlmostEqual(legacy["market_cap_sol"], 100.0, places=6)
-        # Live regression: bytes 83..115 held another pump mint, but the curve holds its SOL.
-        odd = parse(_curve_with_quote(b58decode(MINT), real_sol=30 * 10**9, lamports=30 * 10**9 + 2_000_000))
-        self.assertTrue(odd["quote_is_sol"])
-        self.assertAlmostEqual(odd["market_cap_sol"], 100.0, places=6)
+        # Reserves well above the account's own lamports: still a SOL curve.
+        held_elsewhere = parse(_curve_with_quote(bytes(32), real_sol=50 * 10**9, lamports=1_493_520))
+        self.assertTrue(held_elsewhere["quote_is_sol"])
+        self.assertAlmostEqual(held_elsewhere["market_cap_sol"], 100.0, places=6)
         fresh = parse(_curve_with_quote(bytes(32), real_sol=0, lamports=1_500_000))
         self.assertTrue(fresh["quote_is_sol"])
-        # Token-quoted curve: real reserves far above the account's lamports.
+        # Unrecognised bytes in the optional quote field prove nothing, so SOL stands.
+        odd = parse(_curve_with_quote(b58decode(MINT), real_sol=50 * 10**9, lamports=2_000_000))
+        self.assertTrue(odd["quote_is_sol"])
+        # A field that really does name a known quote asset is honoured.
         usdc = parse(_curve_with_quote(b58decode(USDC_MINT), real_sol=50 * 10**9, lamports=2_000_000))
         self.assertFalse(usdc["quote_is_sol"])
         self.assertEqual(usdc["quote_mint"], USDC_MINT)
         self.assertIsNone(usdc["market_cap_sol"])
-        unknown = parse(_curve_with_quote(b58decode(MINT), real_sol=50 * 10**9, lamports=2_000_000))
-        self.assertFalse(unknown["quote_is_sol"])
-        self.assertEqual(unknown["quote_mint"], "UNKNOWN")      # unrecognised field not trusted
+        self.assertEqual(odd["quote_mint"], "So11111111111111111111111111111111111111112")
 
     def test_tracker_does_not_read_non_sol_curve_as_sol(self):
         from northstar.analysis.pump_trades import b58decode

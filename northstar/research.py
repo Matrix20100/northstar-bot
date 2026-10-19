@@ -651,30 +651,22 @@ class Researcher:
         ):
             return None
 
-        # Is this curve really holding SOL? A SOL-quoted curve keeps its real SOL reserves as
-        # the account's own lamports (plus rent). A curve quoted in another token holds that
-        # token in a separate vault, so its lamports cannot cover the "real reserves" figure.
-        # This check does not depend on byte offsets of newer, optional account fields.
-        lamports = account.get("lamports")
-        try:
-            lamports = int(lamports) if lamports is not None else None
-        except (TypeError, ValueError):
-            lamports = None
-        sol_backed = (
-            lamports is None            # caller did not supply lamports: legacy behaviour
-            or real_sol == 0            # nothing to compare yet (fresh or drained curve)
-            or lamports + 1_000_000 >= real_sol   # 0.001 SOL tolerance
-        )
-
-        # The quote-mint field is reported only when it names a known quote asset; an
-        # unrecognised value there is not trusted (newer layouts may differ).
+        # Pump.fun curves are SOL-quoted, and the caller has already checked that this account
+        # belongs to the pump.fun program. An earlier version inferred the quote asset by
+        # requiring the account's own lamports to cover `real_sol_reserves`; that was wrong.
+        # Checked on-chain (curve CgfbhqzqSHoygUwdywzRo8o9wZEbLtRAVYw8fXkPjiaF, 19 Oct 2026):
+        # the account held 1,493,520 lamports of rent while real_sol_reserves read 870,873,131,
+        # because the reserves are not kept as the curve account's lamports. Every curve with
+        # real buying therefore looked "not SOL-backed" and was dropped as INSUFFICIENT DATA —
+        # exactly the coins the early-call path exists to find.
+        # A non-SOL quote is honoured only when the optional quote-mint field decodes to a mint
+        # we actually recognise; random bytes in a newer layout never match one.
         quote_mint = WSOL_MINT
-        if not sol_backed:
-            quote_mint = "UNKNOWN"
-            if len(raw) >= 115:
-                field = b58encode(raw[83:115])
-                if field in QUOTE_MINTS and field != WSOL_MINT:
-                    quote_mint = field
+        if len(raw) >= 115:
+            field = b58encode(raw[83:115])
+            if field in QUOTE_MINTS and field != WSOL_MINT:
+                quote_mint = field
+        sol_backed = quote_mint == WSOL_MINT
 
         # Reserves of a non-SOL curve are in another token's units: never report them as SOL.
         market_cap_sol = (
