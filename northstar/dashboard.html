@@ -114,6 +114,7 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
         <div class="tablewrap"><table><thead><tr><th>Coin</th><th>Decision</th><th>Score</th><th>Why</th><th>When</th></tr></thead><tbody id="decisions"></tbody></table></div></div>
       <div class="grid" style="align-content:start">
         <div class="card"><h2>Decisions (24h)</h2><div id="actions"></div></div>
+        <div class="card"><h2>Decision funnel (24h) <span>where coins stop, and why</span></h2><div id="funnel"></div></div>
         <div class="card"><h2>Data sources <span>live health</span></h2><div id="providers"></div></div>
       </div>
     </div>
@@ -220,8 +221,18 @@ async function overview(){const d=await api('/api/decisions');
   <td>${(r.reasons||[]).slice(0,2).map(x=>`<div class="reason">${esc(x)}</div>`).join('')}</td><td class="num sub">${ago(r.last_research_at)}</td></tr>`).join(''):'<tr><td colspan=5 class="empty">No research yet</td></tr>';
  const a=S.actions_24h||{},tot=Object.values(a).reduce((s,v)=>s+v,0)||1,col={AUTO_POST:'var(--green)',WATCHLIST:'var(--blue)',REJECT:'var(--red)',INSUFFICIENT_DATA:'var(--amber)'};
  $('actions').innerHTML=Object.keys(a).length?Object.entries(a).sort((p,q)=>q[1]-p[1]).map(([k,v])=>`<div style="margin:8px 0"><div style="display:flex;justify-content:space-between;font-size:12.5px"><span>${esc(k.replace('_',' '))}</span><span class="num">${num(v)} · ${Math.round(v/tot*100)}%</span></div><div class="bar"><i style="width:${v/tot*100}%;background:${col[k]||'#6b7385'}"></i></div></div>`).join(''):'<div class="empty">Nothing yet</div>';
+ api('/api/funnel').then(drawFunnel).catch(()=>{});
  $('providers').innerHTML=(S.providers||[]).length?S.providers.map(p=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #1d212a;font-size:12.5px"><span>${esc(p.provider)}</span><span>${p.status==='OK'?'<span class="pill good">OK</span>':`<span class="pill ${p.status==='DOWN'?'bad':'warn'}" title="${esc(p.last_error||'')}">${esc(p.status)}</span>`}<span class="sub"> · ${num(p.budget_used)} today</span></span></div>`).join(''):'<div class="empty">No calls yet</div>'}
 
+function drawFunnel(f){const el=$('funnel');if(!el)return;if(!f||f.error){el.innerHTML=`<div class="empty">${esc((f&&f.error)||'No funnel data yet')}</div>`;return}
+ const row=(k,v,sub)=>`<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0${sub?';padding-left:14px;color:#9aa3b5':''}"><span>${esc(k)}</span><span class="num">${num(v)}</span></div>`;
+ let h=row('Discovered',f.discovered)+row('Researched to a decision',f.researched)+row('Not ready (nothing to judge)',f.not_ready);
+ for(const o of ['REJECT','INSUFFICIENT','CAUTION','WATCH','APPROVED']){const n=(f.decisions||{})[o]||0;h+=row(o==='INSUFFICIENT'?'INSUFFICIENT DATA':o,n);
+  Object.entries((f.by_reason_class||{})[o]||{}).sort((p,q)=>q[1]-p[1]).slice(0,5).forEach(([c,k])=>{h+=row(c.replace(/_/g,' ').toLowerCase(),k,1)})}
+ h+=row('Called (posted)',f.called)+row('Approved but held',f.held);
+ const top=((f.top_reasons||{}).REJECT||[]).slice(0,4);
+ if(top.length)h+=`<div class="sub" style="margin-top:8px;font-size:12px">Top reject reasons</div>`+top.map(t=>`<div class="reason">${num(t.count)} × ${esc(t.example)}</div>`).join('');
+ el.innerHTML=h}
 async function watching(){const d=await api('/api/watching');$('queueSub').textContent=`${num(d.queue_total)} coins being watched · top 80 shown`;
  $('queue').innerHTML=d.queue.length?d.queue.map(r=>`<tr class="click" data-mint="${esc(r.mint)}"><td>${coin(r.mint,r.symbol,r.name)}</td><td>${actPill(r.state)}</td><td class="num">${num(r.priority,1)}</td>
   <td class="sub">${esc((r.sources||[]).slice(-3).join(', '))}</td><td class="num">${num(r.last_score,1)}</td><td class="sub num">${ago(r.next_research_at)}</td></tr>`).join(''):'<tr><td colspan=6 class="empty">Queue empty</td></tr>';
@@ -345,17 +356,21 @@ function bar(pts,w){const p=w?Math.max(0,Math.min(100,pts/w*100)):0;
 function decisionCard(u){if(!u||!u.version)return'';const [k,e]=DC[u.decision]||['dim',''];const [rk,re]=RC[u.risk]||['dim',''];
  const cats=u.categories||{};const order=['safety','liquidity','holders','dev','structure','narrative'];
  const row=c=>{if(!c)return'';return `<tr><td>${esc(c.label)}${c.thin?' <span class="pill dim">thin</span>':''}</td>
-  <td class="num">${(c.points||0).toFixed(1)} / ${(c.weight||0).toFixed(0)}</td>
-  <td style="min-width:90px">${bar(c.points||0,c.weight||0)}</td>
+  <td class="num">${c.scored===false?'<span class="sub">vetoes only</span>':`${(c.points||0).toFixed(1)} / ${(c.weight||0).toFixed(0)}`}</td>
+  <td style="min-width:90px">${c.scored===false?'':bar(c.points||0,c.weight||0)}</td>
   <td class="num sub">${Math.round((c.coverage||0)*100)}%</td>
   <td class="sub">${esc([...(c.evidence||[]),...(c.weak||[])].slice(0,2).join(' · '))||'—'}</td></tr>`};
  return `<div class="card" style="margin-bottom:12px"><h2>🎯 Decision <span class="pill ${k}">${e} ${esc(u.decision)}</span></h2>
- <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"><span class="pill dim">score ${(u.score||0).toFixed(0)}/100</span>
+ <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"><span class="pill dim">opportunity score ${(u.score||0).toFixed(0)}/100</span>
+  ${u.safety?`<span class="pill ${u.safety.status==='PASS'?'good':u.safety.status==='FAIL'?'bad':'warn'}">safety ${esc(u.safety.status)}</span>`:''}
+  ${u.early_entry?`<span class="pill dim">entry ${esc(u.early_entry.grade)}</span>`:''}
+  ${u.reason_class?`<span class="pill dim">${esc(u.reason_class.replace(/_/g,' ').toLowerCase())}</span>`:''}
   <span class="pill ${rk}">${re} ${esc(u.risk)} risk</span><span class="pill dim">confidence ${esc(u.confidence||'')}</span>
   <span class="pill dim">evidence ${Math.round((u.completeness||0)*100)}%</span>${u.penalty?`<span class="pill warn">−${u.penalty} unproven concerns</span>`:''}</div>
  ${(u.hard_vetoes||[]).map(x=>`<div class="reason" style="color:var(--red)">⛔ ${esc(x)}</div>`).join('')}
  ${(u.warnings||[]).map(x=>`<div class="reason" style="color:#ffa3a7">🔺 ${esc(x)}</div>`).join('')}
  ${(u.unresolved||[]).map(x=>`<div class="reason sub">⚪ ${esc(x)}</div>`).join('')}
+ ${[...(u.timing||[]),...(u.evidence_gaps||[])].map(x=>`<div class="reason sub">⏳ ${esc(x)}</div>`).join('')}
  ${(u.why||[]).map(x=>`<div class="reason sub">ℹ️ ${esc(x)}</div>`).join('')}
  <div class="tablewrap" style="margin-top:10px"><table><thead><tr><th>Category</th><th>Points</th><th></th><th>Known</th><th>Evidence</th></tr></thead>
  <tbody>${order.map(o=>row(cats[o])).join('')}</tbody></table></div>

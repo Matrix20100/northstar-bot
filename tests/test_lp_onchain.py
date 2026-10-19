@@ -87,9 +87,12 @@ def test_research_passes_lp_gate_when_rugcheck_is_down():
 
 
 def test_partial_burn_stays_blocked_and_flagged():
+    # v2.5: a MEASURED partial burn is a FAIL, not an UNKNOWN. v2.4 left it UNKNOWN, which
+    # meant INSUFFICIENT DATA and an endless re-research of a coin whose LP was known to be
+    # half withdrawable. It is still blocked — now for the right reason.
     la = _verify(Rpc(current=4_193_388_318_622 // 2))
     gate = next(g for g in la.gates if g.name == "lp_lock")
-    assert gate.status == GateStatus.UNKNOWN and "PARTIAL" in gate.reason
+    assert gate.status == GateStatus.FAIL and "PARTIAL" in gate.reason
     assert any(f.code == "LP_NOT_LOCKED" for f in la.flags)
 
 

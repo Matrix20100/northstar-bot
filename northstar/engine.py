@@ -19,6 +19,7 @@ from .db import Database
 from .discovery import Discovery
 from .early_tracker import EarlyWatchTracker
 from .discord_bot.publisher import DiscordPublisher, DryRunPublisher, Publisher
+from . import telemetry as T
 from .models import Action
 from .monitor import Monitor
 from .net import ProviderClient
@@ -478,14 +479,42 @@ class Engine:
         return p
 
     def _refresh_unified(self, out) -> None:
-        """Re-run the unified engine now that live context (ticker crowding, heat) is attached."""
+        """Re-run the unified engine now that live context (ticker crowding, heat) is attached.
+
+        v2.4 replaced report["unified"] here but left out.action alone, so the bot could act on
+        the pre-refresh decision while the report showed the refreshed one. The action is now
+        re-derived from the final unified result in `_finalize` (northstar/final.py).
+        """
         if not getattr(self.s, "unified_enabled", True) or not isinstance(out.report.get("unified"), dict):
             return
         try:
             from .analysis import unified as U
+            before = out.report["unified"].get("decision")
             out.report["unified"] = U.evaluate(out.report, self.s)
+            after = out.report["unified"].get("decision")
+            if before != after:
+                self._note(out, f"live context (ticker crowding, market heat) moved this from {before} to {after}")
         except Exception:  # noqa: BLE001
             log.debug("unified refresh failed for %s", out.mint, exc_info=True)
+
+    @staticmethod
+    def _note(out, text: str) -> None:
+        out.report.setdefault("final_notes", []).append(text)
+
+    def _finalize(self, out) -> None:
+        """One source of truth: action, score, risk and confidence from the final unified result,
+        written onto the outcome and back into the stored snapshot."""
+        from .final import apply_final
+
+        if not apply_final(out, out.report.get("final_notes")):
+            return
+        out.report["final"]["stage"] = "final"
+        if out.snapshot_id:
+            try:
+                self.db.update_research_final(out.snapshot_id, out.action.value, out.score,
+                                              out.risk.value, out.confidence.value, out.report)
+            except Exception:  # noqa: BLE001 - the decision stands even if the row update fails
+                log.warning("could not update the stored snapshot for %s", out.mint, exc_info=True)
 
     async def _apply_ai_narrative(self, out, force: bool = False) -> Optional[dict]:
         """Ask the AI judge about coins that are already worth calling or watching.
@@ -541,21 +570,10 @@ class Engine:
         before, after = u.get("decision"), new.get("decision")
         if before == after or not ai:
             return ai
-        decision = out.report.get("decision") or {}
-        policy = [b for b in decision.get("blockers") or [] if b.startswith(self.POLICY_PREFIXES)]
-        action = Action(U.LEGACY_ACTION.get(after, "REJECT"))
         reason = (f"🤖 AI narrative read ({ai.get('verdict')}"
                   + (f" {ai['score']:.0f}/100" if isinstance(ai.get("score"), (int, float)) else "")
                   + f") moved this from {before} to {after}")
-        if action == Action.AUTO_POST and policy:
-            action = Action.WATCHLIST
-            reason += " — held back by publication policy"
-        out.action = action
-        out.reasons = [reason] + list(out.reasons)
-        out.report["decision"] = {**decision, "action": action.value,
-                                  "reasons": [reason] + list(decision.get("reasons") or [])}
-        out.report["final_action"] = action.value
-        out.report["reasons"] = out.reasons
+        self._note(out, reason)
         log.info("ai: %s %s", out.mint, reason)
         return ai
 
@@ -575,20 +593,9 @@ class Engine:
         before, after = u.get("decision"), new.get("decision")
         if before == after:
             return p
-        decision = out.report.get("decision") or {}
-        policy = [b for b in decision.get("blockers") or [] if b.startswith(self.POLICY_PREFIXES)]
-        action = Action(U.LEGACY_ACTION.get(after, "REJECT"))
         reason = (f"🧠 learning brain moved this from {before} to {after}: {p:.0%} learned odds "
                   f"vs a {(base or 0) * 100:.0f}% base rate ({info['tilt']:+.1f} points)")
-        if action == Action.AUTO_POST and policy:
-            action = Action.WATCHLIST
-            reason += " — held back by publication policy"
-        out.action = action
-        out.reasons = [reason] + list(out.reasons)
-        out.report["decision"] = {**decision, "action": action.value,
-                                  "reasons": [reason] + list(decision.get("reasons") or [])}
-        out.report["final_action"] = action.value
-        out.report["reasons"] = out.reasons
+        self._note(out, reason)
         info["moved"] = {"from": before, "to": after}
         log.info("brain: %s %s", out.mint, reason)
         return p
@@ -647,6 +654,7 @@ class Engine:
             except (TypeError, ValueError):
                 sources = []
             launch_only = sources and all(s == "pumpportal_new" for s in sources)
+            T.record_outcome(self.db, out, now)
             self.db.set_state(mint, prev_state,
                               next_research_at=None if launch_only
                               else now + self.s.rejected_recheck_seconds)
@@ -673,6 +681,10 @@ class Engine:
         self._refresh_unified(out)
         brain_p = self._apply_brain(out)
         await self._apply_ai_narrative(out)
+        self._finalize(out)
+        # candidate state must carry the FINAL values, not the pre-brain/AI ones
+        common.update(last_action=out.action.value, last_score=out.score, last_risk=out.risk.value,
+                      last_confidence=out.confidence.value, reasons=out.reasons[:20])
         early_called = None
         if out.report.get("lifecycle") == "PRE_MIGRATION_BONDING_CURVE" and self.s.early_call_enabled:
             try:
@@ -691,12 +703,17 @@ class Engine:
             self.stats["scalp"] = self.stats.get("scalp", 0) + 1
             self.db.set_state(mint, "QUALIFIED", next_research_at=None, **common)
             log.info("RUG SCALP %s: %s | rug: %s", mint, verdict["momentum"], "; ".join(verdict["failed_checks"]))
-            if await self.alerts.publish(out) is None:
+            posted = await self.alerts.publish(out)
+            T.record_publish(self.db, mint, posted is not None, getattr(self.alerts, "last_hold", None),
+                             out.score, "RUG_SCALP")
+            if posted is None:
                 self.db.set_state(mint, "REJECTED", next_research_at=now + self.s.rejected_recheck_seconds)
         elif out.action == Action.AUTO_POST:
             self.stats["auto_post"] += 1
             self.db.set_state(mint, "QUALIFIED", next_research_at=None, **common)
-            await self.alerts.publish(out)
+            posted = await self.alerts.publish(out)
+            T.record_publish(self.db, mint, posted is not None, getattr(self.alerts, "last_hold", None),
+                             out.score)
         elif out.action == Action.WATCHLIST:
             self.stats["watchlist"] += 1
             if (out.report.get("pre_migration") or {}).get("qualified_early_watch") and not early_called:
@@ -714,9 +731,13 @@ class Engine:
                             for r in out.reasons)
             self.db.set_state(mint, "REJECTED",
                               next_research_at=None if permanent else now + self.s.rejected_recheck_seconds, **common)
-        log.info("decision %s %s score=%s risk=%s", mint, out.action.value, out.score, out.risk.value,
+        T.record_outcome(self.db, out, now)
+        final = out.report.get("final") or {}
+        log.info("decision %s %s score=%s risk=%s class=%s", mint, out.action.value, out.score, out.risk.value,
+                 final.get("reason_class"),
                  extra={"ctx": {"mint": mint, "action": out.action.value, "score": out.score,
-                                "risk": out.risk.value, "reasons": out.reasons[:5]}})
+                                "risk": out.risk.value, "reason_class": final.get("reason_class"),
+                                "reasons": out.reasons[:5]}})
 
     # ---------------------------------------------------------------- manual (dashboard)
     MANUAL_TTL = 900      # a manual call must rest on research from the last 15 minutes
@@ -751,6 +772,7 @@ class Engine:
                 self._refresh_unified(out)
                 self._apply_brain(out)
                 await self._apply_ai_narrative(out, force=True)
+                self._finalize(out)
                 if out.pair is not None:
                     self.db.set_state(mint, cand["state"] if cand and cand["state"] not in
                                       ("RESEARCHING",) else "WATCHLIST",

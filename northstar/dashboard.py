@@ -451,6 +451,12 @@ class DashboardServer:
                         return self._send(200, view_calls(c))
                     if u.path == "/api/decisions":
                         return self._send(200, view_decisions(c))
+                    if u.path == "/api/funnel":
+                        from . import telemetry as T
+                        if not _table_ok(c, "funnel_events"):
+                            return self._send(200, {"error": "funnel table not created yet — restart the bot once"})
+                        hours = float((parse_qs(u.query).get("hours") or ["24"])[0] or 24)
+                        return self._send(200, T.summary(_Ro(c), max(1.0, min(hours, 24 * 14)), now))
                     if u.path == "/api/learning":
                         return self._send(200, view_learning(c, s, now))
                     if u.path == "/api/settings":

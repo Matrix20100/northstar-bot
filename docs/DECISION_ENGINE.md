@@ -194,12 +194,105 @@ own tracked history, one row per mint, report-as-stored. On the 19 Oct 2026 data
 | `NORTHSTAR_U_WATCH_MIN` | 48 | below this it is not worth watching |
 | `NORTHSTAR_U_MIN_COMPLETENESS` | 0.55 | evidence needed before a call is possible |
 | `NORTHSTAR_U_MODEL_TILT` | 12 | most the learning brain may move the score |
-| `NORTHSTAR_U_NARRATIVE_CAP` | 20 | narrative help a STRONG call must survive without |
+| `NORTHSTAR_U_NARRATIVE_CAP` | 10 (v2.4: 20) | at most this many of the points a STRONG call needs may come from narrative |
 | `NORTHSTAR_U_THIN_CATEGORY_FLOOR` | 0.5 | coverage below this marks a category thin |
+| `NORTHSTAR_U_SCORE_INCLUDES_SAFETY` | `false` | v2.5: safety is decided by vetoes only; `true` = v2.4 formula |
+| `NORTHSTAR_U_NARRATIVE_BLOCKS` | `false` | `true` = too few narrative items REJECTS (v2.4); `false` = caps at WATCH |
+| `NORTHSTAR_U_EXIT_IMPACT_WARN_PCT` | 5 | exit impact at the largest filled test size that is a serious warning |
+| `NORTHSTAR_U_EXIT_IMPACT_BLOCK_PCT` | 15 | exit impact that disqualifies a call |
+| `NORTHSTAR_COLLAPSE_H1/H6/H24_DROP_PCT` | 50 / 60 / 75 | a drop this large in that window marks a price collapse |
+
+## v2.5 — the scoring and decision audit (2026-10-19)
+
+Live symptom: Northstar found coins, but almost everything ended REJECT or INSUFFICIENT DATA, and
+the same report could show two scores (e.g. 41.2 and 58/100). Every finding below was traced in
+the code; the regression for each is in `tests/test_decision_v25.py`.
+
+### What was wrong
+
+| # | Finding | Kind |
+|---|---|---|
+| 1 | `/research`, `research_snapshots.score`, `candidates.last_score`, the dashboard list and `alerts.score` stored the **v2.3 opportunity score** (`report.score.total`) while the decision and its reasons used the **unified score**. Same coin, two numbers. The rug check added a third "risk N/100". | display / source of truth |
+| 2 | `ResearchOutcome.risk` was the old `assess_risk()` level (e.g. CRITICAL) while the panel showed the unified class (e.g. HIGH). | display |
+| 3 | The engine re-ran the unified engine with live context, the brain and the AI **after** the snapshot was saved; `_refresh_unified` changed the report's decision without changing `out.action`. The bot could act on one decision while the record showed another. | bug |
+| 4 | Publication policy (cooldown, daily cap, callout market-cap minimum) was read from the legacy `decide()` blockers, which are never computed when a gate fails or is critical-UNKNOWN — so on those coins a unified STRONG bypassed the policy at research time. | bug |
+| 5 | `MIN_NARRATIVE_EVIDENCE_ITEMS=3` was a **blocking** veto. Reaching 3 needs a trending-meta match AND a public Telegram of 500+; most new coins have neither, so they were REJECTED for missing optional data. | missing data treated as danger |
+| 6 | "Extended", "volume fading", "weak buying" and "trade sample not verified" were blocking or serious warnings. Two of them together counted as "2+ serious warnings" -> CAUTION and **HIGH risk**: missing data and timing raised the risk class. | missing data / timing treated as risk |
+| 7 | A concentrated-liquidity pool (Meteora DLMM, CLMM, Whirlpool) made the LP status "unknown" -> `lp_lock` UNKNOWN -> INSUFFICIENT DATA forever, although withdrawability is a known fact — and the token's burned PumpSwap pool was never weighed. ($DOPE) | UNKNOWN vs FAIL confusion |
+| 8 | A **measured** partial LP burn also stayed UNKNOWN. | UNKNOWN vs FAIL confusion |
+| 9 | DexScreener and RugCheck disagreeing on price FAILED a critical gate and rejected the coin before any analysis — a provider conflict treated as a proven hazard. | conflicting providers |
+| 10 | Scoring checks and veto flags for the same fact were not linked (`hold:creator` vs `flag:dev_holds`, `wal:fresh` vs `flag:fresh_*`, `liq:churn` vs the two wash-trading flags, `exit:impact` vs slippage flags...). Wash trading seen by two detectors was two serious warnings; the verdict's level counted them twice again. | double counting |
+| 11 | Clean safety checks earned up to 18 score points. Every migrated pump.fun coin earned the same points (no ranking power) and a RugCheck outage cost a coin points: an outage moved the *opportunity* score. Unknown critical non-trap gates also cost -3 points. | outage leaking into opportunity |
+| 12 | `U_NARRATIVE_CAP` was 20 while narrative was worth at most 16: the documented rule "a good story cannot carry a bad chart" could never bind. | rule that never fires |
+| 13 | A coin down 90%+ was not detected: "fading" needed a +100% 6h pump first. ($WORTHLESS) | missing check |
+| 14 | Exit **cost** was scored but never restricted a call: a sell that routes at 9% impact on $1,000 could still be STRONG. ($WORTHLESS) | missing gate |
+| 15 | When the deepest pool was a DLMM pool, trades were sampled from it, but only PumpSwap swap events can be decoded — so the demand sample was unverifiable; and with RugCheck down a second pool's vault was counted as a whale holder. | data quality |
+| 16 | No funnel telemetry: there was no count of how many coins stopped at each stage, or why. | telemetry |
+
+### What changed
+
+* **One source of truth** — `northstar/final.py`. `final_view()` derives action, score, risk and
+  confidence from the unified result; `apply_final()` writes them onto the outcome, the report,
+  the snapshot row (`Database.update_research_final`) and the candidate row, after the brain and
+  AI have had their say. The v2.3 score stays in the report as `final.legacy_score_v23` (the
+  brain uses it as a feature) and is never shown as *the* score. The brain and tuner keep reading
+  the old risk level from `report.legacy_risk`, so their features do not silently change meaning.
+* **Six separate answers** in `report.unified` and `report.final`: `safety` (PASS/WARN/FAIL/
+  UNRESOLVED from vetoes alone), `score` (opportunity), `early_entry` (EARLY / ON TIME / LATE /
+  COLLAPSED / UNKNOWN, judged from the move already made and never added to the score),
+  `confidence`, `completeness`, `decision` with a `reason_class`.
+* **Two non-hazard severities.** `EVIDENCE_GAP` (narrative shortfall, unverified trade sample,
+  unknown critical non-trap gate, unknown volume trend) and `TIMING` (extended, fading volume,
+  weak buying) cap the decision at WATCH and lower confidence; they never raise the risk class,
+  never count as serious warnings and never cost score points.
+* **LP across all pools** — `security.resolve_lp_floor`. The `lp_lock` gate PASSES when the
+  burned/locked liquidity alone (PumpSwap burns read on-chain, at most 3 reads) clears
+  `MIN_LIQUIDITY_USD`; FAILS when it cannot even in the best case (e.g. DLMM-only liquidity) or
+  the selected pool's own LP is measured as partly unburned; stays UNKNOWN otherwise. The
+  withdrawable share is shown and costs a -3 suspicion; a secondary pool with partly unburned LP
+  is a HIGH flag (never a call).
+* **Unresolved causes.** An UNRESOLVED critical check records whether its provider FAILED this
+  run (`PROVIDER_FAILURE`, retried) or the check could not tell (`CRITICAL_UNKNOWN`).
+* **Single counting.** `HAZARD_ALIASES` now links gate, verdict flag AND scoring check for each
+  fact; a vetoed fact's scoring check is *absorbed* (known for coverage/completeness, worth no
+  points). The verdict level used for the risk class is recomputed with one entry per hazard.
+* **New measured checks.** Price collapse (`market.py`, blocking serious warning, structure
+  shape 0) and exit cost (serious at 5%, blocking at 15% impact on the largest filled size).
+* **Safety out of the score.** Score weights are rescaled over the five opportunity categories
+  (liquidity 24.4, holders 19.5, developer 12.2, structure 24.4, narrative 19.5). Safety still
+  counts for coverage, completeness, confidence and the essential-category check.
+* **Telemetry** — `northstar/telemetry.py`, table `funnel_events`, `python main.py funnel`, the
+  dashboard's *Decision funnel* card and `/api/funnel`.
+
+### What did NOT change
+
+Every hard gate is intact: mint/freeze authority, Token-2022 traps, RugCheck rugged/danger,
+liquidity removal, no sell route, liquidity under half the floor, threshold gates (holder
+concentration, creator holdings, creator dumping, bundles, liquidity floor/ratio). An unresolved
+trap check is still INSUFFICIENT DATA. The learning brain is still a bounded tilt that cannot
+clear a veto. No threshold was lowered to produce more calls.
+
+### Known limits of v2.5
+
+* Thresholds `U_STRONG_MIN=68` / `U_WATCH_MIN=48` were kept, but the score scale changed (safety
+  removed, narrative cap binding). Run `python scripts/validate_decision_engine.py
+  data/northstar.db` on the live database before trusting the new ordering; it has not been
+  re-validated against real outcomes.
+* The self-learning tuner still replays the legacy `decide()` rules (it tunes
+  `MIN_OPPORTUNITY_SCORE`, which the unified engine does not use). Its other tunables (momentum
+  bars, callout market-cap minimum) still act.
+* Tokens held inside withdrawable DLMM positions are not counted as holder supply.
+* RugCheck "danger" risks remain a hard gate; if the funnel shows `rugcheck_danger` dominating
+  rejections of otherwise clean coins, that gate needs its own review.
 
 ## Rollback
 
-The engine adds no tables and no columns. To go back: set `NORTHSTAR_UNIFIED_ENABLED=false` and
+v2.5 adds one table (`funnel_events`, created with IF NOT EXISTS) and no columns. Score-only
+rollback: `NORTHSTAR_U_SCORE_INCLUDES_SAFETY=true`, `NORTHSTAR_U_NARRATIVE_BLOCKS=true`,
+`NORTHSTAR_U_NARRATIVE_CAP=20` restore the v2.4 scoring. Older code ignores the new table and
+the new report keys.
+
+The v2.4 engine added no tables and no columns. To go back: set `NORTHSTAR_UNIFIED_ENABLED=false` and
 restart — research falls back to `decision.decide()` and the brain to its old veto/promote path.
 Reports written while it was on keep their extra `report.unified` key, which older code ignores.
 To roll back the code instead, run the previous version's folder against the same `data/`

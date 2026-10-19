@@ -216,7 +216,8 @@ def vector(report: dict, ts: Optional[float] = None) -> dict:
         if tr.get("sample_size") else None,
         "cluster_pct": _num(cl.get("max_cluster_supply_pct")), "bundle_pct": _num(cl.get("launch_bundle_pct")),
         "fresh_share": _num(cl.get("fresh_wallet_share")),
-        "risk_moderate": 1.0 if report.get("risk") == "MODERATE" else 0.0,
+        # the brain was trained on the assess_risk() level; v2.5 keeps it under legacy_risk
+        "risk_moderate": 1.0 if (report.get("legacy_risk") or report.get("risk")) == "MODERATE" else 0.0,
         "confidence": {"LOW": 0.0, "MEDIUM": 1.0, "HIGH": 2.0}.get(report.get("confidence")),
         "n_failed": float(sum(1 for g in gates if g.get("status") == "FAIL")),
         "n_unknown": float(sum(1 for g in gates if g.get("status") == "UNKNOWN")),

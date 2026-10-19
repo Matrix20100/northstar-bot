@@ -3,6 +3,41 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.5.0 — 2026-10-19 — scoring and decision audit
+
+Why almost everything was rejected or INSUFFICIENT DATA, and why one report could show two
+scores. Full write-up: `docs/DECISION_ENGINE.md`, section "v2.5". Regressions:
+`tests/test_decision_v25.py`.
+
+- **One score, one decision, everywhere** (`northstar/final.py`). `/research`, the CLI, the
+  dashboard, the stored snapshot, the candidate row and the alert now all carry the unified
+  score, risk and decision. The old v2.3 score (the "41.2" next to "58/100") is kept only as
+  `legacy_score_v23`. The rug check shows "rug-risk points", not a second "/100".
+- **The engine's live passes no longer desynchronise the decision**: after live context, the
+  learning brain and the AI read, the action is re-derived from the final unified result and
+  the snapshot row is rewritten.
+- **Publication policy is computed on its own**, so cooldown, daily cap and the callout
+  market-cap minimum apply even when a gate failed or was unknown.
+- **Missing optional data no longer rejects.** Narrative shortfall, an unverified trade sample
+  and unknown non-trap checks are EVIDENCE_GAPs; extended/fading/weak-buying are TIMING. Both cap
+  at WATCH and lower confidence; neither raises risk. (`NORTHSTAR_U_NARRATIVE_BLOCKS=true`
+  restores the old hard rule.)
+- **Concentrated liquidity is judged, not left unknown.** LP safety is weighed across every pool;
+  a verified burned PumpSwap floor that clears the liquidity minimum passes, DLMM-only liquidity
+  fails, unread pools stay UNKNOWN. A measured partial LP burn is a FAIL, not an UNKNOWN.
+- **Provider price disagreement is a contradiction, not a rejection.**
+- **No fact is counted twice** (gate + verdict flag + scoring check linked; verdict level
+  deduplicated).
+- **Safety is the veto layer only**; clean safety checks no longer add score points, so a
+  RugCheck outage no longer lowers the opportunity score. The narrative cap now actually binds
+  (default 10).
+- **New checks**: price collapse (dump in progress) and exit cost (5% warn / 15% block).
+- **Trades are sampled from the decodable PumpSwap pool** when the deepest pool is DLMM/CLMM;
+  every pool of the token is excluded from holder maths.
+- **Decision funnel telemetry**: `funnel_events` table, `python main.py funnel`, dashboard card.
+- Score scale changed: re-run `scripts/validate_decision_engine.py` on the live database before
+  relying on the 68/48 thresholds. Includes everything in 2.4.1 and earlier.
+
 ## 2.4.1 — 2026-10-19 — what the first live day found
 
 Everything here came from watching v2.4.0 run on Wispbyte, not from a test.

@@ -233,11 +233,116 @@ def assess_liquidity(pair: PairInfo, rugcheck: Optional[dict], history: list[dic
 
     lp_status, lp_pct = _lp_status(pair, rugcheck, flags)
     if s.require_lp_lock_verified:
-        st = GateStatus.PASS if lp_status.value and lp_status.value.startswith(("LOCKED", "BURNED", "BONDING")) \
-            else GateStatus.UNKNOWN
-        gates.append(GateResult("lp_lock", st, lp_status.value or "unknown"))
+        gates.append(lp_gate(lp_status.value, lp_pct, liq, s.min_liquidity_usd))
     return LiquidityAssessment(liq_d, liq_mcap, liq_fdv, lp_status, lp_pct, age_h, max_recent, drop, vol_liq,
                                flags, gates)
+
+
+def lp_gate(lp_text: Optional[str], lp_pct: Optional[float], liq: Optional[float],
+            min_liquidity: float) -> GateResult:
+    """The lp_lock gate for ONE pool, keeping PASS / FAIL / UNKNOWN semantically distinct.
+
+    v2.4 returned UNKNOWN for anything that was not fully locked — including a MEASURED partial
+    lock and a concentrated-liquidity pool whose withdrawability is a known fact. UNKNOWN on
+    lp_lock means INSUFFICIENT DATA, so those coins were re-researched forever and never judged.
+
+      PASS     LP burned/locked (>= 95%) or still on the bonding curve
+      FAIL     measured: only part of this pool's LP is burned/locked — whoever holds the rest
+               can pull it. (The token's ONLY pool, usually held by the deployer: a real trap.)
+      UNKNOWN  not measured (RugCheck down, pool not indexed), or a concentrated-liquidity pool
+               whose verdict depends on the token's other pools — see resolve_lp_floor
+    """
+    text = lp_text or "unknown"
+    if lp_text and lp_text.startswith(("LOCKED", "BURNED", "BONDING")):
+        return GateResult("lp_lock", GateStatus.PASS, text)
+    if lp_text and lp_text.startswith("PARTIAL") and lp_pct is not None:
+        locked = f" (about ${liq * lp_pct / 100.0:,.0f} of ${liq:,.0f})" if liq else ""
+        return GateResult("lp_lock", GateStatus.FAIL,
+                          f"{text}{locked} — the unlocked LP can be withdrawn by its holder")
+    return GateResult("lp_lock", GateStatus.UNKNOWN, text)
+
+
+LOCKED_KINDS = ("BURNED", "LOCKED", "BONDING")
+
+
+def resolve_lp_floor(pools: list[dict], min_liquidity: float) -> dict:
+    """LP safety across ALL of a token's pools, not just the deepest one.
+
+    A graduated pump.fun coin keeps its burned PumpSwap pool, but third parties often add
+    Meteora DLMM / CLMM positions that end up deeper. v2.4 judged only the deepest pool, so a
+    coin like $DOPE ($405K in a DLMM pool, $237K in a burned PumpSwap pool) had "unknown" LP and
+    was stuck at INSUFFICIENT DATA. The question that matters for an exit is: how much liquidity
+    can nobody pull?
+
+    pools: [{address, dex, kind, liquidity_usd, locked_pct, verified}] where kind is one of
+    BURNED / LOCKED / BONDING / PARTIAL / CONCENTRATED / UNKNOWN.
+    Returns {status: PASS|FAIL|UNKNOWN, reason, total_usd, locked_usd, unknown_usd,
+             withdrawable_usd, withdrawable_share, pools}.
+    """
+    total = locked = unknown = 0.0
+    rows = []
+    for p in pools:
+        liq = float(p.get("liquidity_usd") or 0.0)
+        if liq <= 0:
+            continue
+        kind = str(p.get("kind") or "UNKNOWN")
+        pct = p.get("locked_pct")
+        total += liq
+        if kind in LOCKED_KINDS:
+            part = liq * (float(pct) / 100.0 if pct is not None else 1.0)
+            locked += part
+        elif kind == "PARTIAL" and pct is not None:
+            part = liq * float(pct) / 100.0
+            locked += part
+        elif kind == "CONCENTRATED":
+            part = 0.0
+        else:
+            unknown += liq
+            part = None
+        rows.append({**p, "locked_usd": None if part is None else round(part, 2)})
+    withdrawable = max(0.0, total - locked - unknown)
+    share = (withdrawable / total) if total else None
+    money = lambda v: f"${v:,.0f}"  # noqa: E731
+    if locked >= min_liquidity:
+        status = "PASS"
+        reason = (f"LOCKED FLOOR — {money(locked)} of {money(total)} liquidity is burned/locked "
+                  + ("(verified on-chain)" if any(r.get("verified") and r.get("kind") in LOCKED_KINDS
+                                                  for r in rows) else "(provider-reported)")
+                  + (f"; {share * 100:.0f}% sits in positions their owners can withdraw" if share else ""))
+    elif locked + unknown >= min_liquidity:
+        status = "UNKNOWN"
+        reason = (f"{money(locked)} of {money(total)} liquidity is verified burned/locked and "
+                  f"{money(unknown)} could not be checked — cannot tell whether the "
+                  f"{money(min_liquidity)} floor is locked")
+    else:
+        status = "FAIL"
+        reason = (f"only {money(locked)} of {money(total)} liquidity is burned/locked "
+                  f"(floor {money(min_liquidity)}); {money(withdrawable)} can be withdrawn by "
+                  "its owners at any time"
+                  + (f" and {money(unknown)} could not be checked (not enough even if it were locked)"
+                     if unknown else ""))
+    return {"status": status, "reason": reason, "total_usd": round(total, 2),
+            "locked_usd": round(locked, 2), "unknown_usd": round(unknown, 2),
+            "withdrawable_usd": round(withdrawable, 2),
+            "withdrawable_share": None if share is None else round(share, 4), "pools": rows}
+
+
+def pool_kind(pair: PairInfo, rc: Optional[dict]) -> tuple[str, Optional[float]]:
+    """What kind of LP a pool has, from what DexScreener/RugCheck say (no RPC)."""
+    dex = (pair.dex_id or "").lower()
+    labels = " ".join(pair.labels or []).lower()
+    if dex == "pumpfun":
+        return "BONDING", None
+    if any(h in labels or h in dex for h in CLMM_HINTS):
+        return "CONCENTRATED", 0.0
+    for m in (rc or {}).get("markets") or []:
+        if isinstance(m, dict) and m.get("pubkey") == pair.pair_address:
+            try:
+                pct = float((m.get("lp") or {}).get("lpLockedPct"))
+            except (TypeError, ValueError):
+                return "UNKNOWN", None
+            return ("LOCKED" if pct >= 95 else "PARTIAL"), pct
+    return "UNKNOWN", None
 
 
 def _lp_status(pair: PairInfo, rc: Optional[dict], flags: list[Flag]) -> tuple[Datum[str], Optional[float]]:
@@ -330,7 +435,12 @@ def rugcheck_findings(rc: Optional[dict], s: Settings, price_usd: Optional[float
         if dev > s.max_source_price_discrepancy_pct:
             flags.append(Flag("PRICE_DISCREPANCY", Severity.HIGH,
                               f"DexScreener and RugCheck prices differ by {dev:.0f}%", DataStatus.OBSERVED))
-            gates.append(GateResult("source_consistency", GateStatus.FAIL, f"price sources disagree by {dev:.0f}%"))
+            # Two providers disagreeing is a confidence problem, not proof the coin is unsafe
+            # (RugCheck's price is often a cached value from an earlier pool). v2.4 FAILED a
+            # critical gate here, which rejected the coin before any analysis ran. It is now
+            # recorded as UNKNOWN (non-critical) and as a contradiction in the unified engine.
+            gates.append(GateResult("source_consistency", GateStatus.UNKNOWN,
+                                    f"price sources disagree by {dev:.0f}%", critical=False))
     tok = rc.get("token") or {}
     try:
         rc_supply = int(tok.get("supply")) / 10 ** int(tok.get("decimals"))

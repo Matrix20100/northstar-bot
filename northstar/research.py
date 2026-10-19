@@ -42,6 +42,9 @@ from .analysis.security import (
     assess_liquidity,
     check_authorities,
     check_extensions,
+    lp_gate,
+    pool_kind,
+    resolve_lp_floor,
     rugcheck_findings,
 )
 from .config import Settings
@@ -460,6 +463,7 @@ class Researcher:
         history = self.db.market_history(mint, now - 24 * 3600)
         la = assess_liquidity(pair, rc, history, s, now)
         await self._verify_lp_onchain(pair, mint, la, report)
+        await self._resolve_lp_floor(pair, pairs, mint, rc, la, report)
         await self._sellability(mint, mint_acc, pair, report)
 
         gates += g1 + g2 + g3 + la.gates
@@ -503,15 +507,23 @@ class Researcher:
             creator = self._creator_from_discovery(mint)
             creator_src = "pump.fun launch event" if creator else ""
 
-        ha = await self._holders(mint, pair, rc, supply_ui, creator)
+        # every pool of this mint is a pool account, not a holder — v2.4 only excluded the
+        # selected pool, so with RugCheck down a second pool's vault read as a whale
+        own_pools = [p.pair_address for p in pairs if p.base_mint == mint and p.pair_address]
+        ha = await self._holders(mint, pair, rc, supply_ui, creator, extra_pools=own_pools)
         gates += ha.gates
         flags += ha.flags
 
         report["holders"] = ha.to_dict()
 
-        # 8. Trades and wallet tracing.
+        # 8. Trades and wallet tracing. Swaps are decoded from PumpSwap events, so when the
+        # deepest pool is a DLMM/CLMM pool the sample is taken from the token's PumpSwap pool.
+        trade_pool = self._trade_pool(pair, pairs, mint)
+        if trade_pool != pair.pair_address:
+            report["trade_pool"] = {"address": trade_pool,
+                                    "reason": "deepest pool is not decodable; sampled the PumpSwap pool"}
         ts, cr = await self._wallets(
-            mint, pair, rc, ha, supply_ui, creator, age_h
+            mint, pair, rc, ha, supply_ui, creator, age_h, trade_pool=trade_pool
         )
 
         wf, wg = W.wallet_findings(ts, cr, h1, s)
@@ -1596,6 +1608,7 @@ class Researcher:
         rc: Optional[dict],
         supply_ui: Optional[float],
         creator: Optional[str],
+        extra_pools: Optional[list[str]] = None,
     ) -> H.HolderAnalysis:
         holders, status, src = [], DataStatus.UNAVAILABLE, "none"
 
@@ -1650,6 +1663,9 @@ class Researcher:
             },
         )
 
+        for pool in extra_pools or []:
+            known.setdefault(pool, {"name": "pool for this token (DexScreener)", "type": "AMM"})
+
         for market in rc_aug.get("markets") or []:
             if isinstance(market, dict) and market.get("pubkey"):
                 known.setdefault(
@@ -1682,8 +1698,10 @@ class Researcher:
         supply_ui,
         creator,
         age_h,
+        trade_pool: Optional[str] = None,
     ):
         s = self.s
+        pool_addr = trade_pool or pair.pair_address
 
         if self.p.rpc is None:
             return (
@@ -1699,6 +1717,7 @@ class Researcher:
 
         pool_owners = {
             pair.pair_address,
+            pool_addr,
             RAYDIUM_V4_AUTHORITY,
         }
 
@@ -1711,7 +1730,7 @@ class Researcher:
         try:
             recent, seen = await W.sample_trades(
                 self.p.rpc,
-                pair.pair_address,
+                pool_addr,
                 mint,
                 pool_owners,
                 s.swap_sample_signatures,
@@ -1754,7 +1773,7 @@ class Researcher:
             try:
                 launch, _ = await W.sample_trades(
                     self.p.rpc,
-                    pair.pair_address,
+                    pool_addr,
                     mint,
                     pool_owners,
                     40,
@@ -1883,24 +1902,6 @@ class Researcher:
             social=social_ev,
         )
 
-    # publication policy, not analysis: these may hold a call back but never create one
-    POLICY_PREFIXES = ("alert cooldown", "daily alert cap", "market cap")
-
-    def _merge_unified(self, u: dict, legacy: Decision) -> Decision:
-        """The unified engine makes the call; publication policy can only downgrade it."""
-        from .analysis.unified import LEGACY_ACTION
-
-        action = Action(LEGACY_ACTION.get(u.get("decision"), "REJECT"))
-        policy = [b for b in legacy.blockers if b.startswith(self.POLICY_PREFIXES)]
-        head = (f"{u.get('decision')} — score {u.get('score', 0):.0f}/100, risk {u.get('risk')}, "
-                f"confidence {u.get('confidence')}, evidence "
-                f"{float(u.get('completeness') or 0) * 100:.0f}%")
-        reasons = [head] + list(u.get("why") or [])[:2]
-        if action == Action.AUTO_POST and policy:
-            action = Action.WATCHLIST
-            reasons.insert(1, "held back by publication policy: " + "; ".join(policy))
-        return Decision(action, reasons, policy + [v for v in (u.get("warnings") or [])][:3])
-
     def _verdict(self, mint: str, report: dict) -> Optional[dict]:
         """The rug verdict. Computed BEFORE the decision so the unified engine can use it."""
         if isinstance(report.get("verdict"), dict):
@@ -1975,11 +1976,104 @@ class Researcher:
             text = f"PARTIAL — only {pct:.0f}% of LP burned (VERIFIED on-chain); the rest is withdrawable"
             la.lp_status = Datum(text, DataStatus.VERIFIED, "solana_rpc")
             la.lp_locked_pct = pct
-            gate.reason = text
+            # a measured partial burn is a FACT, not an unknown (v2.4 left the gate UNKNOWN)
+            judged = lp_gate(text, pct, pair.liquidity_usd,
+                             getattr(getattr(self, "s", None), "min_liquidity_usd", 0.0))
+            gate.status, gate.reason = judged.status, judged.reason
             la.flags[:] = [f for f in la.flags if f.code != "LP_STATUS_UNKNOWN"]
             la.flags.append(Flag("LP_NOT_LOCKED", Severity.HIGH if pct < 50 else Severity.MEDIUM,
                                  f"only {pct:.0f}% of LP burned on-chain — remaining liquidity is withdrawable",
                                  DataStatus.VERIFIED))
+
+    MAX_LP_POOLS = 6          # pools weighed for the LP floor (largest first)
+    MAX_LP_RPC_READS = 3      # on-chain PumpSwap burn reads per research run
+
+    async def _resolve_lp_floor(self, pair: PairInfo, pairs: list, mint: str, rc: Optional[dict],
+                                la, report: dict) -> None:
+        """Judge LP safety across all of the token's pools (see security.resolve_lp_floor).
+
+        Runs only when the selected pool's LP is not already a PASS and either the selected pool
+        is a concentrated-liquidity pool or the token has other pools. Reads PumpSwap pools on
+        chain (the burn is a fact there); never invents a burn it could not read.
+        """
+        gate = next((g for g in la.gates if g.name == "lp_lock"), None)
+        if gate is None or gate.status != GateStatus.UNKNOWN:
+            # PASS needs nothing; a MEASURED partial lock on the selected pool stays a FAIL —
+            # another pool's burn does not make the deployer's unlocked LP any safer
+            return
+        own = sorted([p for p in pairs or [] if p.base_mint == mint and (p.liquidity_usd or 0) >= 1_000
+                      and p.price_usd],
+                     key=lambda p: -(p.liquidity_usd or 0))[: self.MAX_LP_POOLS]
+        if pair.pair_address not in {p.pair_address for p in own}:
+            own = [pair] + own
+        selected_kind, _ = pool_kind(pair, rc)
+        if len(own) < 2 and selected_kind != "CONCENTRATED":
+            return                    # a single ordinary pool: the per-pool gate already decided
+
+        lp_text = la.lp_status.value or ""
+        rows, reads, read_ok = [], 0, False
+        for p in own:
+            row = {"address": p.pair_address, "dex": p.dex_id, "labels": list(p.labels or []),
+                   "liquidity_usd": p.liquidity_usd, "verified": False}
+            if p.pair_address == pair.pair_address:
+                kind = next((k for k in ("BURNED", "LOCKED", "BONDING", "PARTIAL", "CONCENTRATED")
+                             if lp_text.startswith(k)), "UNKNOWN")
+                pct = la.lp_locked_pct if kind in ("BURNED", "LOCKED", "PARTIAL") else (
+                    0.0 if kind == "CONCENTRATED" else None)
+                row["verified"] = "VERIFIED" in lp_text
+            else:
+                kind, pct = pool_kind(p, rc)
+                if kind == "UNKNOWN" and (p.dex_id or "").lower() == "pumpswap" and self.p.rpc is not None \
+                        and reads < self.MAX_LP_RPC_READS:
+                    reads += 1
+                    try:
+                        res = await pumpswap_lp_burn(self.p.rpc, p.pair_address, mint)
+                    except Exception as e:  # noqa: BLE001 - optional evidence; never break research
+                        log.info("on-chain LP check failed for %s pool %s: %s", mint, p.pair_address, e)
+                        res = None
+                    if res is not None:
+                        read_ok = True
+                        pct = float(res["burned_pct"])
+                        kind = "BURNED" if pct >= LPC.BURNED_PCT else "PARTIAL"
+                        row["verified"] = True
+            row.update(kind=kind, locked_pct=pct)
+            rows.append(row)
+        if read_ok:
+            report["sources"]["lp_onchain"] = "OK"
+
+        res = resolve_lp_floor(rows, self.s.min_liquidity_usd)
+        report["liquidity_breakdown"] = res
+        status = {"PASS": GateStatus.PASS, "FAIL": GateStatus.FAIL}.get(res["status"], GateStatus.UNKNOWN)
+        gate.status, gate.reason = status, res["reason"]
+        verified = any(r.get("verified") for r in rows)
+        partial = [r for r in rows if r.get("kind") == "PARTIAL"]
+        if status == GateStatus.PASS:
+            la.lp_status = Datum(res["reason"], DataStatus.VERIFIED if verified else DataStatus.OBSERVED,
+                                 "solana_rpc" if verified else "rugcheck")
+            la.flags[:] = [f for f in la.flags if f.code != "LP_STATUS_UNKNOWN"]
+            if partial:
+                # a pool whose LP tokens are only partly burned has a HOLDER who can pull the
+                # rest — unlike third-party concentrated positions, that is the classic rug path
+                worst = min(partial, key=lambda r: r.get("locked_pct") or 0)
+                la.flags.append(Flag("LP_NOT_LOCKED", Severity.HIGH,
+                                     f"pool {worst['address'][:6]}… has only {worst.get('locked_pct') or 0:.0f}% "
+                                     "of its LP burned/locked — the holder of the rest can pull it",
+                                     DataStatus.VERIFIED if worst.get("verified") else DataStatus.OBSERVED))
+        elif status == GateStatus.FAIL:
+            la.lp_status = Datum("WITHDRAWABLE — " + res["reason"], DataStatus.OBSERVED, "dexscreener")
+            la.flags[:] = [f for f in la.flags if f.code != "LP_STATUS_UNKNOWN"]
+            la.flags.append(Flag("LP_NOT_LOCKED", Severity.HIGH, res["reason"], DataStatus.OBSERVED))
+
+    @staticmethod
+    def _trade_pool(pair: PairInfo, pairs: list, mint: str) -> str:
+        """Where to sample swaps: the selected pool, unless it is a pool type the decoder cannot
+        read (DLMM/CLMM) and the token has a PumpSwap pool, whose swap events ARE decodable."""
+        kind, _ = pool_kind(pair, None)
+        if kind != "CONCENTRATED":
+            return pair.pair_address
+        swaps = [p for p in pairs or [] if p.base_mint == mint and (p.dex_id or "").lower() == "pumpswap"
+                 and (p.liquidity_usd or 0) > 0]
+        return max(swaps, key=lambda p: p.liquidity_usd or 0).pair_address if swaps else pair.pair_address
 
     async def _free_social(self, mint: str, *, pair: Optional[PairInfo] = None, profile: Optional[dict] = None,
                            uri: Optional[str] = None) -> Optional["SOC.SocialEvidence"]:
@@ -2093,6 +2187,12 @@ class Researcher:
         self._verdict(mint, report)
         u = self._unified(mint, report)
 
+        # Publication policy is computed on its own. v2.4 took it from the legacy decide()'s
+        # blockers, but decide() returns early on any FAILED or critical-UNKNOWN gate — so on
+        # exactly those coins the cooldown, daily cap and callout market-cap minimum were never
+        # computed and a unified STRONG could bypass them.
+        report["policy_blockers"] = self.publication_blockers(cooldown, cap, pair.market_cap)
+
         decision: Decision = decide(
             sr.total,
             risk,
@@ -2112,10 +2212,21 @@ class Researcher:
         )
 
         if u:
-            decision = self._merge_unified(u, decision)
+            # ONE source of truth (northstar/final.py): the unified result decides the action,
+            # and its score, risk and confidence are what is stored and shown everywhere.
+            from .final import final_view
+
+            v = final_view(u, report["policy_blockers"])
+            report["decision"] = {"action": v["action"].value, "reasons": v["reasons"],
+                                  "blockers": v["blockers"]}
+            report["confidence"] = v["confidence"].value
+            return self._final(mint, v["action"], report,
+                               v["reasons"] + [b for b in v["blockers"] if b not in v["reasons"]][:6],
+                               pair=pair, dh=dh, risk=v["risk"], score=v["score"],
+                               confidence=v["confidence"])
 
         report["decision"] = decision.to_dict()
-        report["confidence"] = (u or {}).get("confidence") or sr.confidence.value
+        report["confidence"] = sr.confidence.value
 
         return self._final(
             mint,
@@ -2128,6 +2239,19 @@ class Researcher:
             score=sr.total,
             confidence=sr.confidence,
         )
+
+    def publication_blockers(self, cooldown: bool, cap: bool, market_cap: Optional[float]) -> list[str]:
+        """Publication policy: may hold a call back, never create one."""
+        out = []
+        if cooldown:
+            out.append("alert cooldown active for this mint")
+        if cap:
+            out.append("daily alert cap reached")
+        min_mc = getattr(self.s, "min_callout_market_cap", 0) or 0
+        if min_mc > 0 and (market_cap is None or market_cap < min_mc):
+            out.append(f"market cap {'UNKNOWN' if market_cap is None else f'${market_cap:,.0f}'} "
+                       f"below ${min_mc:,.0f} callout minimum")
+        return out
 
     def _not_ready(self, mint: str, report: dict, reasons: list[str],
                    score: Optional[float] = None) -> ResearchOutcome:
@@ -2164,11 +2288,24 @@ class Researcher:
             },
         )
 
-        report["risk"] = report.get("risk", risk.value)
+        from .final import apply_final, has_unified
+
+        if has_unified(report):
+            # the unified risk class is THE risk; the older assess_risk() level stays for reference
+            report.setdefault("legacy_risk", report.get("risk"))
+            report["risk"] = risk.value
+        else:
+            report["risk"] = report.get("risk", risk.value)
         report["final_action"] = action.value
         report["reasons"] = reasons
         self._verdict(mint, report)
 
+        outcome = ResearchOutcome(mint, action, report, dh, pair, None, score, risk, confidence, reasons)
+        apply_final(outcome)
+        report["final"]["stage"] = "researched"
+
+        # store exactly what the outcome carries (apply_final is the single source of truth)
+        action, score, risk, confidence = outcome.action, outcome.score, outcome.risk, outcome.confidence
         snapshot_id = self.db.save_research(
             mint,
             action.value,
@@ -2216,15 +2353,5 @@ class Researcher:
                 pair.liquidity_usd,
             )
 
-        return ResearchOutcome(
-            mint,
-            action,
-            report,
-            dh,
-            pair,
-            snapshot_id,
-            score,
-            risk,
-            confidence,
-            reasons,
-        )
+        outcome.snapshot_id = snapshot_id
+        return outcome

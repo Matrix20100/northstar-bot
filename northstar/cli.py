@@ -1,6 +1,7 @@
 """Command line interface.
 
   python -m northstar run                 continuous engine
+  python -m northstar funnel [--hours 24] decision funnel: counts and exact reasons per stage
   python -m northstar health              config, database and live provider checks
   python -m northstar analyze <MINT>      research one token now (never posts to Discord)
   python -m northstar report              historical performance report
@@ -74,13 +75,26 @@ async def _analyze(s: Settings, mint: str, as_json: bool) -> int:
     ident = r.get("identity") or {}
     print(f"Token:       ${ident.get('symbol', '?')} {ident.get('name', '')}")
     print(f"Pool:        {(r.get('pool') or {}).get('address')} — {(r.get('pool') or {}).get('reason')}")
-    print(f"Decision:    {out.action.value}")
-    print(f"Score:       {out.score if out.score is not None else 'not scored (stopped at a gate/prefilter)'}")
+    final = r.get("final") or {}
+    print(f"Decision:    {out.action.value}" + (f" ({final['decision']})" if final.get("decision") else ""))
+    print(f"Score:       {out.score if out.score is not None else 'not scored (stopped at a gate/prefilter)'}"
+          + (f"   [{final.get('score_source')}]" if final.get("score_source") else ""))
     print(f"Risk:        {out.risk.label}")
     print(f"Confidence:  {out.confidence.value}")
+    if final.get("decision"):
+        print(f"Safety:      {final.get('safety')}    Entry timing: {final.get('early_entry')}    "
+              f"Completeness: {float(final.get('completeness') or 0) * 100:.0f}%")
+    print(f"Why class:   {final.get('reason_class') or '?'}")
     print("Reasons:")
     for x in out.reasons:
         print(f"  - {x}")
+    u = r.get("unified") or {}
+    if u.get("categories"):
+        from .analysis.unified import category_text
+        print("\nScore by category (points/weight, coverage):")
+        print("  " + category_text(u).replace("`", "").replace("\n", "\n  "))
+    if (r.get("score") or {}).get("components"):
+        print(f"\nLegacy v2.3 opportunity score (NOT used for decisions): {(r.get('score') or {}).get('total')}")
     for c in (r.get("score") or {}).get("components", []):
         print(f"\n  [{c['name']}] {c['points']:.1f}/{c['max_points']:.0f}")
         for e in c["evidence"]:
@@ -200,6 +214,9 @@ def main(argv: list[str] | None = None) -> int:
     st = sub.add_parser("selftest", help="check every part of Northstar (add --code to run the test suite)")
     st.add_argument("--code", action="store_true")
     sub.add_parser("init-db")
+    fn = sub.add_parser("funnel", help="how many coins reached each stage, and why they stopped")
+    fn.add_argument("--hours", type=float, default=24.0)
+    fn.add_argument("--json", action="store_true")
     dash = sub.add_parser("dashboard", help="run the read-only web dashboard")
     dash.add_argument("--port", type=int, default=None)
     args = ap.parse_args(argv)
@@ -224,6 +241,15 @@ def main(argv: list[str] | None = None) -> int:
             res = asyncio.run(ST.run_async(s, path, include_code=args.code))
             print(ST.format_text(res))
             return 1 if ST.summary(res)["overall"] == ST.FAIL else 0
+        if args.cmd == "funnel":
+            from . import telemetry as T
+            db = _db(s)
+            try:
+                sm = T.summary(db, args.hours)
+            finally:
+                db.close()
+            print(json.dumps(sm, indent=2, default=str) if args.json else T.format_summary(sm))
+            return 0
         if args.cmd == "test-discord":
             return asyncio.run(_test_discord(s))
         if args.cmd == "init-db":

@@ -180,7 +180,8 @@ def features_from(report: dict, pair, surge: Optional[dict]) -> dict:
     holders = report.get("holders") or {}
     return {
         "score": score.get("total"),
-        "risk": report.get("risk"),
+        # the tuner replays the legacy decide() rules, so it needs the legacy risk level
+        "risk": report.get("legacy_risk") or report.get("risk"),
         "confidence": report.get("confidence"),
         "vol_acc": ms.get("volume_acceleration"),
         "bs_h1": ms.get("buy_sell_ratio_h1"),

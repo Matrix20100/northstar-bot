@@ -146,8 +146,18 @@ def research_summary(out) -> tuple[str, str, int]:
     mint = r.get('mint', '')
     title = f"{out.action.value} • {ident.get('name') or 'Unknown token'} (${ident.get('symbol') or '?'})"
     lines = [f"`{mint}`", ""]
-    score = out.score if out.score is not None else 'UNAVAILABLE'
+    # One score: out.score IS the decision's score (northstar/final.py). v2.4 printed the old
+    # v2.3 opportunity score here while the reasons below quoted the unified score.
+    final = r.get('final') or {}
+    score = f"{out.score:.0f}/100" if isinstance(out.score, (int, float)) else 'UNAVAILABLE'
+    if final.get('score_source') and final.get('score_source') != 'unified decision engine':
+        score += f" ({final['score_source']})"
     lines.append(f"**Score:** {score}  • **Risk:** {out.risk.label}")
+    if final.get('decision'):
+        lines.append(f"**Decision:** {final['decision']} • **Safety:** {final.get('safety') or '?'} • "
+                     f"**Entry timing:** {final.get('early_entry') or 'UNKNOWN'} • "
+                     f"**Confidence:** {final.get('confidence')} • **Why:** "
+                     f"{(final.get('reason_class') or '?').replace('_', ' ').lower()}")
     pm = r.get('pre_migration')
     if r.get('lifecycle') == 'PRE_MIGRATION_BONDING_CURVE' and pm:
         delta = pm.get('market_cap_change_pct')

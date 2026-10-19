@@ -21,6 +21,9 @@ class MarketStructure:
     extended: bool = False
     vertical_thin: bool = False
     fading: bool = False
+    # the price has already collapsed (a dump in progress); see analyze_market
+    collapsed: bool = False
+    collapse_text: Optional[str] = None
     constructive: bool = False
     pullback_pct_from_high: Optional[float] = None
     consolidating: Optional[bool] = None
@@ -98,6 +101,20 @@ def analyze_market(pair: PairInfo, history: list[dict], s: Settings) -> MarketSt
                              DataStatus.OBSERVED))
         ms.entry_reasons.append("Large move is reversing; continuation is not confirmed")
 
+    # Collapse: v2.4 only knew "fading after a pump" (6h > +100% then 1h < -20%), so a coin that
+    # simply dumped -95% read as neutral price structure. Any window past its drop limit marks a
+    # collapse — measured from the provider's own price windows, no history needed.
+    limits = (("1h", h1, getattr(s, "collapse_h1_drop_pct", 50.0)),
+              ("6h", h6, getattr(s, "collapse_h6_drop_pct", 60.0)),
+              ("24h", h24, getattr(s, "collapse_h24_drop_pct", 75.0)))
+    hit = [(w, v) for w, v, lim in limits if v is not None and lim and v <= -abs(lim)]
+    if hit:
+        ms.collapsed = True
+        ms.collapse_text = ("price collapsed: " + ", ".join(f"{v:+.0f}% in {w}" for w, v in hit)
+                            + " — a dump in progress, not an entry")
+        ms.flags.append(Flag("PRICE_COLLAPSE", Severity.HIGH, ms.collapse_text, DataStatus.OBSERVED))
+        ms.entry_reasons.append("Price has collapsed in the provider's recent windows")
+
     if h1 is not None and h6 is not None and h1 > 0 and h6 > 0 and not ms.extended and not ms.vertical_thin:
         ms.constructive = True
         ms.entry_reasons.append("1h and 6h price changes are positive without the configured extension flag")
@@ -166,7 +183,7 @@ def analyze_market(pair: PairInfo, history: list[dict], s: Settings) -> MarketSt
     else:
         ms.notes.append(f"only {len(rows)} prior valid snapshot(s); snapshot-path metrics not assessed")
 
-    if ms.fading or ms.vertical_thin:
+    if ms.collapsed or ms.fading or ms.vertical_thin:
         ms.entry_quality = "POOR"
     elif ms.extended:
         ms.entry_quality = "LATE_OR_WAIT"

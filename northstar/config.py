@@ -183,8 +183,23 @@ class Settings(BaseSettings):
     u_watch_min: float = 48.0       # below this it is not worth watching
     u_min_completeness: float = 0.55  # below this the decision cannot be STRONG
     u_model_tilt: float = 12.0      # most the learning brain may move the score, either way
-    u_narrative_cap: float = 20.0   # a STRONG call must stand up without this much narrative help
+    # at most this many of the points a STRONG call needs may come from narrative. v2.4 shipped
+    # 20 while narrative was worth at most 16, so the rule could never bind; 10 makes it real.
+    u_narrative_cap: float = 10.0
     u_thin_category_floor: float = 0.5  # coverage below this dampens a category instead of passing it
+    # v2.5 (docs/DECISION_ENGINE.md "v2.5"): safety is the veto layer; clean safety checks no
+    # longer add score points. true = the v2.4 formula (safety category earns score points).
+    u_score_includes_safety: bool = False
+    # true = v2.4 behaviour: too few narrative evidence items REJECTS the coin. false (default):
+    # it caps the decision at WATCH and lowers confidence — missing optional data is not danger.
+    u_narrative_blocks: bool = False
+    # exit cost at the largest Jupiter-tested sell size that filled (default sizes 100/500/1000)
+    u_exit_impact_warn_pct: float = 5.0    # serious warning: caps the decision at WATCH
+    u_exit_impact_block_pct: float = 15.0  # this much impact disqualifies a call
+    # price collapse (drops, positive numbers): any one of these marks a dump in progress
+    collapse_h1_drop_pct: float = 50.0
+    collapse_h6_drop_pct: float = 60.0
+    collapse_h24_drop_pct: float = 75.0
 
     # ---------------------------------------------------------------- Research depth
     swap_sample_signatures: int = 150

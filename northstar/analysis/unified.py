@@ -52,6 +52,25 @@ How this works instead
 Score, risk, confidence and completeness stay four separate numbers on purpose. The score is NOT
 a probability of reaching 2x — the calibrated probability, when the brain has one, is reported
 separately as `model.probability`.
+
+v2.5 — six separate answers (see docs/DECISION_ENGINE.md, "v2.5")
+-----------------------------------------------------------------
+* **Safety**      the veto layer only: PASS / WARN / FAIL / UNRESOLVED. Clean safety checks no
+                  longer add points to the score (they still count as evidence for confidence and
+                  completeness): "nothing bad found" is not an opportunity, and a provider outage
+                  should not move the opportunity score. `u_score_includes_safety=true` restores
+                  the v2.4 formula.
+* **Opportunity** `score` (0-100) from liquidity/exit, holders, developer, demand/structure and
+                  narrative evidence — the ONE score Northstar shows and stores.
+* **Early entry** EARLY / ON TIME / LATE / COLLAPSED / UNKNOWN, judged from the move already made.
+* **Confidence**  how reliable the evidence is (gaps and provider disagreements lower it).
+* **Completeness** the share of the relevant evidence actually in hand.
+* **Decision**    STRONG / WATCH / CAUTION / REJECT / INSUFFICIENT DATA, with a `reason_class`.
+
+Two non-hazard classes were added so missing optional data and bad timing stop masquerading as
+risk: EVIDENCE_GAP (we lack something a call needs, e.g. narrative evidence or a verified trade
+sample) and TIMING (the setup is real but now is not the entry). Both cap the decision at WATCH;
+neither raises the risk class or counts as a "serious warning".
 """
 from __future__ import annotations
 
@@ -66,6 +85,14 @@ CONFIRMED_CRITICAL = "CONFIRMED_CRITICAL"
 STRONG_WARNING = "STRONG_WARNING"
 UNVERIFIED_SUSPICION = "UNVERIFIED_SUSPICION"
 UNRESOLVED = "UNRESOLVED"
+# not hazards: they restrict the decision without claiming the coin is dangerous
+EVIDENCE_GAP = "EVIDENCE_GAP"     # a call needs evidence we do not have (yet)
+TIMING = "TIMING"                 # the entry is not right now (extended, fading, no momentum)
+NON_HAZARD = (EVIDENCE_GAP, TIMING)
+
+# why an UNRESOLVED check is unresolved — a provider being down is retried, not judged
+CAUSE_PROVIDER = "provider_failure"
+CAUSE_NOT_MEASURED = "not_measured"
 
 CATEGORIES = ("safety", "liquidity", "holders", "dev", "structure", "narrative")
 CATEGORY_LABELS = {
@@ -94,22 +121,53 @@ SECURITY_GATES = {"mint_authority", "freeze_authority", "token_extensions", "min
 THRESHOLD_GATES = {"holder_concentration", "creator_holdings", "creator_dumping", "launch_bundle",
                    "liquidity", "price_fresh", "bundled_supply"}
 
-# One hazard, one veto: the gate and the flag that describe the same thing share a canonical key.
+# One fact, one entry. The gate, the verdict flag AND the scoring check that describe the same
+# thing share a canonical key: once a hazard is vetoed (at any severity) its scoring check is
+# absorbed, so the same observation is never both a veto and a points deduction. v2.4 listed the
+# gate/flag pairs but not the scoring checks, so e.g. a dev holding 4% cost points in "holders"
+# AND a -3 suspicion penalty, and wash trading reported by two flags counted as two warnings.
 HAZARD_ALIASES = {
+    # holders
     "gate:holder_concentration": "haz:concentration", "flag:top10_big": "haz:concentration",
-    "flag:top10": "haz:concentration", "flag:whale_holder": "haz:concentration",
+    "flag:top10": "haz:concentration", "hold:top10": "haz:concentration",
+    "flag:whale_holder": "haz:whale", "hold:single": "haz:whale",
     "gate:creator_holdings": "haz:dev_holdings", "flag:dev_holds_big": "haz:dev_holdings",
+    "flag:dev_holds": "haz:dev_holdings", "hold:creator": "haz:dev_holdings",
+    "flag:fresh_supply_big": "haz:fresh", "flag:fresh_supply": "haz:fresh",
+    "flag:fresh_wallets": "haz:fresh", "wal:fresh": "haz:fresh",
+    "flag:cluster_big": "haz:cluster", "flag:cluster": "haz:cluster",
+    "gate:bundled_supply": "haz:cluster", "wal:clusters": "haz:cluster",
+    # developer
     "gate:creator_dumping": "haz:dev_selling", "flag:creator_dumping": "haz:dev_selling",
     "flag:dev_sold": "haz:dev_selling",
-    "gate:launch_bundle": "haz:bundle", "flag:bundle": "haz:bundle",
-    "gate:bundled_supply": "haz:bundle",
-    "gate:lp_lock": "haz:lp", "flag:lp_not_locked": "haz:lp",
+    "flag:dev_prior_rugs": "haz:dev_history", "flag:creator_prior_rugs": "haz:dev_history",
+    "dev:history": "haz:dev_history",
+    "flag:serial_launcher": "haz:serial", "dev:volume": "haz:serial",
+    "gate:launch_bundle": "haz:bundle", "flag:bundle": "haz:bundle", "flag:bundle_big": "haz:bundle",
+    # liquidity / LP / exit
+    "gate:lp_lock": "haz:lp", "flag:lp_not_locked": "haz:lp", "flag:lp_partial": "haz:lp",
+    "flag:lp_concentrated": "haz:lp", "lp:withdrawable": "haz:lp", "clean:lp": "haz:lp",
+    "gate:liquidity_removal": "haz:liq_removal", "flag:liquidity_removal": "haz:liq_removal",
+    "clean:liquidity_removal": "haz:liq_removal",
     "gate:liquidity": "haz:liquidity", "liquidity:thin": "haz:liquidity",
     "liquidity:severe": "haz:liquidity", "liquidity:unknown": "haz:liquidity",
     "exit:no_route": "haz:exit", "exit:limited": "haz:exit", "exit:unchecked": "haz:exit",
     "flag:cannot_sell": "haz:exit", "flag:sell_limit": "haz:exit",
+    "exit:cost": "haz:exit_cost", "flag:slippage": "haz:exit_cost",
+    "flag:high_slippage": "haz:exit_cost", "exit:impact": "haz:exit_cost",
+    # trading activity: wash trading is ONE hazard however many detectors see it
+    "flag:possible_wash_trading": "haz:wash", "flag:volume_liquidity_implausible": "haz:wash",
+    "liq:churn": "haz:wash",
+    # price structure
+    # (a collapse is ALSO scored as price structure: "is there an opportunity?" and "may we
+    # call it?" are different questions, and a -90% coin must not show a high opportunity score)
+    "struct:collapse": "haz:collapse", "flag:price_collapse": "haz:collapse",
+    # narrative
+    "flag:recycled_socials": "haz:socials", "nar:socials": "haz:socials",
+    "flag:possible_copycat": "haz:copycat", "nar:crowding": "haz:copycat",
 }
-SEVERITY_RANK = {UNVERIFIED_SUSPICION: 0, UNRESOLVED: 1, STRONG_WARNING: 2, CONFIRMED_CRITICAL: 3}
+SEVERITY_RANK = {UNVERIFIED_SUSPICION: 0, EVIDENCE_GAP: 0, TIMING: 0, UNRESOLVED: 1,
+                 STRONG_WARNING: 2, CONFIRMED_CRITICAL: 3}
 
 # Verdict flags that are proven traps rather than suspicions (verdict.CRITICAL_FLAGS, lowercased).
 PROVEN_TRAPS = {
@@ -155,10 +213,11 @@ class Veto:
     text: str
     grade: str = FACT
     blocking: bool = False      # disqualifies a call without claiming a proven trap
+    cause: str = ""             # UNRESOLVED only: provider_failure / not_measured
 
     def to_dict(self) -> dict:
         return {"key": self.key, "severity": self.severity, "text": self.text,
-                "grade": self.grade, "blocking": self.blocking}
+                "grade": self.grade, "blocking": self.blocking, "cause": self.cause}
 
 
 @dataclass
@@ -166,27 +225,52 @@ class Ledger:
     checks: list[Check] = field(default_factory=list)
     vetoes: list[Veto] = field(default_factory=list)
     claimed: set = field(default_factory=set)
+    # scoring checks whose fact is already carried by a veto: {key: (category, weight)}. They
+    # earn and cost nothing, but they still count as KNOWN for coverage and completeness —
+    # a measured hazard is evidence, not a gap.
+    absorbed: dict = field(default_factory=dict)
 
     def add(self, key: str, category: str, weight: float, grade: str,
             score: Optional[float] = None, text: str = "") -> None:
-        if key in self.claimed:           # a signal is counted once, by its first owner
+        if key in self.claimed:                              # counted once, by its first owner
+            return
+        canonical = HAZARD_ALIASES.get(key, key)
+        owner = next((v for v in self.vetoes if v.key == canonical), None)
+        if owner is not None:
+            self.claimed.add(key)
+            if owner.severity in (UNRESOLVED, EVIDENCE_GAP):
+                # the fact behind this check could not be established: it is a gap, not a pass
+                self.checks.append(Check(key, category, weight, UNKNOWN, None, text or owner.text))
+            else:
+                self.absorbed[key] = (category, weight)
+            return
+        if canonical in self.claimed:
             return
         self.claimed.add(key)
         self.checks.append(Check(key, category, weight, grade, score, text))
 
     def veto(self, key: str, severity: str, text: str, grade: str = FACT,
-             blocking: bool = False) -> None:
+             blocking: bool = False, cause: str = "") -> None:
         canonical = HAZARD_ALIASES.get(key, key)
         for v in self.vetoes:
             if v.key == canonical:        # same hazard seen twice: keep the stronger reading
                 if SEVERITY_RANK[severity] > SEVERITY_RANK[v.severity]:
-                    v.severity, v.text, v.grade = severity, text, grade
+                    v.severity, v.text, v.grade, v.cause = severity, text, grade, cause
                 v.blocking = v.blocking or blocking
                 return
-        self.vetoes.append(Veto(canonical, severity, text, grade, blocking))
+        self.vetoes.append(Veto(canonical, severity, text, grade, blocking, cause))
         self.claimed.add(canonical)       # vetoed hazards never also cost points
         self.claimed.add(key)
-        self.checks = [c for c in self.checks if c.key not in (key, canonical)]
+        gone = [c for c in self.checks if c.key in (key, canonical)
+                or HAZARD_ALIASES.get(c.key) == canonical]
+        unknown = severity in (UNRESOLVED, EVIDENCE_GAP)
+        for c in gone:
+            if unknown:
+                c.grade, c.score = UNKNOWN, None
+            else:
+                self.absorbed[c.key] = (c.category, c.weight)
+        if not unknown:
+            self.checks = [c for c in self.checks if c not in gone]
 
 
 # ---------------------------------------------------------------------------- helpers
@@ -224,6 +308,21 @@ def _gate(gates: list[dict], name: str) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------- the veto layer
+# Which provider a critical check depends on. When that provider FAILED this run, the check is
+# unresolved because of an outage (retry soon), not because the fact cannot be measured.
+CHECK_PROVIDERS = {"mint_authority": ("rpc", "rugcheck"), "freeze_authority": ("rpc", "rugcheck"),
+                   "token_extensions": ("rpc",), "lp_lock": ("rugcheck", "lp_onchain"),
+                   "mint_account": ("rpc",)}
+
+
+def _cause(report: dict, gate_name: str) -> str:
+    sources = report.get("sources") or {}
+    for p in CHECK_PROVIDERS.get(gate_name, ()):
+        if str(sources.get(p) or "").startswith("FAILED"):
+            return CAUSE_PROVIDER
+    return CAUSE_NOT_MEASURED
+
+
 def build_vetoes(report: dict, led: Ledger, s: Any = None) -> None:
     """Hazards, graded. Nothing here is compensatory and nothing here can be outscored."""
     gates = [g for g in report.get("gates") or [] if isinstance(g, dict)]
@@ -239,11 +338,34 @@ def build_vetoes(report: dict, led: Ledger, s: Any = None) -> None:
         elif status == "UNKNOWN" and name in CRITICAL_CHECKS:
             # without a trap check there is no way to call anything clean
             led.veto(f"gate:{name}", UNRESOLVED,
-                     f"{name.replace('_', ' ')} could not be verified: {reason}", grade=UNAVAILABLE)
+                     f"{name.replace('_', ' ')} could not be verified: {reason}", grade=UNAVAILABLE,
+                     cause=_cause(report, name))
         elif status == "UNKNOWN" and critical:
-            # important but not a trap check: restrict rather than reject
-            led.veto(f"gate:{name}", UNVERIFIED_SUSPICION,
+            # important but not a trap check: a call needs it, so it restricts the decision and
+            # lowers confidence. v2.4 also took 3 points off the opportunity score for it, which
+            # made a provider outage look like a worse opportunity.
+            led.veto(f"gate:{name}", EVIDENCE_GAP,
                      f"{name.replace('_', ' ')} unresolved: {reason}", grade=UNKNOWN)
+
+    # Liquidity spread over several pools (e.g. a burned PumpSwap pool plus Meteora DLMM
+    # positions). The burned pool is a floor nobody can pull; concentrated positions can be
+    # withdrawn by their owners at any time. That is a measured fact, so it is a suspicion with
+    # a number on it — the lp_lock gate already decided whether the locked floor is enough.
+    lb = report.get("liquidity_breakdown") if isinstance(report.get("liquidity_breakdown"), dict) else {}
+    share = _num(lb.get("withdrawable_share"))
+    if share is not None and share >= 0.5:
+        locked = _num(lb.get("locked_usd")) or 0.0
+        led.veto("lp:withdrawable", UNVERIFIED_SUSPICION,
+                 f"{share * 100:.0f}% of liquidity sits in owner-withdrawable positions; "
+                 f"${locked:,.0f} is burned/locked", grade=FACT)
+
+    # Price collapse: a coin down most of its value in the last hours is a dump in progress,
+    # whatever the rest of the report says. Measured from the provider's own price windows.
+    ms = report.get("market_structure") or {}
+    if ms.get("collapsed"):
+        led.veto("struct:collapse", STRONG_WARNING,
+                 str(ms.get("collapse_text") or "price collapsed in the last hours"),
+                 grade=FACT, blocking=True)
 
     # The rug verdict is the component measured against real outcomes, so its red flags are
     # hazards here rather than decoration on the embed.
@@ -278,6 +400,22 @@ def build_vetoes(report: dict, led: Ledger, s: Any = None) -> None:
         elif blocked is not None:
             led.veto("exit:limited", STRONG_WARNING,
                      f"a ${blocked:,.0f} sell cannot be filled")
+        # Exit COST, not just exit possibility: a sell that routes but loses 9% to price impact
+        # is a real cost to every member who follows the call. Judged at the largest size that
+        # filled, because that is the size the impact number belongs to.
+        worst = _num(sell.get("worst_impact_pct"))
+        filled = [(_num(c.get("usd")) or 0.0) for c in checked
+                  if isinstance(c, dict) and not c.get("no_route")]
+        size = max(filled) if filled else None
+        warn = _num(getattr(s, "u_exit_impact_warn_pct", None))
+        warn = 5.0 if warn is None else warn
+        block = _num(getattr(s, "u_exit_impact_block_pct", None))
+        block = 15.0 if block is None else block
+        if worst is not None and size and worst >= warn:
+            led.veto("exit:cost", STRONG_WARNING,
+                     f"selling ${size:,.0f} costs {worst:.1f}% in price impact "
+                     f"(warn at {warn:g}%, block at {block:g}%)", grade=FACT,
+                     blocking=worst >= block)
     elif getattr(s, "enable_jupiter", False):
         led.veto("exit:unchecked", UNVERIFIED_SUSPICION,
                  "exit cost could not be checked — size down", grade=UNAVAILABLE)
@@ -322,6 +460,11 @@ def contradictions(report: dict, led: Ledger, s: Any) -> list[str]:
     mcap = _num(m.get("market_cap"))
     if liq is not None and mcap is not None and mcap > 0 and liq > mcap:
         out.append(f"liquidity ${liq:,.0f} is larger than the reported ${mcap:,.0f} market cap")
+    # price disagreement between DexScreener and RugCheck (RugCheck's price is often cached):
+    # recorded as a conflict, never a hard veto (v2.4 rejected the coin outright for it)
+    for f in report.get("flags") or []:
+        if isinstance(f, dict) and f.get("code") == "PRICE_DISCREPANCY":
+            out.append(str(f.get("message") or "price sources disagree"))
     for text in out:
         led.veto(f"conflict:{abs(hash(text)) % 10 ** 8}", UNVERIFIED_SUSPICION,
                  f"sources disagree — {text}", grade=UNKNOWN)
@@ -331,39 +474,52 @@ def contradictions(report: dict, led: Ledger, s: Any) -> list[str]:
 def policy_checks(report: dict, led: Ledger, s: Any) -> None:
     """Thresholds the operator (and the learning loop) set in config, kept intact from v2.3.0.
 
-    These are not new opinions: they are the same bars `decision.decide()` applied, carried over
-    so a tuned bot behaves the same way. They disqualify a call without claiming a proven trap.
+    These are the same bars `decision.decide()` applied, carried over so a tuned bot behaves the
+    same way — but graded for what they ARE. v2.4 made every one of them a blocking "serious
+    warning", so a coin with no Telegram (narrative evidence 2 of 3) was REJECTED and a coin that
+    had simply run up was REJECTED, and two missing-data items together raised the risk class to
+    HIGH. Now:
+      * missing evidence a call needs  -> EVIDENCE_GAP (cap at WATCH, lower confidence)
+      * the entry is not right now     -> TIMING       (cap at WATCH)
+    Neither is a hazard, so neither moves the risk class. `u_narrative_blocks=true` restores the
+    v2.4 behaviour for the narrative bar.
     """
     ms = report.get("market_structure") or {}
     nr = report.get("narrative") or {}
     tr = report.get("trades") or {}
 
     if ms.get("extended") and getattr(s, "block_extended_moves", True):
-        led.veto("policy:extended", STRONG_WARNING,
-                 "price already extended — wait for consolidation", grade=INFERENCE, blocking=True)
+        led.veto("policy:extended", TIMING,
+                 "price already extended — wait for consolidation", grade=INFERENCE)
     items = _num(nr.get("evidence_items"))
     need = _num(getattr(s, "min_narrative_evidence_items", None)) or 0
     if need and items is not None and items < need:
-        led.veto("policy:narrative", STRONG_WARNING,
-                 f"only {items:.0f} independent narrative evidence item(s), need {need:.0f}",
-                 grade=INFERENCE, blocking=True)
+        text = (f"only {items:.0f} independent narrative evidence item(s), need {need:.0f} "
+                "for a call")
+        if getattr(s, "u_narrative_blocks", False):
+            led.veto("policy:narrative", STRONG_WARNING, text, grade=INFERENCE, blocking=True)
+        else:
+            led.veto("policy:narrative", EVIDENCE_GAP, text, grade=INFERENCE)
     min_acc = _num(getattr(s, "min_volume_acceleration", None)) or 0
     acc = _num(ms.get("volume_acceleration"))
-    if min_acc and (acc is None or acc < min_acc):
-        led.veto("policy:volume", STRONG_WARNING,
-                 "volume fading: 1h volume is "
-                 + ("UNKNOWN" if acc is None else f"{acc:.2f}x")
-                 + f" its 6h hourly average (need {min_acc:g}x)", grade=INFERENCE, blocking=True)
+    if min_acc and acc is None:
+        led.veto("policy:volume", EVIDENCE_GAP,
+                 f"volume trend unknown (a call needs 1h volume at {min_acc:g}x its 6h average)",
+                 grade=UNKNOWN)
+    elif min_acc and acc < min_acc:
+        led.veto("policy:volume", TIMING,
+                 f"volume fading: 1h volume is {acc:.2f}x its 6h hourly average "
+                 f"(need {min_acc:g}x)", grade=INFERENCE)
     min_bs = _num(getattr(s, "min_buy_sell_ratio_h1", None)) or 0
     bs = _num(ms.get("buy_sell_ratio_h1"))
     if min_bs and bs is not None and bs < min_bs:
-        led.veto("policy:pressure", STRONG_WARNING,
-                 f"weak buying: 1h buy/sell ratio {bs:.2f} (need {min_bs:g})",
-                 grade=INFERENCE, blocking=True)
+        led.veto("policy:pressure", TIMING,
+                 f"weak buying: 1h buy/sell ratio {bs:.2f} (need {min_bs:g})", grade=INFERENCE)
     status = str(tr.get("status") or "")
     if status and status not in ("VERIFIED", "UNAVAILABLE"):
-        # demand that was never verified on-chain is not good enough to call on
-        led.veto("data:unverified_trades", STRONG_WARNING,
+        # demand that was never verified on-chain is not good enough to call on — but it is a
+        # gap in what we know, not evidence that the coin is dangerous
+        led.veto("data:unverified_trades", EVIDENCE_GAP,
                  f"the demand sample is {status}, not verified on-chain", grade=INFERENCE)
 
 
@@ -393,7 +549,10 @@ def build_checks(report: dict, led: Ledger, s: Any = None) -> None:
         # FAIL is already a veto; `claimed` keeps it out of here
 
     lp = _text(sec.get("lp_status")) or _text((report.get("liquidity") or {}).get("lp_status"))
-    if lp.startswith(("BURNED", "LOCKED", "BONDING")):
+    if lp.startswith("LOCKED FLOOR"):
+        # a verified burned/locked pool carries the floor; other pools are withdrawable
+        led.add("clean:lp", "safety", 4.0, INFERENCE, 0.7, "LP floor burned/locked in one pool")
+    elif lp.startswith(("BURNED", "LOCKED", "BONDING")):
         led.add("clean:lp", "safety", 4.0, FACT, 1.0, f"LP {lp.split(' — ')[0].lower()}")
     elif lp.startswith(("PARTIAL", "CONCENTRATED")):
         led.add("clean:lp", "safety", 4.0, INFERENCE, 0.3, f"LP {lp.split(' — ')[0].lower()}")
@@ -528,7 +687,9 @@ def build_checks(report: dict, led: Ledger, s: Any = None) -> None:
         led.add("str:shape", "structure", 4.0, UNAVAILABLE, text="price structure unavailable")
     else:
         shape, note = 0.5, "price structure read from stored snapshots"
-        if ms.get("extended"):
+        if ms.get("collapsed"):
+            shape, note = 0.0, "price collapsed"
+        elif ms.get("extended"):
             shape, note = 0.05, "price already extended"
         elif ms.get("fading"):
             shape, note = 0.1, "fading after a pump"
@@ -582,22 +743,47 @@ def _weights(s: Any) -> dict:
             "structure": g("u_w_structure", 20.0), "narrative": g("u_w_narrative", 16.0)}
 
 
-def score_categories(checks: list[Check], s: Any = None) -> dict:
-    """points, quality, coverage and the evidence behind every category."""
-    weights, out = _weights(s), {}
+def _score_weights(s: Any = None) -> dict:
+    """The weights the SCORE uses, rescaled so the scored categories add up to 100.
+
+    By default the safety category is evidence for confidence and completeness only — it earns
+    no score. In v2.4 every migrated pump.fun coin collected the same ~18 safety points for
+    revoked authorities and a burned LP (no ranking power), and a RugCheck outage cost a coin
+    those points (an outage moved the opportunity score). Hazards are the veto layer's job.
+    """
+    raw = _weights(s)
+    if getattr(s, "u_score_includes_safety", False):
+        return dict(raw)
+    scored = {k: v for k, v in raw.items() if k != "safety"}
+    total = sum(scored.values()) or 1.0
+    out = {k: v * 100.0 / total for k, v in scored.items()}
+    out["safety"] = 0.0
+    return out
+
+
+def score_categories(checks: list[Check], s: Any = None, absorbed: Optional[dict] = None) -> dict:
+    """points, quality, coverage and the evidence behind every category.
+
+    `absorbed` are checks whose fact is carried by a veto: known (they count for coverage) but
+    worth no points either way, so a hazard is never punished twice.
+    """
+    weights, out = _score_weights(s), {}
     floor = _num(getattr(s, "u_thin_category_floor", None))
     floor = 0.5 if floor is None else floor
+    absorbed = absorbed or {}
     for cat in CATEGORIES:
         mine = [c for c in checks if c.category == cat]
-        total = sum(c.weight for c in mine) or 1.0
+        known = sum(w for (c_cat, w) in absorbed.values() if c_cat == cat)
+        total = (sum(c.weight for c in mine) + known) or 1.0
         counted = [c for c in mine if c.counts]
         avail = sum(c.weight for c in counted)
         earned = sum(c.weight * (c.score or 0.0) for c in counted)
         quality = (earned / avail) if avail else None
-        coverage = avail / total
+        coverage = (avail + known) / total
         pts = 0.0 if quality is None else weights[cat] * quality * (0.5 + 0.5 * coverage)
         out[cat] = {
             "label": CATEGORY_LABELS[cat], "weight": round(weights[cat], 1),
+            "scored": weights[cat] > 0,
             "points": round(pts, 2), "quality": None if quality is None else round(quality, 3),
             "coverage": round(coverage, 3), "thin": coverage < floor,
             "evidence": [c.text for c in counted if c.text and (c.score or 0) >= 0.5][:4],
@@ -607,30 +793,64 @@ def score_categories(checks: list[Check], s: Any = None) -> dict:
     return out
 
 
-def _completeness(checks: list[Check]) -> float:
-    total = sum(c.weight for c in checks) or 1.0
-    return round(sum(c.weight for c in checks if c.counts) / total, 3)
+def _completeness(checks: list[Check], absorbed: Optional[dict] = None) -> float:
+    known = sum(w for (_, w) in (absorbed or {}).values())
+    total = (sum(c.weight for c in checks) + known) or 1.0
+    return round((sum(c.weight for c in checks if c.counts) + known) / total, 3)
 
 
 def _confidence(completeness: float, cats: dict, vetoes: list[Veto], model: Optional[dict]) -> str:
     unresolved = sum(1 for v in vetoes if v.severity == UNRESOLVED)
     thin = sum(1 for c in cats.values() if c["thin"])
+    gaps = sum(1 for v in vetoes if v.severity == EVIDENCE_GAP)
     if completeness >= 0.75 and unresolved == 0 and thin <= 1:
         conf = "HIGH"
     elif completeness >= 0.55 and unresolved <= 1:
         conf = "MEDIUM"
     else:
         conf = "LOW"
+    # missing evidence a call would need lowers confidence instead of disqualifying the coin
+    if gaps >= 3:
+        conf = "LOW"
+    elif gaps and conf == "HIGH":
+        conf = "MEDIUM"
     if model and model.get("trusted") is False and conf == "HIGH":
         conf = "MEDIUM"      # without a trusted model the read is thinner than it looks
     return conf
+
+
+def _verdict_level_deduped(verdict: dict) -> str:
+    """The rug verdict's level, recomputed with one entry per hazard.
+
+    verdict.assess() counts red flags as they are reported, so wash trading seen by two detectors
+    is two "high" flags and lifts the coin to HIGH RISK on its own. Using that level here put the
+    double count straight back into the risk class. Same thresholds as verdict.py, deduplicated.
+    """
+    red = [r for r in (verdict or {}).get("red") or [] if isinstance(r, dict)]
+    if not red:
+        return str((verdict or {}).get("level") or "")
+    weight = {"critical": 100, "high": 25, "medium": 10}
+    best: dict[str, str] = {}
+    for r in red:
+        key = HAZARD_ALIASES.get(f"flag:{r.get('key')}", f"flag:{r.get('key')}")
+        lvl = str(r.get("level") or "medium")
+        if weight.get(lvl, 0) > weight.get(best.get(key, ""), -1):
+            best[key] = lvl
+    if "critical" in best.values():
+        return "RUG LIKELY"
+    highs = sum(1 for v in best.values() if v == "high")
+    raw = sum(weight.get(v, 0) for v in best.values())
+    exit_block = any(str(r.get("key")) in ("cannot_sell", "sell_limit") for r in red)
+    if raw >= 50 or highs >= 2 or exit_block:
+        return "HIGH RISK"
+    return "CAUTION"
 
 
 def _risk(vetoes: list[Veto], verdict: dict, completeness: float) -> str:
     if any(v.severity == CONFIRMED_CRITICAL for v in vetoes):
         return RISK_EXTREME
     strong = [v for v in vetoes if v.severity == STRONG_WARNING]
-    level = str((verdict or {}).get("level") or "")
+    level = _verdict_level_deduped(verdict)
     if any(v.blocking for v in vetoes) or len(strong) >= 2 or level == "HIGH RISK":
         return RISK_HIGH
     if strong or level == "CAUTION":
@@ -640,10 +860,57 @@ def _risk(vetoes: list[Veto], verdict: dict, completeness: float) -> str:
     return RISK_LOW
 
 
+EARLY, ON_TIME, LATE, COLLAPSED, ENTRY_UNKNOWN = "EARLY", "ON TIME", "LATE", "COLLAPSED", "UNKNOWN"
+
+
+def early_entry(report: dict, s: Any = None) -> dict:
+    """Are we discovering this before its major move? Judged ONLY from the move already made.
+
+    Deliberately not part of the score, so it cannot reward a coin for already being popular
+    (bigger liquidity and more buyers already lift the opportunity score). Grades:
+      COLLAPSED  the price has already collapsed (see market.py) — not an entry at all
+      LATE       the configured extension limit is exceeded, or the observed run is already big
+      EARLY      a young pool whose 6h move is still under half the extension limit
+      ON TIME    otherwise, when the price windows are known
+      UNKNOWN    no price windows to judge from
+    """
+    ms = report.get("market_structure") or {}
+    m = report.get("market") or {}
+    pc = m.get("price_change") if isinstance(m.get("price_change"), dict) else {}
+    h1, h6, h24 = (_num(pc.get(k)) for k in ("h1", "h6", "h24"))
+    limit = _num(getattr(s, "max_price_extension_h6_pct", None)) or 200.0
+    created = _num(m.get("pair_created_at"))
+    fetched = _num(m.get("fetched_at"))
+    age_h = ((fetched - created) / 3600.0) if created and fetched and fetched > created else None
+    observed = _num(ms.get("observed_return_pct"))
+    notes: list[str] = []
+    if ms.get("collapsed"):
+        grade = COLLAPSED
+        notes.append(str(ms.get("collapse_text") or "price already collapsed"))
+    elif ms.get("extended") or (observed is not None and observed >= limit):
+        grade = LATE
+        notes.append("most of the move has already happened"
+                     + (f" (+{observed:.0f}% since Northstar first saw it)" if observed is not None else ""))
+    elif h1 is None and h6 is None and h24 is None:
+        grade = ENTRY_UNKNOWN
+        notes.append("no price windows to judge timing from")
+    elif age_h is not None and age_h <= 6 and (h6 is None or h6 < limit / 2):
+        grade = EARLY
+        notes.append(f"pool is {age_h:.1f}h old and the 6h move is "
+                     + (f"{h6:+.0f}%" if h6 is not None else "not yet measurable"))
+    else:
+        grade = ON_TIME
+        if h6 is not None:
+            notes.append(f"6h move {h6:+.0f}% is inside the {limit:.0f}% extension limit")
+    return {"grade": grade, "notes": notes[:2], "pool_age_h": None if age_h is None else round(age_h, 2)}
+
+
 def _entry(report: dict, cats: dict) -> dict:
     ms = report.get("market_structure") or {}
     sell = report.get("sellability") if isinstance(report.get("sellability"), dict) else {}
     reasons, ok = [], True
+    if ms.get("collapsed"):
+        ok, _ = False, reasons.append("price has collapsed — not an entry")
     if ms.get("extended"):
         ok, _ = False, reasons.append("price is extended — wait for consolidation")
     if ms.get("fading"):
@@ -703,79 +970,134 @@ def _essential_gaps(cats: dict) -> list[str]:
     return gaps
 
 
+# Why a coin ended where it did — one class per decision, so rejections can be counted by cause.
+RC_CALL = "CALL"
+RC_SAFETY = "SAFETY_FAIL"                 # a proven trap (hard veto)
+RC_RISK = "RISK_THRESHOLD"                # a measured risk crossed a configured bar
+RC_PROVIDER = "PROVIDER_FAILURE"          # a critical check could not run: provider down
+RC_UNMEASURED = "CRITICAL_UNKNOWN"        # a critical check ran but cannot tell
+RC_WARNINGS = "SERIOUS_WARNINGS"          # two or more serious, unproven warnings
+RC_WEAK = "WEAK_OPPORTUNITY"              # safe enough, just not good enough
+RC_TIMING = "TIMING"                      # extended / fading / no momentum right now
+RC_GAP = "EVIDENCE_GAP"                   # missing evidence a call needs (narrative, trades...)
+RC_ESSENTIAL = "ESSENTIAL_DATA_THIN"      # an essential category is too blind or too weak
+RC_CONFIDENCE = "LOW_CONFIDENCE"          # evidence too thin or contradictory for a call
+RC_WATCH = "BELOW_CALL_LINE"              # watchable score, not yet a call
+
+
 def _decide(score: float, score_ex_nar: float, risk: str, confidence: str, completeness: float,
             vetoes: list[Veto], s: Any, cats: Optional[dict] = None,
-            entry: Optional[dict] = None) -> tuple[str, list[str]]:
-    """Safety first, then evidence, then the score. Caps are graded, not all-or-nothing."""
+            entry: Optional[dict] = None) -> tuple[str, list[str], str]:
+    """Safety first, then evidence, then the score. Caps are graded, not all-or-nothing.
+
+    Returns (decision, reasons, reason_class).
+    """
     why: list[str] = []
     crit = [v for v in vetoes if v.severity == CONFIRMED_CRITICAL]
     if crit:
-        return REJECT, [f"hard veto: {v.text}" for v in crit[:3]]
+        return REJECT, [f"hard veto: {v.text}" for v in crit[:3]], RC_SAFETY
     unresolved = [v for v in vetoes if v.severity == UNRESOLVED]
     if unresolved:
-        return INSUFFICIENT, [f"unresolved critical check: {v.text}" for v in unresolved[:3]]
+        cls = RC_PROVIDER if any(v.cause == CAUSE_PROVIDER for v in unresolved) else RC_UNMEASURED
+        return INSUFFICIENT, [f"unresolved critical check: {v.text}"
+                              + (" (provider unavailable — will retry)" if v.cause == CAUSE_PROVIDER else "")
+                              for v in unresolved[:3]], cls
     blocking = [v for v in vetoes if v.blocking]
     if blocking:
-        return REJECT, [v.text for v in blocking[:3]]
+        return REJECT, [v.text for v in blocking[:3]], RC_RISK
 
     strong_min = _num(getattr(s, "u_strong_min", None)) or 68.0
     watch_min = _num(getattr(s, "u_watch_min", None)) or 48.0
     min_comp = _num(getattr(s, "u_min_completeness", None))
     min_comp = 0.55 if min_comp is None else min_comp
-    nar_cap = _num(getattr(s, "u_narrative_cap", None)) or 20.0
+    nar_cap = _num(getattr(s, "u_narrative_cap", None))
+    nar_cap = 10.0 if nar_cap is None else nar_cap
 
     strong_warnings = [v for v in vetoes if v.severity == STRONG_WARNING]
     suspicions = [v for v in vetoes if v.severity == UNVERIFIED_SUSPICION]
+    timing = [v for v in vetoes if v.severity == TIMING]
+    evidence_gaps = [v for v in vetoes if v.severity == EVIDENCE_GAP]
     gaps = _essential_gaps(cats or {})
 
     # Graded caps, matching what the verdict measured on real outcomes: two serious red flags
     # behaved like HIGH RISK (95% crashed), one behaved like CAUTION (67%).
-    ceiling = STRONG
-    if entry is not None and not entry.get("ok", True):
+    ceiling, cls = STRONG, None
+    entry_bad = entry is not None and not entry.get("ok", True)
+    if timing or entry_bad:
         # a call says "this is worth entering now"; if entry is not justified, it is a WATCH
-        ceiling = WATCH
-        why.append("entry conditions are not right now: "
-                   + "; ".join((entry.get("notes") or [])[:2]))
+        ceiling, cls = WATCH, RC_TIMING
+        notes = [v.text for v in timing] + (list(entry.get("notes") or []) if entry_bad else [])
+        why.append("entry conditions are not right now: " + "; ".join(notes[:2]))
+    if evidence_gaps:
+        ceiling, cls = WATCH, cls or RC_GAP
+        why.append("a call needs more evidence: " + "; ".join(v.text for v in evidence_gaps[:2]))
     if gaps:
-        ceiling = WATCH
+        ceiling, cls = WATCH, cls or RC_ESSENTIAL
         why.append("not enough to call on — " + "; ".join(gaps[:2]))
     if len(strong_warnings) >= 2:
-        ceiling = CAUTION
+        ceiling, cls = CAUTION, RC_WARNINGS
         why.append("two or more serious warnings: " + "; ".join(v.text for v in strong_warnings[:2]))
     elif strong_warnings:
-        ceiling = WATCH
+        ceiling, cls = WATCH, cls or RC_WARNINGS
         why.append(f"serious warning: {strong_warnings[0].text}")
     elif len(suspicions) >= 3:
-        ceiling = WATCH
+        ceiling, cls = WATCH, cls or RC_WARNINGS
         why.append(f"{len(suspicions)} unverified concerns, none proven")
 
     if score < watch_min:
         why.append(f"score {score:.1f} below the {watch_min:.0f} watch line")
-        return (CAUTION if ceiling == CAUTION else REJECT), why
+        return (CAUTION if ceiling == CAUTION else REJECT), why, \
+            (RC_WARNINGS if ceiling == CAUTION else RC_WEAK)
 
+    # The narrative cap: at most `nar_cap` of the points needed for a call may come from
+    # narrative. (v2.4 defaulted the cap to 20 with narrative worth at most 16 — the rule could
+    # never bind. It now defaults to 10 so a good story on a weak chart really cannot be called.)
     if score >= strong_min and ceiling == STRONG and risk in (RISK_LOW, RISK_MODERATE) \
             and confidence != "LOW" and completeness >= min_comp \
             and score_ex_nar >= strong_min - nar_cap:
         return STRONG, [f"score {score:.1f}, {risk.lower()} risk, {confidence.lower()} confidence, "
-                        f"{completeness * 100:.0f}% of the evidence in hand, no serious warnings"]
+                        f"{completeness * 100:.0f}% of the evidence in hand, no serious warnings"], RC_CALL
 
     if score >= strong_min and ceiling == STRONG:
         if score_ex_nar < strong_min - nar_cap:
-            why.append("the score leans too heavily on narrative to be a STRONG call")
+            why.append(f"the score leans too heavily on narrative to be a STRONG call "
+                       f"({score_ex_nar:.1f} without narrative; need {strong_min - nar_cap:.0f})")
+            cls = cls or RC_WATCH
         if completeness < min_comp:
             why.append(f"only {completeness * 100:.0f}% of the evidence was obtained "
                        f"(need {min_comp * 100:.0f}%)")
+            cls = cls or RC_CONFIDENCE
         if confidence == "LOW":
             why.append("confidence is LOW")
+            cls = cls or RC_CONFIDENCE
         if risk == RISK_HIGH:
             why.append("risk is HIGH")
+            cls = cls or RC_WARNINGS
 
     if ceiling == CAUTION or risk == RISK_HIGH:
-        return CAUTION, why
+        return CAUTION, why, cls or RC_WARNINGS
     if not why:
         why.append(f"score {score:.1f} is between the {watch_min:.0f} watch line "
                    f"and the {strong_min:.0f} call line")
-    return WATCH, why
+    return WATCH, why, cls or RC_WATCH
+
+
+def _safety(vetoes: list[Veto], risk: str) -> dict:
+    """Safety on its own: can this be traded without an unacceptable KNOWN risk?"""
+    crit = [v.text for v in vetoes if v.severity == CONFIRMED_CRITICAL]
+    blocking = [v.text for v in vetoes if v.blocking and v.severity != CONFIRMED_CRITICAL]
+    unresolved = [v.text for v in vetoes if v.severity == UNRESOLVED]
+    warn = [v.text for v in vetoes if v.severity == STRONG_WARNING and not v.blocking]
+    if crit or blocking:
+        status = "FAIL"
+    elif unresolved:
+        status = "UNRESOLVED"
+    elif warn:
+        status = "WARN"
+    else:
+        status = "PASS"
+    return {"status": status, "risk": risk, "hard_vetoes": crit[:4], "blocking": blocking[:4],
+            "unresolved": unresolved[:4], "warnings": warn[:4]}
 
 
 # ---------------------------------------------------------------------------- public API
@@ -791,7 +1113,7 @@ def evaluate(report: dict, s: Any = None) -> dict:
 
 def _assemble(led: Ledger, report: dict, s: Any, model: Optional[dict], ai: Optional[dict],
               conflicts: Optional[list[str]] = None) -> dict:
-    cats = score_categories(led.checks, s)
+    cats = score_categories(led.checks, s, led.absorbed)
     base = sum(c["points"] for c in cats.values())
     ex_nar = base - cats["narrative"]["points"]
     tilt, tilt_note = 0.0, None
@@ -809,7 +1131,7 @@ def _assemble(led: Ledger, report: dict, s: Any, model: Optional[dict], ai: Opti
     # 99 is the ceiling on purpose: a score of 100 reads as certainty, and nothing here is
     # certain. The brain's tilt can otherwise push an already strong coin past the top.
     score = round(max(0.0, min(99.0, base + tilt - penalty)), 1)
-    completeness = _completeness(led.checks)
+    completeness = _completeness(led.checks, led.absorbed)
     verdict = report.get("verdict") if isinstance(report.get("verdict"), dict) else {}
     risk = _risk(led.vetoes, verdict, completeness)
     confidence = _confidence(completeness, cats, led.vetoes, model)
@@ -817,8 +1139,9 @@ def _assemble(led: Ledger, report: dict, s: Any, model: Optional[dict], ai: Opti
     if conflicts and confidence == "HIGH":
         confidence = "MEDIUM"      # sources disagree: do not claim high confidence
     entry = _entry(report, cats)
-    decision, why = _decide(score, round(ex_nar + tilt - penalty, 1), risk, confidence,
-                            completeness, led.vetoes, s, cats, entry)
+    timing = early_entry(report, s)
+    decision, why, reason_class = _decide(score, round(ex_nar + tilt - penalty, 1), risk,
+                                          confidence, completeness, led.vetoes, s, cats, entry)
 
     # Most decision-relevant first: weight x quality, with real signals ahead of the routine
     # "authority revoked" confirmations, which matter but are true of most tokens.
@@ -832,8 +1155,16 @@ def _assemble(led: Ledger, report: dict, s: Any, model: Optional[dict], ai: Opti
                     if (c.score or 0) < 0.4])
 
     return {
-        "version": 1,
+        "version": 2,
         "score": score, "base_score": round(base, 1),
+        "score_basis": ("v2.4 (safety points included)" if getattr(s, "u_score_includes_safety", False)
+                        else "opportunity only — safety is the veto layer"),
+        "reason_class": reason_class,
+        "safety": _safety(led.vetoes, risk),
+        "early_entry": timing,
+        "evidence_gaps": [v.text for v in led.vetoes if v.severity == EVIDENCE_GAP],
+        "timing": [v.text for v in led.vetoes if v.severity == TIMING],
+        "absorbed": {k: list(v) for k, v in led.absorbed.items()},
         "score_ex_narrative": round(ex_nar + tilt - penalty, 1),
         "penalty": penalty,
         "penalty_reasons": [v.text for v in suspicions][:4],
@@ -865,8 +1196,10 @@ def _reload(u: dict) -> Ledger:
     led.checks = [Check(**{k: c[k] for k in ("key", "category", "weight", "grade", "score", "text")})
                   for c in u.get("checks") or []]
     led.vetoes = [Veto(v["key"], v["severity"], v["text"], v.get("grade", FACT),
-                       bool(v.get("blocking"))) for v in u.get("vetoes") or []]
-    led.claimed = {c.key for c in led.checks} | {v.key for v in led.vetoes}
+                       bool(v.get("blocking")), v.get("cause") or "") for v in u.get("vetoes") or []]
+    led.absorbed = {k: (v[0], float(v[1])) for k, v in (u.get("absorbed") or {}).items()
+                    if isinstance(v, (list, tuple)) and len(v) == 2}
+    led.claimed = ({c.key for c in led.checks} | {v.key for v in led.vetoes} | set(led.absorbed))
     return led
 
 
@@ -911,15 +1244,21 @@ def panel_text(u: dict, max_lines: int = 4) -> str:
     """The one decision panel used on Discord and in the dashboard."""
     d = str(u.get("decision") or INSUFFICIENT)
     risk = str(u.get("risk") or RISK_MODERATE)
-    lines = [f"{EMOJI.get(d, '')} **{d}** · score **{u.get('score', 0):.0f}/100** · "
+    lines = [f"{EMOJI.get(d, '')} **{d}** · opportunity score **{u.get('score', 0):.0f}/100** · "
              f"risk {RISK_EMOJI.get(risk, '')} {risk} · confidence {u.get('confidence', 'LOW')} · "
              f"evidence {float(u.get('completeness') or 0) * 100:.0f}%"]
+    ee = u.get("early_entry") or {}
+    safety = (u.get("safety") or {}).get("status")
+    if ee.get("grade") or safety:
+        lines.append(f"safety **{safety or '?'}** · entry timing **{ee.get('grade') or 'UNKNOWN'}**")
     for t in (u.get("hard_vetoes") or [])[:2]:
         lines.append(f"⛔ {t}")
     for t in (u.get("warnings") or [])[:2]:
         lines.append(f"🔺 {t}")
     for t in (u.get("unresolved") or [])[:2]:
         lines.append(f"⚪ {t}")
+    for t in ((u.get("timing") or []) + (u.get("evidence_gaps") or []))[:2]:
+        lines.append(f"⏳ {t}")
     for t in (u.get("conflicts") or [])[:1]:
         lines.append(f"⚠️ sources disagree — {t}")
     for t in (u.get("penalty_reasons") or [])[:2]:
@@ -945,8 +1284,11 @@ def category_text(u: dict) -> str:
         c = (u.get("categories") or {}).get(cat) or {}
         pts, w = _num(c.get("points")) or 0.0, _num(c.get("weight")) or 0.0
         cov = (_num(c.get("coverage")) or 0.0) * 100
-        rows.append(f"`{c.get('label', cat)[:26]:<26}` {pts:>5.1f}/{w:<4.0f} "
-                    f"{'(thin: ' + f'{cov:.0f}%)' if c.get('thin') else f'({cov:.0f}%)'}")
+        cov_s = f"(thin: {cov:.0f}%)" if c.get("thin") else f"({cov:.0f}%)"
+        if c.get("scored") is False:
+            rows.append(f"`{c.get('label', cat)[:26]:<26}` vetoes only {cov_s}")
+            continue
+        rows.append(f"`{c.get('label', cat)[:26]:<26}` {pts:>5.1f}/{w:<4.0f} {cov_s}")
     return "\n".join(rows)
 
 

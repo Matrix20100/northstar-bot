@@ -52,6 +52,7 @@ HIGH_FLAGS = {
     "VOLUME_LIQUIDITY_IMPLAUSIBLE": "volume is implausible for the liquidity (wash trading?)",
     "BUYING_CONCENTRATED": "a few wallets do most of the buying",
     "POSSIBLE_COPYCAT": "a bigger token uses the same name/ticker (copycat)",
+    "PRICE_COLLAPSE": "the price has already collapsed (dump in progress)",
 }
 MEDIUM_FLAGS = {
     "RUGCHECK_DANGER": None,
@@ -134,8 +135,15 @@ def assess(report: dict, s=None, stats: Optional[dict] = None) -> dict:
 
     # ---- liquidity
     lp = str(sec.get("lp_status") or "")
+    lb = report.get("liquidity_breakdown") if isinstance(report.get("liquidity_breakdown"), dict) else {}
     if pre:
         green.append("still on the bonding curve — no LP to pull yet")
+    elif lp.startswith("LOCKED FLOOR"):
+        share = _num(lb.get("withdrawable_share"))
+        green.append(f"${_num(lb.get('locked_usd')) or 0:,.0f} of liquidity is burned/locked (verified)")
+        if share is not None and share > 0:
+            r("medium", f"{share * 100:.0f}% of liquidity sits in concentrated positions the owners "
+                        "can withdraw", "lp_concentrated")
     elif lp.startswith(("BURNED", "LOCKED")):
         green.append("LP burned/locked" + (" (verified on-chain)" if "on-chain" in lp else ""))
     elif lp.startswith("PARTIAL"):
@@ -288,7 +296,9 @@ EMOJI = {"RUG LIKELY": "☠️", "HIGH RISK": "🔴", "CAUTION": "🟠", "LOOKS 
 
 def embed_text(v: dict, max_red: int = 4, max_green: int = 3) -> str:
     level = v.get("level") or "NOT ENOUGH DATA"
-    lines = [f"{EMOJI.get(level, '')} **{level}** · risk {v.get('score', 0)}/100"]
+    # The rug-risk points are NOT the decision score: showing them as "N/100" next to the
+    # decision panel's "score N/100" put two different /100 numbers in one message.
+    lines = [f"{EMOJI.get(level, '')} **{level}** · rug-risk points {v.get('score', 0)}"]
     if v.get("headline"):
         lines.append(v["headline"])
     lines += [("⛔ " if r.get("level") == "critical" else "🔺 ") + r["text"]

@@ -32,7 +32,12 @@ def gate(out, name):
 async def test_strong_candidate_qualifies(settings, db):
     out = await run(settings, db, strong_providers())
     assert out.action == Action.AUTO_POST
-    assert out.score >= settings.min_opportunity_score
+    # v2.5: out.score IS the unified decision score (one source of truth); the v2.3 opportunity
+    # score is kept in the report only, labelled as legacy, and decides nothing.
+    assert out.score >= settings.u_strong_min
+    assert out.score == out.report["unified"]["score"] == out.report["final"]["score"]
+    assert out.report["final"]["score_source"] == "unified decision engine"
+    assert out.report["final"]["legacy_score_v23"] == out.report["score"]["total"]
     assert out.risk == RiskLevel.LOW_DETECTED
     assert out.confidence == Confidence.HIGH
     comps = {c["name"]: c for c in out.report["score"]["components"]}

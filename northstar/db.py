@@ -284,6 +284,21 @@ CREATE TABLE IF NOT EXISTS social_links (
     PRIMARY KEY (mint, kind, key)
 );
 CREATE INDEX IF NOT EXISTS idx_social_links_key ON social_links(kind, key, first_seen);
+
+-- v2.5 decision funnel: one row per stage outcome, so "why was nothing called?" has a count
+-- and an exact reason at every stage (see northstar/telemetry.py). Added with IF NOT EXISTS:
+-- no migration step, older databases simply gain the table.
+CREATE TABLE IF NOT EXISTS funnel_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    mint TEXT,
+    stage TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    reason_class TEXT,
+    reason TEXT,
+    score REAL
+);
+CREATE INDEX IF NOT EXISTS idx_funnel_ts ON funnel_events(ts);
 """
 
 
@@ -685,6 +700,35 @@ class Database:
                 json.dumps(report, default=str),
             ),
         )
+
+    def update_research_final(self, snapshot_id: int, action: str, score: Optional[float],
+                              risk: str, confidence: str, report: dict) -> None:
+        """Rewrite a snapshot with the FINAL decision (after live context, brain and AI).
+
+        The snapshot is first written inside research(); the engine can still move the decision
+        afterwards. v2.4 kept the pre-move row, so the history showed a different decision and
+        score from the one the bot acted on.
+        """
+        self.execute(
+            "UPDATE research_snapshots SET action=?, score=?, risk=?, confidence=?, report=? WHERE id=?",
+            (action, score, risk, confidence, json.dumps(report, default=str), snapshot_id),
+        )
+        self.execute("UPDATE outcomes SET action=?, score=? WHERE snapshot_id=? AND status='PENDING'",
+                     (action, score, snapshot_id))
+
+    # -------------------------------------------------------------- funnel telemetry
+
+    def record_funnel(self, rows: list[tuple]) -> None:
+        """rows: (ts, mint, stage, outcome, reason_class, reason, score)"""
+        if not rows:
+            return
+
+        def tx(c: sqlite3.Connection) -> None:
+            c.executemany(
+                "INSERT INTO funnel_events(ts, mint, stage, outcome, reason_class, reason, score) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+
+        self._tx(tx)
 
     def save_market_snapshot(
         self,
@@ -1597,6 +1641,10 @@ class Database:
                     (now - snapshot_retention_days * 86400,),
                 )
                 removed["research_snapshots"] = cur.rowcount
+                cur = c.execute("DELETE FROM funnel_events WHERE ts < ?",
+                                (now - max(snapshot_retention_days, 7) * 86400,))
+                if cur.rowcount:
+                    removed["funnel_events"] = cur.rowcount
 
         self._tx(tx)
         return removed
