@@ -43,6 +43,15 @@ def attach(engine, loop) -> None:
 
 def _version() -> str:
     try:
+        v = (ROOT / "VERSION").read_text().strip()
+    except OSError:
+        v = ""
+    commit = _commit()
+    return f"v{v} ({commit})" if v else commit
+
+
+def _commit() -> str:
+    try:
         head = (ROOT / ".git" / "HEAD").read_text().strip()
         if head.startswith("ref:"):
             ref = ROOT / ".git" / head.split(" ", 1)[1]
@@ -223,12 +232,36 @@ def view_learning(c, s, now: float) -> dict:
                  "ts": m.ts, "describe": B.describe(m),
                  "signals": [{"name": B.LABELS.get(f, f), "weight": round(w, 3)}
                              for f, w in sorted(m.coef.items(), key=lambda kv: -abs(kv[1]))[:16]]}
-    return {"ready": True, "brain": brain, "brain_history": history, "tunables": tunables, "log": log_rows,
+    flags = None
+    if _table_ok(c, "flag_outcomes"):
+        stats = {r["key"]: r for r in db.fetchall("SELECT key, n, crash, run2x FROM flag_outcomes")}
+        base = stats.pop("_all", None)
+        if base:
+            rows = [{"key": k, "label": FLAG_LABELS.get(k, k.replace("_", " ")), **v} for k, v in stats.items() if v["n"] >= 5]
+            rows.sort(key=lambda r: -(r["crash"] / r["n"]))
+            flags = {"base": base, "rows": rows[:25]}
+    return {"ready": True, "brain": brain, "flags": flags, "brain_history": history, "tunables": tunables, "log": log_rows,
             "shadows": stats, "runners": runners.get("n", 0), "radar": radar,
             "win_x": getattr(s, "brain_win_x", 2.0) if s else 2.0, "loss_x": getattr(s, "brain_loss_x", 0.6) if s else 0.6,
             "summary": {k: info.get(k) for k in ("evaluated", "pending", "standard_trades", "standard_avg",
                                                  "scalp_trades", "scalp_avg", "median_peak")}}
 
+
+FLAG_LABELS = {
+    "whale_holder": "one wallet holds 8%+", "buying_concentrated": "a few wallets do most of the buying",
+    "possible_wash_trading": "possible wash trading", "volume_liquidity_implausible": "volume implausible for liquidity",
+    "possible_copycat": "copycat name/ticker", "fresh_wallets": "most checked wallets brand new",
+    "fresh_supply": "fresh wallets hold 5%+", "fresh_supply_big": "fresh wallets hold 15%+",
+    "dev_holds": "dev holds 3%+", "dev_holds_big": "dev holds 10%+", "dev_sold": "dev sold after launch",
+    "creator_dumping": "dev is selling", "dev_prior_rugs": "dev rugged before", "creator_prior_rugs": "dev rugged before",
+    "cluster": "connected wallets hold 8%+", "cluster_big": "connected wallets hold 20%+",
+    "dev_linked_wallets": "dev-linked wallets hold supply", "two_hop": "hidden 2-hop funding",
+    "bundle": "launch bundle 8%+", "bundle_big": "launch bundle 20%+", "top10": "top 10 own 28%+",
+    "top10_big": "top 10 own 45%+", "liquidity_removal": "liquidity dropped from its high",
+    "lp_partial": "LP only partly burned", "lp_not_locked": "LP not burned/locked", "rugcheck_danger": "RugCheck danger",
+    "mint_authority": "mint authority active", "freeze_authority": "freeze authority active",
+    "recycled_socials": "recycled socials", "serial_launcher": "serial launcher",
+}
 
 GROUPS = [
     ("Discord & posting", ("discord_", "dry_run", "free_", "vip_", "early_watch", "max_alerts", "alert_", "embed_")),

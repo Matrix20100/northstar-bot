@@ -467,6 +467,11 @@ class ClusterResult:
     launch_same_slot_wallets: int = 0
     fresh_wallet_share: Optional[float] = None
     wallets_aged: int = 0
+    fresh_supply_pct: Optional[float] = None       # % of supply held by wallets younger than 24h
+    hub_funders: list[str] = field(default_factory=list)   # busy wallets (exchanges) shared by holders
+    two_hop_links: int = 0
+    bubbles: list[dict] = field(default_factory=list)      # bubblemap nodes
+    links: list[dict] = field(default_factory=list)        # bubblemap funding links
     note: str = ""
 
     def to_dict(self) -> dict:
@@ -1133,8 +1138,12 @@ async def trace_wallets(
 
             info = {
                 "oldest_seen": oldest.get("blockTime"),
+                "last_seen": signatures[0].get("blockTime"),
                 "history_complete": complete,
                 "tx_count_lower_bound": len(signatures),
+                # 1000+ transactions: an exchange, router, bot or very active trader, never a
+                # throwaway wallet. Wallets that share such a funder are NOT linked by that alone.
+                "busy": not complete,
                 "funder": None,
             }
 
@@ -1163,6 +1172,103 @@ async def trace_wallets(
     return out
 
 
+async def trace_funders(
+    rpc: SolanaRpc,
+    traced: dict[str, dict],
+    creator: Optional[str] = None,
+    max_n: int = 10,
+) -> dict[str, dict]:
+    """Second hop: who are the funders, and who funded THEM?
+
+    Pros look past the first hop because devs fund buyer wallets through a middle wallet
+    (dev -> A -> holder 1, dev -> B -> holder 2). Funders shared by 2+ wallets come first.
+    A funder with 1000+ transactions is marked busy (exchange / router / bot hub)."""
+    counts: dict[str, int] = defaultdict(int)
+    for info in traced.values():
+        if info.get("funder"):
+            counts[info["funder"]] += 1
+    order = sorted((f for f in counts if f not in traced), key=lambda f: -counts[f])[:max_n]
+    first = await trace_wallets(rpc, order, max_n) if order else {}
+    # third layer only to know whether the grand-funders are hubs (and to link them to the creator)
+    grand: dict[str, int] = defaultdict(int)
+    for info in first.values():
+        if info.get("funder") and info["funder"] not in first and info["funder"] not in traced:
+            grand[info["funder"]] += 1
+    shared = [g for g, n in sorted(grand.items(), key=lambda kv: -kv[1]) if n >= 2 or g == creator][:5]
+    second = await trace_wallets(rpc, shared, len(shared)) if shared else {}
+    return {**first, **second}
+
+
+def bubble_map(
+    traced: dict[str, dict],
+    funders: dict[str, dict],
+    holdings_by_owner: dict[str, float],
+    supply_ui: Optional[float],
+    creator: Optional[str],
+    launch_wallets: set[str],
+    parent_of: dict[str, str],
+    s: Settings,
+    now: float,
+) -> tuple[list[dict], list[dict]]:
+    """Nodes (holders, linking funders, creator) and funding links, for the visual bubblemap."""
+    nodes: dict[str, dict] = {}
+    links: list[dict] = []
+
+    def age_h(info: Optional[dict]) -> Optional[float]:
+        if info and info.get("history_complete") and info.get("oldest_seen"):
+            return round((now - info["oldest_seen"]) / 3600, 1)
+        return None
+
+    for wallet, amount in sorted(holdings_by_owner.items(), key=lambda kv: -kv[1])[:20]:
+        info = traced.get(wallet)
+        a = age_h(info)
+        nodes[wallet] = {
+            "id": wallet, "kind": "creator" if wallet == creator else "holder",
+            "pct": round(amount / supply_ui * 100, 3) if supply_ui else None,
+            "age_h": a, "fresh": a is not None and a < s.fresh_wallet_age_hours,
+            "busy": bool(info and info.get("busy")), "traced": info is not None,
+            "tx": (info or {}).get("tx_count_lower_bound"), "launch_buyer": wallet in launch_wallets,
+            "funder": (info or {}).get("funder"), "cluster": parent_of.get(wallet),
+        }
+    if creator and creator not in nodes:
+        nodes[creator] = {"id": creator, "kind": "creator", "pct": None, "age_h": None, "fresh": False,
+                          "busy": False, "traced": False, "tx": None, "launch_buyer": False, "funder": None,
+                          "cluster": parent_of.get(creator)}
+    # funders that link shown wallets (directly, or through a shared grand-funder / the creator)
+    # become their own small bubbles, so "dev -> A -> holder" chains are visible
+    def funder_node(f: str) -> dict:
+        info = funders.get(f) or traced.get(f) or {}
+        return {"id": f, "kind": "hub" if info.get("busy") else "funder", "pct": None, "age_h": age_h(info),
+                "fresh": False, "busy": bool(info.get("busy")), "traced": bool(info),
+                "tx": info.get("tx_count_lower_bound"), "launch_buyer": False, "funder": info.get("funder"),
+                "cluster": parent_of.get(f)}
+
+    fund_count: dict[str, int] = defaultdict(int)
+    for n in list(nodes.values()):
+        if n.get("funder"):
+            fund_count[n["funder"]] += 1
+    grand_count: dict[str, int] = defaultdict(int)
+    for f in fund_count:
+        gf = (funders.get(f) or {}).get("funder")
+        if gf:
+            grand_count[gf] += 1
+    for f, k in fund_count.items():
+        if f in nodes:
+            continue
+        gf = (funders.get(f) or {}).get("funder")
+        if k >= 2 or (gf and (gf == creator or grand_count.get(gf, 0) >= 2)):
+            nodes[f] = funder_node(f)
+    for gf, k in grand_count.items():
+        if gf not in nodes and k >= 2:
+            nodes[gf] = funder_node(gf)
+    for n in list(nodes.values()):
+        f = n.get("funder")
+        if f and f in nodes:
+            links.append({"a": n["id"], "b": f, "kind": "funded",
+                          "hub": bool(nodes[f].get("busy"))})
+    return list(nodes.values()), links
+
+
 # ---------------------------------------------------------------------------
 # Wallet clusters
 
@@ -1176,9 +1282,21 @@ def build_clusters(
     creator: Optional[str],
     s: Settings,
     now: Optional[float] = None,
+    funders: Optional[dict[str, dict]] = None,
 ) -> ClusterResult:
-    """Infer wallet relationships from funding and sampled trading patterns."""
+    """Infer wallet relationships from funding and sampled trading patterns.
+
+    Funding evidence:
+      * same funder that is the creator                  -> CONFIRMED
+      * same ordinary funder (a wallet with <1000 txs)    -> STRONG
+      * same BUSY funder (exchange / router / bot hub)     -> WEAK (thousands of unrelated
+        people withdraw from the same exchange wallet; on its own that proves nothing)
+      * one traced wallet funded another                  -> STRONG
+      * two funders that were funded by the same ordinary wallet (2 hops: dev -> A -> holder,
+        dev -> B -> holder), or a funder funded by the creator -> STRONG / CONFIRMED
+    """
     now = now or time.time()
+    funders = funders or {}
     result = ClusterResult(DataStatus.INFERRED)
 
     parent: dict[str, str] = {}
@@ -1224,12 +1342,17 @@ def build_clusters(
         if funder:
             by_funder[funder].append(wallet)
 
+    hubs = set()
     for funder, wallets in by_funder.items():
-        evidence = (
-            EvidenceStrength.CONFIRMED
-            if creator and funder == creator
-            else EvidenceStrength.STRONG
-        )
+        busy = bool((funders.get(funder) or traced.get(funder) or {}).get("busy"))
+        if creator and funder == creator:
+            evidence = EvidenceStrength.CONFIRMED
+        elif busy:
+            evidence = EvidenceStrength.WEAK
+            if len(wallets) > 1:
+                hubs.add(funder)
+        else:
+            evidence = EvidenceStrength.STRONG
 
         if evidence == EvidenceStrength.CONFIRMED:
             for wallet in wallets:
@@ -1237,6 +1360,36 @@ def build_clusters(
 
         for wallet in wallets[1:]:
             union(wallets[0], wallet, evidence)
+
+        # one traced wallet funded another (dev wallet -> buyer wallet)
+        if funder in traced and not busy:
+            for wallet in wallets:
+                union(funder, wallet, EvidenceStrength.STRONG)
+
+    # second hop: funders funded by the same ordinary wallet, or by the creator
+    two_hop: set[str] = set()                 # wallets linked only through a second-hop funder
+    by_grand = defaultdict(list)
+    for funder, wallets in by_funder.items():
+        info = funders.get(funder) or {}
+        grand = info.get("funder")
+        if not grand or info.get("busy"):
+            continue
+        if (funders.get(grand) or {}).get("busy"):
+            continue
+        by_grand[grand].append(wallets)
+        if creator and grand == creator:
+            for wallet in wallets:
+                union(wallet, creator, EvidenceStrength.CONFIRMED)
+                two_hop.add(wallet)
+    for grand, groups in by_grand.items():
+        if len(groups) < 2:
+            continue
+        for wallets in groups[1:]:
+            union(groups[0][0], wallets[0], EvidenceStrength.STRONG)
+        for wallets in groups:
+            two_hop.update(wallets)
+    result.hub_funders = sorted(hubs)
+    result.two_hop_links = len(two_hop)
 
     # Same-slot buying is only a coordination heuristic.
     by_slot = defaultdict(list)
@@ -1399,6 +1552,35 @@ def build_clusters(
             fresh_count / result.wallets_aged * 100,
             1,
         )
+
+    # share of supply held by brand-new wallets (top holders only)
+    if supply_ui and supply_ui > 0 and traced:
+        fresh_amount = sum(
+            amount for wallet, amount in holdings_by_owner.items()
+            if (info := traced.get(wallet)) and info.get("history_complete") and info.get("oldest_seen")
+            and (now - info["oldest_seen"]) / 3600 < s.fresh_wallet_age_hours
+        )
+        result.fresh_supply_pct = round(fresh_amount / supply_ui * 100, 2)
+
+    launch_wallets = {trade.wallet for trade in launch_trades if trade.side == "buy"}
+    # stable cluster ids: the index of the (sorted) cluster each wallet belongs to
+    cid = {}
+    groups_sorted = defaultdict(set)
+    for wallet in list(parent):
+        groups_sorted[find(wallet)].add(wallet)
+    order = {}
+    for i, c in enumerate(result.clusters):
+        for member in c["members"]:
+            order[find(member)] = i
+    for root, members in groups_sorted.items():
+        if len(members) >= 2 and root in order:
+            for member in members:
+                cid[member] = order[root]
+    result.bubbles, result.links = bubble_map(traced, funders, holdings_by_owner, supply_ui, creator,
+                                              launch_wallets, cid, s, now)
+    for node in result.bubbles:
+        c = node.get("cluster")
+        node["cluster_strength"] = result.clusters[c]["strength"] if c is not None else None
 
     if not traced and not launch_trades:
         result.status = DataStatus.UNAVAILABLE

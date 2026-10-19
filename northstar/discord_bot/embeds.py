@@ -114,6 +114,10 @@ def callout_embed(report: dict, detected_at: Optional[float] = None, plan: Optio
         *([{"name": "📋 Trade plan" if not scalp else "📋 Scalp plan", "value": _clip("\n".join(plan), 1024),
             "inline": False}] if plan else []),
     ]
+    verdict = report.get("verdict")
+    if isinstance(verdict, dict) and verdict.get("level"):
+        from ..analysis.verdict import embed_text
+        top.append({"name": "🧠 Rug check", "value": _clip(embed_text(verdict), 1024), "inline": False})
     brain = report.get("brain") or {}
     if isinstance(brain.get("p"), (int, float)):
         top.append({"name": "🧠 Learned runner odds", "value": _clip(brain_text(brain), 1024), "inline": False})
@@ -144,7 +148,27 @@ def callout_embed(report: dict, detected_at: Optional[float] = None, plan: Optio
     }
     if isinstance(image_url, str) and image_url.startswith(("https://", "http://")):
         embed["thumbnail"] = {"url": image_url}
-    return embed
+    return fit(embed)
+
+
+EMBED_LIMIT = 5800      # Discord rejects embeds over 6000 characters in total
+
+
+def fit(e: dict, limit: int = EMBED_LIMIT) -> dict:
+    """Trim the longest field values until the embed fits Discord's size limit."""
+    guard = 0
+    while embed_size(e) > limit and guard < 60:
+        guard += 1
+        fields = e.get("fields") or []
+        if not fields:
+            e["description"] = _clip(e.get("description", ""), max(200, len(e.get("description", "")) - 500))
+            continue
+        longest = max(fields, key=lambda f: len(f.get("value", "")))
+        v = longest.get("value", "")
+        if len(v) <= 120:
+            break
+        longest["value"] = _clip(v, max(120, int(len(v) * 0.7)))
+    return e
 
 
 def brain_text(b: dict) -> str:
@@ -303,7 +327,7 @@ def updated_callout(original: dict, alert: dict) -> dict:
     stamp = alert.get("last_update_at")
     if stamp:
         e["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stamp))   # "updated at" in Discord
-    return e
+    return fit(e)
 
 
 PEAK_FIELD = "Peak since callout"

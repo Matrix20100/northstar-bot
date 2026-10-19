@@ -88,6 +88,13 @@ CREATE TABLE IF NOT EXISTS radar_obs (
     path TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_radar_obs_eval ON radar_obs(evaluated, ts);
+CREATE TABLE IF NOT EXISTS flag_outcomes (
+    key TEXT PRIMARY KEY,
+    n INTEGER NOT NULL,
+    crash INTEGER NOT NULL,
+    run2x INTEGER NOT NULL,
+    updated_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS learning_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,
@@ -263,6 +270,47 @@ def backfill_vectors(db, limit: int = 3000) -> int:
         db.execute("UPDATE shadow_calls SET vector=? WHERE id=?", (json.dumps(vec) if vec else "{}", r["id"]))
         filled += 1 if vec else 0
     return filled
+
+
+CRASH_X = 0.3          # "crashed" = fell below 30% of the price at the decision
+
+
+def flag_outcomes(db, now: Optional[float] = None, days: float = 30.0, min_hours: float = 6.0) -> dict:
+    """How often each rug-check red flag was followed by a crash (and by a 2x first), measured on
+    Northstar's own 24h decision tracking. Stored in flag_outcomes; '_all' is the baseline."""
+    now = now or time.time()
+    try:
+        rows = db.fetchall("SELECT verdict_keys, entry_price, max_price, min_price FROM decision_tracking "
+                           "WHERE verdict_keys IS NOT NULL AND samples > 0 AND entry_price > 0 AND decided_at > ? "
+                           "AND (done = 1 OR decided_at < ?)", (now - days * 86400, now - min_hours * 3600))
+    except Exception:  # noqa: BLE001 - older databases
+        return {}
+    stats: dict[str, list[int]] = {}
+    for r in rows:
+        try:
+            keys = json.loads(r["verdict_keys"])
+        except (TypeError, ValueError):
+            continue
+        crash = 1 if (r["min_price"] or r["entry_price"]) / r["entry_price"] < CRASH_X else 0
+        run = 1 if (r["max_price"] or 0) / r["entry_price"] >= 2 else 0
+        for k in list(keys) + ["_all"]:
+            s_ = stats.setdefault(k, [0, 0, 0])
+            s_[0] += 1
+            s_[1] += crash
+            s_[2] += run
+    for k, (n, c, r2) in stats.items():
+        db.execute("INSERT INTO flag_outcomes(key, n, crash, run2x, updated_at) VALUES (?,?,?,?,?) "
+                   "ON CONFLICT(key) DO UPDATE SET n=excluded.n, crash=excluded.crash, run2x=excluded.run2x, "
+                   "updated_at=excluded.updated_at", (k, n, c, r2, now))
+    return {k: {"n": n, "crash": c, "run2x": r2} for k, (n, c, r2) in stats.items()}
+
+
+def load_flag_stats(db) -> dict:
+    try:
+        return {r["key"]: {"n": r["n"], "crash": r["crash"], "run2x": r["run2x"]}
+                for r in db.fetchall("SELECT key, n, crash, run2x FROM flag_outcomes")}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def prune(db, now: Optional[float] = None, keep_days: float = 45.0, radar_keep_days: float = 21.0) -> dict:
@@ -504,6 +552,11 @@ def tune(db, s, days: float = 14, min_samples: int = 20, now: Optional[float] = 
          improve_pct: float = 10.0) -> list[dict]:
     """One learning pass. Returns the accepted changes (already applied to ``s`` and saved)."""
     now = now or time.time()
+    try:
+        B.store_tracking_vectors(db)
+        flag_outcomes(db, now)
+    except Exception:  # noqa: BLE001 - flag statistics are optional
+        log.warning("flag outcome statistics failed", exc_info=True)
     model = B.train(db, s, now) if getattr(s, "brain_enabled", True) else None
     trusted = bool(model and model.trusted)
     rows = _rows(db, days, now, trusted)

@@ -170,6 +170,9 @@ def research_summary(out) -> tuple[str, str, int]:
     soc = (pm or {}).get('socials') or (r.get('narrative') or {}).get('free_socials')
     if soc:
         lines.append("**Socials:** " + socials_line(soc))
+    if r.get('verdict'):
+        from ..analysis.verdict import embed_text
+        lines += ["", "**🧠 Rug check**", embed_text(r['verdict'], max_red=5, max_green=3)]
     lines += ["", "**Reasons**"] + ['• ' + str(x) for x in out.reasons[:6]]
     colour = 0x2ECC71 if out.action.value == 'AUTO_POST' else 0xE74C3C if out.action.value == 'REJECT' else 0xE67E22
     return title, "\n".join(lines), colour

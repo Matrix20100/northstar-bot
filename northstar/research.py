@@ -1839,6 +1839,13 @@ class Researcher:
             except ProviderError as e:
                 log.info("wallet tracing failed for %s: %s", mint, e)
 
+        funders = {}
+        if traced and s.funding_trace_hops >= 2:
+            try:
+                funders = await W.trace_funders(self.p.rpc, traced, creator, s.funding_trace_funders)
+            except ProviderError as e:
+                log.info("second-hop funder tracing failed for %s: %s", mint, e)
+
         holdings = {}
 
         for holder in ha.holders:
@@ -1855,6 +1862,7 @@ class Researcher:
             supply_ui,
             creator,
             s,
+            funders=funders,
         )
 
         return ts, clusters
@@ -1886,6 +1894,16 @@ class Researcher:
             self.s.w_narrative,
             social=social_ev,
         )
+
+    def _flag_stats(self) -> dict:
+        """Learned crash rates per rug-check flag (refreshed every 10 minutes)."""
+        now = time.time()
+        cache = getattr(self, "_flag_cache", None)
+        if cache is None or now - cache[0] > 600:
+            from .learning import load_flag_stats
+            cache = (now, load_flag_stats(self.db))
+            self._flag_cache = cache
+        return cache[1]
 
     async def _verify_lp_onchain(self, pair: PairInfo, mint: str, la, report: dict) -> None:
         """When RugCheck can't confirm the LP, read the PumpSwap pool on-chain. Confirms burns only."""
@@ -2080,6 +2098,12 @@ class Researcher:
         report["risk"] = report.get("risk", risk.value)
         report["final_action"] = action.value
         report["reasons"] = reasons
+        if report.get("gates") is not None or report.get("holders"):
+            try:
+                from .analysis.verdict import assess
+                report["verdict"] = assess(report, self.s, self._flag_stats())
+            except Exception:  # noqa: BLE001 - the summary must never break research
+                log.warning("verdict failed for %s", mint, exc_info=True)
 
         snapshot_id = self.db.save_research(
             mint,

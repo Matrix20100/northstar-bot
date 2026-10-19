@@ -162,6 +162,8 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------- Research depth
     swap_sample_signatures: int = 150
     funding_trace_wallets: int = 12
+    funding_trace_hops: int = 2             # 2 = also trace who funded the funders (dev -> A -> holder)
+    funding_trace_funders: int = 10         # max funders traced on the second hop
     wallet_age_lookups: int = 12
     fresh_wallet_age_hours: float = 24.0
 

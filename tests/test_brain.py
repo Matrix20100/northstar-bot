@@ -219,3 +219,19 @@ def test_learning_tables_are_pruned(db):
         db.execute("INSERT INTO shadow_calls(mint, ts, features) VALUES (?,?,'{}')", (addr("s"), now - age_days * 86400))
         db.execute("INSERT INTO radar_obs(mint, ts, metrics) VALUES (?,?,'{}')", (addr("r"), now - age_days * 86400))
     assert L.prune(db, now) == {"shadow_calls": 1, "radar_obs": 2}
+
+
+def test_flag_outcomes_are_learned_from_tracking(db):
+    L.init_schema(db)
+    now = time.time()
+    whale = report(holders={"max_single_adj": 12.0, "top10_adj": 15.0})
+    for i in range(12):
+        db.execute("INSERT INTO research_snapshots(id, mint, ts, action, report) VALUES (?,?,?,?,?)",
+                   (100 + i, addr(f"w{i}"), now - 30 * 3600, "REJECT", json.dumps(whale)))
+        db.execute("INSERT INTO decision_tracking(snapshot_id, mint, action, decided_at, entry_price, max_price, "
+                   "min_price, samples, done) VALUES (?,?,?,?,1.0,?,?,20,1)",
+                   (100 + i, addr(f"w{i}"), "REJECT", now - 30 * 3600, 2.1 if i < 3 else 1.1, 0.05 if i < 10 else 0.9))
+    B.store_tracking_vectors(db)
+    stats = L.flag_outcomes(db, now)
+    assert stats["whale_holder"] == {"n": 12, "crash": 10, "run2x": 3} and stats["_all"]["n"] == 12
+    assert L.load_flag_stats(db)["whale_holder"]["crash"] == 10

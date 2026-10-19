@@ -131,6 +131,7 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
         <div class="tablewrap"><table><thead><tr><th>Setting</th><th>Now</th><th>Your .env / default</th><th>Range it can try</th></tr></thead><tbody id="tunables"></tbody></table></div></div>
       <div class="card"><h2>Change log <span>every change and why</span></h2><div id="learnLog"></div></div>
     </div>
+    <div class="card" style="margin-top:14px"><h2>What predicts a rug <span>learned from the bot's own 24h tracking</span></h2><div id="flagStats"></div></div>
   </section>
 
   <section data-view="settings" class="hide">
@@ -234,6 +235,7 @@ async function learning(){const d=await api('/api/learning');if(!d.ready){$('bra
   ${(d.brain_history||[]).length>1?`<div class="sub" style="margin-top:10px">Accuracy over the last trainings: ${d.brain_history.slice().reverse().map(h=>h.auc!=null?h.auc.toFixed(2):'—').join(' → ')}</div>`:''}`;
  $('tunables').innerHTML=d.tunables.map(t=>`<tr><td>${esc(t.label)}<br><span class="sub">${esc(t.key)}</span></td><td class="num ${t.learned?'src-learned':''}"><b>${esc(fmt(t.value))}</b>${t.learned?`<br><span class="sub">learned ${ago(t.updated_at)}</span>`:''}</td>
   <td class="num sub">${esc(fmt(t.default))}</td><td class="sub">${esc(t.grid.map(fmt).join(' · '))}</td></tr>`).join('');
+ $('flagStats').innerHTML=flagTable(d.flags);
  $('learnLog').innerHTML=d.log.length?d.log.map(l=>l.key==='RESET'?`<div class="reason" style="padding:7px 0;border-bottom:1px solid #1d212a">↺ <b>Reset</b> to .env values <span class="sub">${ago(l.ts)}</span></div>`:
   `<div style="padding:7px 0;border-bottom:1px solid #1d212a;font-size:12.5px"><b>${esc((l.detail||{}).label||l.key)}</b>: ${esc(fmt(l.old))} → <b class="src-learned">${esc(fmt(l.new))}</b> <span class="sub">${ago(l.ts)}</span>
   ${(l.detail||{}).samples?`<div class="sub">tested on ${num(l.detail.samples)} past coins; held up on recent unseen coins (${(l.detail.check_gain>=0?'+':'')+Number(l.detail.check_gain).toFixed(2)})</div>`:''}</div>`).join(''):'<div class="empty">No changes yet. It needs 20 checked coins before it tunes anything.</div>'}
@@ -275,8 +277,51 @@ async function openToken(mint){$('drawer').classList.add('on');$('overlay').clas
    <dt>Volume 5m / 1h</dt><dd>${usd((m.volume||{}).m5)} / ${usd((m.volume||{}).h1)}</dd><dt>Price change 5m / 1h</dt><dd>${num((m.price_change||{}).m5,1)}% / ${num((m.price_change||{}).h1,1)}%</dd><dt>Found by</dt><dd>${esc((t.sources||[]).join(', '))}</dd></dl></div>
   ${br?`<div class="card" style="margin-bottom:12px"><h2>🧠 Learned runner odds</h2><b style="font-size:22px">${Math.round(br.p*100)}%</b> <span class="sub">${br.base!=null?`average coin ${Math.round(br.base*100)}% · `:''}${br.trusted?'trusted':'still learning'}</span>
    ${(br.ups||[]).length?`<div class="up" style="font-size:12.5px;margin-top:6px">▲ ${esc(br.ups.join(', '))}</div>`:''}${(br.downs||[]).length?`<div class="down" style="font-size:12.5px">▼ ${esc(br.downs.join(', '))}</div>`:''}</div>`:''}
+  ${verdictCard(r.verdict)}${bubbleCard(r.clusters,mint)}
   <div class="card" style="margin-bottom:12px"><h2>Why this decision</h2>${(t.reasons||[]).map(x=>`<div class="reason">• ${esc(x)}</div>`).join('')||'<div class="sub">—</div>'}</div>
-  <div class="card"><h2>Safety checks</h2>${gates.length?gates.map(gate).join(''):'<div class="sub">No checks recorded</div>'}</div>`}
+  <div class="card"><h2>Safety checks</h2>${gates.length?gates.map(gate).join(''):'<div class="sub">No checks recorded</div>'}</div>`;
+  drawBubbles(r.clusters)}
  catch(e){if(e.message!=='auth')$('drawer').innerHTML='<div class="empty">Could not load this coin.</div>'}}
+const VC={'RUG LIKELY':['bad','☠️'],'HIGH RISK':['bad','🔴'],'CAUTION':['warn','🟠'],'LOOKS CLEAN':['good','🟢'],'NOT ENOUGH DATA':['dim','⚪']};
+function verdictCard(v){if(!v)return'';const [k,e]=VC[v.level]||['dim',''];
+ return `<div class="card" style="margin-bottom:12px"><h2>🧠 Rug check <span class="pill ${k}">${e} ${esc(v.level)} · risk ${v.score}/100</span></h2>
+ <div style="font-size:13px;margin-bottom:8px">${esc(v.headline)}</div>
+ ${(v.red||[]).map(r=>`<div class="reason" style="color:${r.level==='critical'?'var(--red)':r.level==='high'?'#ffa3a7':'var(--amber)'}">${r.level==='critical'?'⛔':'🔺'} ${esc(r.text)}${r.crash_rate!=null?` <span class="sub">— crashed ${Math.round(r.crash_rate*100)}% of ${r.seen} times${r.upgraded?' (upgraded by learning)':''}</span>`:''}</div>`).join('')}
+ ${(v.green||[]).map(g=>`<div class="reason up">✅ ${esc(g)}</div>`).join('')}
+ ${(v.unknown||[]).length?`<div class="sub" style="margin-top:6px">Not checked: ${esc(v.unknown.join(' · '))}</div>`:''}</div>`}
+const PAL=['#ff8a8f','#f3c77a','#c9a7ff','#7fd1ff','#ffb07a','#8fe3c0','#f78fd1','#b8c47a'];
+function bubbleCard(cl,mint){if(!cl||!(cl.bubbles||[]).length)return cl&&cl.status==='UNAVAILABLE'?'<div class="card" style="margin-bottom:12px"><h2>🫧 Bubblemap</h2><div class="sub">Wallets were not traced for this coin.</div></div>':'';
+ const hold=cl.bubbles.filter(b=>b.kind!=='funder'&&b.kind!=='hub').sort((a,b)=>(b.pct||0)-(a.pct||0));
+ return `<div class="card" style="margin-bottom:12px"><h2>🫧 Bubblemap <span>top holders · lines = who funded whom</span></h2>
+ <svg id="bubbles" viewBox="0 0 520 360" style="width:100%;height:auto;background:#0b0e14;border-radius:10px;border:1px solid #1d222c"></svg>
+ <div class="sub" style="display:flex;gap:12px;flex-wrap:wrap;margin:8px 0">
+  <span><span style="color:#ff8a8f">●</span>/<span style="color:#c9a7ff">●</span> linked group</span><span><span style="color:#6f86b8">●</span> unlinked holder</span>
+  <span><span style="color:var(--amber)">◯</span> wallet &lt;24h old</span><span><span style="color:#ff4d55">◯</span> dev</span><span><span style="color:#59606e">●</span> funder</span><span>┄ via exchange (ignored)</span></div>
+ <div class="tablewrap"><table><thead><tr><th>Holder</th><th>Supply</th><th>Wallet age</th><th>Funded by</th><th>Group</th></tr></thead><tbody>
+ ${hold.slice(0,20).map(b=>`<tr><td><a target="_blank" rel="noopener" href="https://solscan.io/account/${esc(b.id)}">${esc(short(b.id))}</a>${b.kind==='creator'?' <span class="pill bad">DEV</span>':''}${b.launch_buyer?' <span class="pill warn">launch buyer</span>':''}</td>
+  <td class="num">${b.pct!=null?b.pct.toFixed(2)+'%':'—'}</td><td class="num ${b.fresh?'down':''}">${b.age_h==null?(b.busy?'old / very active':'—'):b.age_h<48?b.age_h.toFixed(1)+' h':(b.age_h/24).toFixed(0)+' days'}</td>
+  <td class="sub">${b.funder?esc(short(b.funder)):'—'}</td><td>${b.cluster!=null&&(b.cluster_strength==='STRONG'||b.cluster_strength==='CONFIRMED')?`<span style="color:${PAL[b.cluster%PAL.length]}">● group ${b.cluster+1}</span>`:'<span class="sub">—</span>'}</td></tr>`).join('')}
+ </tbody></table></div></div>`}
+function drawBubbles(cl){const svg=document.getElementById('bubbles');if(!svg||!cl)return;const W=520,H=360;
+ const nodes=cl.bubbles.map(b=>({...b,x:W/2+(Math.random()-.5)*220,y:H/2+(Math.random()-.5)*160,vx:0,vy:0,
+  r:b.kind==='funder'?5:b.kind==='hub'?7:Math.max(6,Math.min(34,5+Math.sqrt(b.pct||0.05)*7))}));
+ const idx=Object.fromEntries(nodes.map((n,i)=>[n.id,i]));const links=(cl.links||[]).filter(l=>idx[l.a]!=null&&idx[l.b]!=null);
+ const linked=n=>n.cluster!=null&&(n.cluster_strength==='STRONG'||n.cluster_strength==='CONFIRMED');
+ for(let it=0;it<320;it++){const a=1-it/320;
+  for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){const p=nodes[i],q=nodes[j];let dx=q.x-p.x,dy=q.y-p.y,d=Math.hypot(dx,dy)||1;
+   const min=p.r+q.r+6;let f=(min*min*1.4)/(d*d);if(linked(p)&&linked(q)&&p.cluster===q.cluster)f-=0.02*d/100;f*=a;dx/=d;dy/=d;p.vx-=dx*f;p.vy-=dy*f;q.vx+=dx*f;q.vy+=dy*f}
+  for(const l of links){const p=nodes[idx[l.a]],q=nodes[idx[l.b]];let dx=q.x-p.x,dy=q.y-p.y,d=Math.hypot(dx,dy)||1;const k=l.hub?0.002:0.02,f=(d-(p.r+q.r+26))*k*a;dx/=d;dy/=d;p.vx+=dx*f;p.vy+=dy*f;q.vx-=dx*f;q.vy-=dy*f}
+  for(const n of nodes){n.vx+=(W/2-n.x)*0.004*a;n.vy+=(H/2-n.y)*0.006*a;n.x+=n.vx;n.y+=n.vy;n.vx*=.6;n.vy*=.6;n.x=Math.max(n.r+2,Math.min(W-n.r-2,n.x));n.y=Math.max(n.r+2,Math.min(H-n.r-2,n.y))}}
+ const col=n=>n.kind==='funder'?'#59606e':n.kind==='hub'?'#3c424e':linked(n)?PAL[n.cluster%PAL.length]:'#6f86b8';
+ let s='';for(const l of links){const p=nodes[idx[l.a]],q=nodes[idx[l.b]];s+=`<line x1="${p.x.toFixed(1)}" y1="${p.y.toFixed(1)}" x2="${q.x.toFixed(1)}" y2="${q.y.toFixed(1)}" stroke="${l.hub?'#3a404c':'#8a93a6'}" stroke-width="${l.hub?1:1.4}" ${l.hub?'stroke-dasharray="3 3"':''} opacity=".8"/>`}
+ for(const n of nodes){const ring=n.kind==='creator'?'#ff4d55':n.fresh?'#f3c77a':'none';
+  const tip=`${n.kind==='creator'?'DEV ':n.kind==='hub'?'Exchange / busy wallet ':n.kind==='funder'?'Funder ':'Holder '}${n.id}${n.pct!=null?`\n${n.pct.toFixed(2)}% of supply`:''}${n.age_h!=null?`\nwallet age ${n.age_h<48?n.age_h.toFixed(1)+' h':(n.age_h/24).toFixed(0)+' days'}`:n.busy?'\n1000+ transactions':''}${n.launch_buyer?'\nbought at launch':''}`;
+  s+=`<g><title>${esc(tip)}</title><circle cx="${n.x.toFixed(1)}" cy="${n.y.toFixed(1)}" r="${n.r.toFixed(1)}" fill="${col(n)}" fill-opacity="${n.kind==='holder'||n.kind==='creator'?.85:.9}" stroke="${ring}" stroke-width="${ring==='none'?0:2.5}"/>`;
+  if((n.pct||0)>=1.5)s+=`<text x="${n.x.toFixed(1)}" y="${(n.y+3.5).toFixed(1)}" text-anchor="middle" font-size="10" font-weight="700" fill="#0b0e14">${n.pct.toFixed(1)}%</text>`;s+='</g>'}
+ svg.innerHTML=s}
+function flagTable(f){if(!f||!f.rows||!f.rows.length)return'<div class="empty">Not enough tracked decisions yet.</div>';
+ return `<div class="sub" style="margin-bottom:8px">Of ${num(f.base.n)} coins followed for 24 h, ${Math.round(f.base.crash/f.base.n*100)}% fell below 0.3x. Flags far above that line are what really predicts a rug.</div>
+ <div class="tablewrap"><table><thead><tr><th>Red flag</th><th>Seen</th><th>Crashed</th><th>Also hit 2x</th></tr></thead><tbody>
+ ${f.rows.map(r=>`<tr><td>${esc(r.label)}</td><td class="num">${num(r.n)}</td><td class="num"><div style="display:flex;gap:8px;align-items:center"><div class="bar" style="width:70px"><i style="width:${r.crash/r.n*100}%;background:${r.crash/r.n>=.8?'var(--red)':r.crash/r.n>=.5?'var(--amber)':'#6b7385'}"></i></div>${Math.round(r.crash/r.n*100)}%</div></td><td class="num">${Math.round(r.run2x/r.n*100)}%</td></tr>`).join('')}</tbody></table></div>`}
 boot();
 </script></body></html>

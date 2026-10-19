@@ -1,5 +1,59 @@
 # Changelog
 
+Every version contains everything from the versions before it. Each release folder is built from
+the complete code (`python scripts/make_release.py`), never from a partial patch.
+
+## 2.0.0 — 2026-10-19 — second brain
+
+Rug detection (a pro's checklist, automated)
+- **Rug check verdict** on every coin: RUG LIKELY / HIGH RISK / CAUTION / LOOKS CLEAN / NOT ENOUGH
+  DATA, with the red flags, the good signs and what could not be checked. Shown on calls,
+  `/research` and the dashboard. Never loosens a safety gate.
+- **Calibrated on real outcomes**: on 731 coins followed for 24 h, the average coin fell below 0.3x
+  41% of the time; coins with one wallet holding 8%+, concentrated buying, wash trading, a copycat
+  ticker, mostly brand-new wallets or a dev holding/selling crashed 85-100% of the time (now
+  serious flags). "Liquidity dropped from its high" crashed only 27% (no longer a trap). On that
+  history HIGH RISK coins crashed 95% of the time, CAUTION 67%.
+- **The verdict keeps learning**: crash rate per red flag is measured from the bot's own tracking,
+  shown next to each flag, and a medium flag that keeps proving deadly is upgraded automatically.
+- **On-chain bubblemap**: funding traced two hops (dev -> middle wallet -> holder), wallets funding
+  each other, wallet age for every top holder, supply held by wallets under 24 h old, launch
+  buyers. Wallets funded from a busy exchange/router wallet are no longer linked by that alone
+  (it caused false "connected wallets").
+- Dashboard: interactive bubblemap + holder table (supply, age, funder, group) in every coin view;
+  "What predicts a rug" table in the Learning tab.
+- The learning brain also learns from the rug-check numbers (risk score, fresh-wallet supply,
+  linked groups, 2-hop links, exchange-funded holders).
+- Call embeds are trimmed to fit Discord's 6000-character limit (bigger embeds could fail to post).
+
+Control panel
+- Password-protected web dashboard (Overview, Watching, Calls, Learning, Settings, Self-test).
+- Self-test button / `python main.py selftest --code`: settings, Discord login and channels,
+  every data source, database, live loops, learning and the full test suite. Never posts.
+- Dashboard settings now actually read from `.env`; Wispbyte `SERVER_PORT` used automatically.
+
+Learning brain
+- Learns what makes a RUNNER (2x before -40%) from the bot's own history (shadow price paths +
+  24 h decision tracking). Walk-forward validated; on real history AUC 0.66, top-10% picks ran 2x
+  twice as often as the average coin. Trusted brain can veto weak calls or promote coins held back
+  only by score bars; never a safety check.
+- Tuner retunes selection, the brain's odds bars, the runner plan and radar thresholds (from surges
+  and near-misses), one step at a time, only when it holds up on recent unseen coins.
+- Runner plan defaults: 33% at 2x, 33% at 4x, 40% trailing stop, -35% stop, 45-min time stop.
+
+## 1.4.0 — 2026-10-19 (early)
+
+- LP burn verified on-chain for PumpSwap pools when RugCheck is down (it blocked every migrated
+  coin, including a live radar surge).
+- Reddit removed entirely; social attention = the free checks.
+- Deleted Discord callouts are no longer re-edited every cycle.
+
+## 1.3.0 — 2026-10-18 (evening)
+
+- Surge radar (30 s DexScreener scan, immediate research), momentum gate, trade plan with entry,
+  TP1/TP2, stop, trailing and time stop, rug-scalp calls with a RUG banner, CoinGecko candles for
+  peaks, "Peak since callout", live embed edits, self-learning v1, 12 review fixes.
+
 ## 2026-10-18 — full audit
 
 Verification

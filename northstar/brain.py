@@ -79,6 +79,8 @@ LABELS = {
     "fresh_share": "fresh wallets share", "risk_moderate": "moderate risk", "confidence": "evidence confidence",
     "n_failed": "failed checks", "n_unknown": "unconfirmed checks", "surge": "radar surge",
     "log_spike": "surge strength", "trending": "CoinGecko trending", "trend_rank": "trending rank",
+    "rug_score": "rug-check risk score", "fresh_supply": "supply held by fresh wallets",
+    "linked_groups": "linked wallet groups", "two_hop": "hidden 2-hop funding", "hub_funded": "exchange-funded holders",
 }
 FEATURES = list(LABELS)
 
@@ -94,6 +96,8 @@ def init_schema(db) -> None:
     if tcols and "brain_vector" not in tcols:
         # research snapshots are pruned after a week; the brain keeps its own copy of the numbers
         db.execute("ALTER TABLE decision_tracking ADD COLUMN brain_vector TEXT")
+    if tcols and "verdict_keys" not in tcols:
+        db.execute("ALTER TABLE decision_tracking ADD COLUMN verdict_keys TEXT")
 
 
 # ----------------------------------------------------------------------------- features
@@ -182,6 +186,12 @@ def vector(report: dict, ts: Optional[float] = None) -> dict:
         "log_spike": math.log10(max(1.0, _num(surge.get("spike")) or 1.0)) if surge else 0.0,
         "trending": 1.0 if trend else 0.0,
         "trend_rank": 1.0 / max(1.0, _num(trend.get("rank")) or 1.0) if trend else 0.0,
+        "rug_score": _num((report.get("verdict") or {}).get("score")),
+        "fresh_supply": _clip(cl.get("fresh_supply_pct"), 0, 100),
+        "linked_groups": float(sum(1 for c in cl.get("clusters") or [] if isinstance(c, dict)
+                                   and c.get("strength") in ("STRONG", "CONFIRMED"))) if cl.get("bubbles") else None,
+        "two_hop": _num(cl.get("two_hop_links")) if cl.get("bubbles") else None,
+        "hub_funded": float(len(cl.get("hub_funders") or [])) if cl.get("bubbles") else None,
     }
     for name in ("narrative", "demand", "liquidity", "holders", "momentum", "wallet_quality", "evidence"):
         c = comps.get(name) or {}
@@ -373,17 +383,24 @@ def store_tracking_vectors(db, limit: int = 2000) -> int:
                            "WHERE d.brain_vector IS NULL ORDER BY d.decided_at DESC LIMIT ?", (limit,))
     except Exception:  # noqa: BLE001 - older databases without the table/column
         return 0
+    from .analysis.verdict import assess
     filled = 0
     for r in todo:
-        vec = "{}"
+        vec, keys = "{}", None
         try:
             rep = json.loads(r["report"]) if r["report"] else None
         except (TypeError, ValueError):
             rep = None
+        if rep:
+            try:
+                keys = json.dumps(sorted({x["key"] for x in assess(rep)["red"]}))
+            except Exception:  # noqa: BLE001 - a malformed old report just gets no flag record
+                keys = None
         if rep and rep.get("lifecycle") != "PRE_MIGRATION_BONDING_CURVE":
             vec = json.dumps(vector(rep, r["decided_at"]))
             filled += 1
-        db.execute("UPDATE decision_tracking SET brain_vector=? WHERE snapshot_id=?", (vec, r["snapshot_id"]))
+        db.execute("UPDATE decision_tracking SET brain_vector=?, verdict_keys=? WHERE snapshot_id=?",
+                   (vec, keys, r["snapshot_id"]))
     return filled
 
 
