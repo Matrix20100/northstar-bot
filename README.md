@@ -46,7 +46,10 @@ Northstar is tuned to find the **biggest runners** and keeps getting better at i
    fills and 3% fees, and moves a setting one step at a time only when the change also holds up
    on the most recent coins: who gets called, the brain's odds bars, TP/stop/trail/time stop,
    rug-scalp plan, and what the radar counts as a surge (learned from surges *and* near-misses).
-5. Every change is posted to Discord with the numbers behind it. `/learning` shows the state,
+5. **The brain picks its own signals**: every training it tests one candidate signal (or dropping a
+   weak one) and keeps it only if accuracy on unseen coins improves. `scripts/feature_lab.py`
+   reruns the full signal experiment on your database.
+6. Every change is posted to Discord with the numbers behind it. `/learning` shows the state,
    `/learning_reset` undoes it.
 
 **Never learned:** the rug and safety checks. A coin that fails or cannot confirm one is never

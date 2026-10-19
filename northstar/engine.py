@@ -157,6 +157,8 @@ class Engine:
         self.brain_mod = brain
         learning.init_schema(db)
         self.brain = brain.latest(db) if s.brain_enabled else None
+        from .analysis.context import Heat
+        self._heat = Heat()
         self._brain_trusted = bool(self.brain and self.brain.trusted)
         if self.brain is not None:
             log.info("brain: %s", brain.describe(self.brain))
@@ -488,6 +490,12 @@ class Engine:
         if trend:
             out.report["trending"] = {**trend, "line": f"🔥 Trending #{trend['rank']} on CoinGecko/GeckoTerminal "
                                                          "(Solana, last 5 min)"}
+        try:
+            from .analysis import context as CTX
+            out.report["context"] = CTX.build(self.db, mint, out.report, cand, now, self._heat)
+            self._heat.add(out.report, now)
+        except Exception:  # noqa: BLE001 - context is optional evidence
+            log.debug("context failed for %s", mint, exc_info=True)
         brain_p = self._apply_brain(out)
         verdict = None
         if out.action == Action.REJECT and out.pair is not None:

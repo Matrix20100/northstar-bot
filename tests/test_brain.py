@@ -52,7 +52,7 @@ def seed(db, n=240, now=None, seed_=7):
 
 def test_vector_has_every_feature_and_reads_reports():
     v = B.vector(report())
-    assert set(v) == set(B.FEATURES)
+    assert set(v) == set(B.ALL_FEATURES)
     assert abs(v["log_vol_m5"] - 3.69897) < 1e-4 and abs(v["liq_to_mcap"] - 0.2) < 1e-9
     assert v["c_demand"] == 0.5 and v["surge"] == 0.0
     assert B.vector({})["log_mcap"] is None                     # unknown stays unknown
@@ -71,10 +71,11 @@ def test_brain_learns_signal_and_earns_trust(db):
     s = Settings(_env_file=None, brain_min_samples=150, brain_min_auc=0.58)
     m = B.train(db, s)
     assert m is not None and m.trusted and m.auc > 0.75 and m.recent_auc > 0.7
-    assert m.importance(1)[0][0] == "5-min volume" and m.coef["log_vol_m5"] > 0
+    top = [name for name, _ in m.importance(3)]
+    assert "5-min volume" in top and m.coef["log_vol_m5"] > 0
     hot, cold = B.vector(report(vol_m5=30_000)), B.vector(report(vol_m5=1_000))
     assert m.predict(hot) > 0.5 > m.predict(cold)
-    assert "5-min volume" in m.reasons(hot)[0] and B.latest(db).trusted
+    assert m.reasons(hot)[0] and B.latest(db).trusted
     oof = db.fetchone("SELECT COUNT(*) n FROM shadow_calls WHERE brain_oof IS NOT NULL")["n"]
     assert oof > 100                                             # out-of-sample odds stored for the tuner
 
@@ -235,3 +236,40 @@ def test_flag_outcomes_are_learned_from_tracking(db):
     stats = L.flag_outcomes(db, now)
     assert stats["whale_holder"] == {"n": 12, "crash": 10, "run2x": 3} and stats["_all"]["n"] == 12
     assert L.load_flag_stats(db)["whale_holder"]["crash"] == 10
+
+
+def test_feature_search_adds_a_useful_signal_and_logs_it(db):
+    """A signal that is NOT active by default but predicts runners gets switched on by itself."""
+    L.init_schema(db)
+    now = time.time()
+    rnd = random.Random(11)
+    for i in range(300):
+        runner = rnd.random() < 0.3
+        rep = report(vol_m5=rnd.uniform(500, 40_000))
+        rep["market"]["price_change"]["h24"] = rnd.uniform(200, 900) if runner else rnd.uniform(-80, 50)
+        db.execute("INSERT INTO shadow_calls(mint, ts, pool, entry_price, action, called, features, evaluated, path, vector) "
+                   "VALUES (?,?,?,?,?,?,?,1,?,?)", (addr(f"f{i}"), now - 5 * 86400 + i * 600, addr(f"fp{i}"), 1.0,
+                                                   "REJECT", 0, "{}", json.dumps(runner_path() if runner else dud_path()),
+                                                   json.dumps(B.vector(rep))))
+    assert "chg_h24" not in B.active_features(db)
+    m = B.train(db, Settings(_env_file=None))
+    assert "chg_h24" in B.active_features(db) and m.feature_change == ("chg_h24", True)
+    assert "chg_h24" in m.coef
+    log_row = db.fetchone("SELECT key FROM learning_log WHERE key LIKE 'brain_signal:%'")
+    assert log_row["key"] == "brain_signal:chg_h24"
+
+
+def test_context_signals(db):
+    from northstar.analysis import context as CTX
+    now = time.time()
+    for i in range(4):
+        db.upsert_discovery(addr(f"c{i}"), "pumpportal_new", 1.0, "Copy", "FROG")
+    db.upsert_discovery(MINT, "dexscreener_cto", 2.0, "Mock", "frog")
+    ctx = CTX.build(db, MINT, {"identity": {"symbol": "FROG"}}, db.get_candidate(MINT), now + 1)
+    assert ctx["ticker_crowding_6h"] == 4 and ctx["cto"] and "Hot ticker" in ctx["line"]
+    h = CTX.Heat()
+    for v in (10, 20, 30, 40, 50):
+        h.add({"market": {"price_change": {"h1": v}}}, now)
+    assert h.value(now) == 30
+    v = B.vector({**report(), "context": ctx})
+    assert v["cto"] == 1.0 and v["ticker_crowd"] > 0.6

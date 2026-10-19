@@ -3,6 +3,27 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.1.0 — 2026-10-19 — smarter coin finding
+
+Tested on 731 real tracked coins before shipping (accuracy = walk-forward AUC on coins the model had
+not seen; 0.50 = coin flip):
+- New signals for the learning brain, each kept only because it improved accuracy on all three
+  targets (1.5x, 2x, 3x):
+  - **Hot ticker**: other launches with the same ticker in the last 6 h. Copied tickers ran 17% of
+    the time, unique tickers 1%. Shown on calls as "🔥 Hot ticker: N other $X launches in 6 h".
+  - **DexScreener community takeover** (CTO).
+  - **Trades so far** (24 h and 1 h; fewer = earlier) and **1-hour volume vs market cap** (churn).
+  - Runner accuracy 0.664 -> 0.702; with the brain's own first signal search 0.72. Top-10% picks
+    reached 2x 33% of the time (average coin 13%).
+- **The brain tests signals by itself**: each training it tries adding one experimental signal
+  (volume vs 6 h pace, 24 h change, trade sizes, 6 h buy share, market heat, 6 h trades) or dropping
+  a weak one, and keeps the change only if accuracy on unseen coins rises by 0.01+ without the most
+  recent coins getting worse. Changes are logged and announced.
+- **Market heat**: median 1-hour move of the coins researched in the last 30 min (tested live).
+- History is rebuilt with these signals at startup, so the brain uses them from day one.
+- `scripts/feature_lab.py`: rerun the experiment on your own database any time.
+- Includes everything in 2.0.1 and earlier.
+
 ## 2.0.1 — 2026-10-19
 
 - Trade plan text: "sell 33%, then trail the rest" (a comma was missing).

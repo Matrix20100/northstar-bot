@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS candidates (
 CREATE INDEX IF NOT EXISTS ix_cand_next
 ON candidates(state, next_research_at);
 
+CREATE INDEX IF NOT EXISTS ix_cand_symbol
+ON candidates(symbol COLLATE NOCASE, discovered_at);
+
 CREATE TABLE IF NOT EXISTS discovery_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     mint TEXT NOT NULL,

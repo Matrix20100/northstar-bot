@@ -47,6 +47,12 @@ MAX_ROWS = 5000        # newest coins used per training run
 FOLDS = 5              # walk-forward folds
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS brain_features (
+    name TEXT PRIMARY KEY,
+    active INTEGER NOT NULL,
+    changed_at REAL NOT NULL,
+    reason TEXT
+);
 CREATE TABLE IF NOT EXISTS brain_models (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,
@@ -81,8 +87,23 @@ LABELS = {
     "log_spike": "surge strength", "trending": "CoinGecko trending", "trend_rank": "trending rank",
     "rug_score": "rug-check risk score", "fresh_supply": "supply held by fresh wallets",
     "linked_groups": "linked wallet groups", "two_hop": "hidden 2-hop funding", "hub_funded": "exchange-funded holders",
+    # added 2026-10-19 after testing on 731 real coins (each improved accuracy on unseen coins)
+    "log_tx_h24": "trades in 24 h (fewer = earlier)", "log_tx_h1": "trades in the last hour",
+    "vol_to_mc_h1": "1-hour volume vs market cap (churn)", "ticker_crowd": "hot ticker (copies launched in 6 h)",
+    "cto": "DexScreener community takeover",
 }
 FEATURES = list(LABELS)
+# Candidate signals the brain keeps testing itself. Each training run it tries adding one of these
+# (or dropping a weak active signal) and keeps the change only if accuracy on unseen coins improves.
+EXPERIMENTAL_LABELS = {
+    "acc_1_6": "1-hour volume vs 6-hour pace", "chg_h24": "price change 24 hours",
+    "avg_trade_h6": "average trade size (6 h)", "avg_trade_m5": "average trade size (5 min)",
+    "buy_share_h6": "share of buys (6 hours)", "market_heat": "market heat (other coins' 1-hour move)",
+    "log_tx_h6": "trades in 6 hours",
+}
+LABELS.update(EXPERIMENTAL_LABELS)
+ALL_FEATURES = FEATURES + list(EXPERIMENTAL_LABELS)
+MIN_GAIN = 0.01        # walk-forward AUC a feature change must add (and the recent fold must not get worse)
 
 
 def init_schema(db) -> None:
@@ -123,6 +144,21 @@ def _clip(x, lo, hi) -> Optional[float]:
     return None if v is None else max(lo, min(hi, v))
 
 
+def _txlog(t) -> Optional[float]:
+    if not isinstance(t, dict):
+        return None
+    n = (_num(t.get("buys")) or 0) + (_num(t.get("sells")) or 0)
+    return math.log10(1 + n)
+
+
+def _avg_trade(vol, t) -> Optional[float]:
+    v = _num(vol)
+    if not v or not isinstance(t, dict):
+        return None
+    n = (_num(t.get("buys")) or 0) + (_num(t.get("sells")) or 0)
+    return math.log10(max(1.0, v / n)) if n else None
+
+
 def _share(t: Optional[dict]) -> Optional[float]:
     if not isinstance(t, dict):
         return None
@@ -145,6 +181,7 @@ def vector(report: dict, ts: Optional[float] = None) -> dict:
     gates = [g for g in report.get("gates") or [] if isinstance(g, dict)]
     surge = report.get("surge") or {}
     trend = report.get("trending") or {}
+    ctx = report.get("context") or {}
     mcap, liq = _num(m.get("market_cap")), _num(m.get("liquidity_usd"))
     created = _num(m.get("pair_created_at"))
     ts = ts or _num(m.get("fetched_at")) or time.time()
@@ -186,6 +223,16 @@ def vector(report: dict, ts: Optional[float] = None) -> dict:
         "log_spike": math.log10(max(1.0, _num(surge.get("spike")) or 1.0)) if surge else 0.0,
         "trending": 1.0 if trend else 0.0,
         "trend_rank": 1.0 / max(1.0, _num(trend.get("rank")) or 1.0) if trend else 0.0,
+        "log_tx_h24": _txlog(tx.get("h24")), "log_tx_h1": _txlog(tx.get("h1")), "log_tx_h6": _txlog(tx.get("h6")),
+        "vol_to_mc_h1": _clip(_num(vol.get("h1")) / mcap, 0, 20) if _num(vol.get("h1")) and mcap else None,
+        "ticker_crowd": math.log10(1 + ctx["ticker_crowding_6h"]) if ctx.get("ticker_crowding_6h") is not None else None,
+        "cto": (1.0 if ctx.get("cto") else 0.0) if ctx else None,
+        "acc_1_6": _clip(_num(vol.get("h1")) * 6 / _num(vol.get("h6")), 0, 20)
+        if _num(vol.get("h1")) and _num(vol.get("h6")) else None,
+        "chg_h24": _clip(pc.get("h24"), -99, 5000),
+        "avg_trade_h6": _avg_trade(vol.get("h6"), tx.get("h6")), "avg_trade_m5": _avg_trade(vol.get("m5"), tx5),
+        "buy_share_h6": _share(tx.get("h6") if isinstance(tx, dict) else None),
+        "market_heat": _clip(ctx.get("market_heat_h1"), -90, 200),
         "rug_score": _num((report.get("verdict") or {}).get("score")),
         "fresh_supply": _clip(cl.get("fresh_supply_pct"), 0, 100),
         "linked_groups": float(sum(1 for c in cl.get("clusters") or [] if isinstance(c, dict)
@@ -197,7 +244,7 @@ def vector(report: dict, ts: Optional[float] = None) -> dict:
         c = comps.get(name) or {}
         pts, mx = _num(c.get("points")), _num(c.get("max_points")) or _num(c.get("weight"))
         v["c_" + name] = pts / mx if pts is not None and mx else None
-    return {k: v.get(k) for k in FEATURES}
+    return {k: v.get(k) for k in ALL_FEATURES}
 
 
 def outcome(path: list, win_x: float = WIN_X, loss_x: float = LOSS_X) -> Optional[int]:
@@ -255,8 +302,10 @@ class Model:
 
     # -- fitting
     @staticmethod
-    def fit(vectors: list[dict], labels: list[int], l2: float = L2, iters: int = 12) -> "Model":
-        feats = [f for f in FEATURES if sum(1 for v in vectors if v.get(f) is not None) >= max(5, len(vectors) // 10)]
+    def fit(vectors: list[dict], labels: list[int], l2: float = L2, iters: int = 12,
+            features: Optional[list[str]] = None) -> "Model":
+        feats = [f for f in (features or FEATURES)
+                 if sum(1 for v in vectors if v.get(f) is not None) >= max(5, len(vectors) // 10)]
         mean, std = {}, {}
         for f in feats:
             xs = [v[f] for v in vectors if v.get(f) is not None]
@@ -377,8 +426,9 @@ def training_rows(db, days: float, now: float, win_x: float = WIN_X, loss_x: flo
 def store_tracking_vectors(db, limit: int = 2000) -> int:
     """Copy the brain's numbers onto tracked decisions while their research snapshot still exists
     ('{}' = nothing usable, e.g. a pre-migration coin). Returns how many got numbers."""
+    from .analysis import context as CTX
     try:
-        todo = db.fetchall("SELECT d.snapshot_id, d.decided_at, r.report FROM decision_tracking d "
+        todo = db.fetchall("SELECT d.snapshot_id, d.mint, d.decided_at, r.report FROM decision_tracking d "
                            "LEFT JOIN research_snapshots r ON r.id = d.snapshot_id "
                            "WHERE d.brain_vector IS NULL ORDER BY d.decided_at DESC LIMIT ?", (limit,))
     except Exception:  # noqa: BLE001 - older databases without the table/column
@@ -397,6 +447,9 @@ def store_tracking_vectors(db, limit: int = 2000) -> int:
             except Exception:  # noqa: BLE001 - a malformed old report just gets no flag record
                 keys = None
         if rep and rep.get("lifecycle") != "PRE_MIGRATION_BONDING_CURVE":
+            if "context" not in rep:      # rebuild what was known at that moment
+                rep["context"] = CTX.build(db, r["mint"], rep, db.get_candidate(r["mint"]) if hasattr(db, "get_candidate")
+                                           else None, r["decided_at"])
             vec = json.dumps(vector(rep, r["decided_at"]))
             filled += 1
         db.execute("UPDATE decision_tracking SET brain_vector=?, verdict_keys=? WHERE snapshot_id=?",
@@ -450,25 +503,28 @@ def train(db, s, now: Optional[float] = None) -> Optional[Model]:
     if len(rows) < 60 or pos < 8:
         log.info("brain: %d evaluated coins (%d winners) - need at least 60 and 8 winners to learn", len(rows), pos)
         return None
-    # walk-forward: each fold is predicted by a model trained only on EARLIER coins
-    size = len(rows) // FOLDS
-    oof: dict[int, float] = {}
-    recent_y, recent_p = [], []
-    for k in range(1, FOLDS):
-        train_rows = rows[:k * size]
-        test_rows = rows[k * size:(k + 1) * size] if k < FOLDS - 1 else rows[k * size:]
-        if sum(r["y"] for r in train_rows) < 5 or len(train_rows) < 40:
-            continue
-        m = Model.fit([r["v"] for r in train_rows], [r["y"] for r in train_rows])
-        for r in test_rows:
-            oof[r["id"]] = m.predict(r["v"])
-        if k == FOLDS - 1:
-            recent_y = [r["y"] for r in test_rows]
-            recent_p = [oof[r["id"]] for r in test_rows]
-    scored = [r for r in rows if r["id"] in oof]
-    model_auc = auc([r["y"] for r in scored], [oof[r["id"]] for r in scored]) if scored else None
-    recent = auc(recent_y, recent_p) if recent_y else None
-    final = Model.fit([r["v"] for r in rows], [r["y"] for r in rows])
+    active = active_features(db)
+    model_auc, recent, oof = walk_forward(rows, active)
+    change = None
+    if getattr(s, "brain_feature_search", True) and model_auc is not None:
+        change = search_features(rows, active, model_auc, recent)
+        if change is not None:
+            name, on, new_auc, new_recent, new_oof = change
+            set_feature(db, name, on, now, f"walk-forward AUC {model_auc:.3f} -> {new_auc:.3f}")
+            try:
+                db.execute("INSERT INTO learning_log(ts, key, old, new, detail) VALUES (?,?,?,?,?)",
+                           (now, f"brain_signal:{name}", 0 if on else 1, 1 if on else 0,
+                            json.dumps({"label": f"brain signal: {LABELS.get(name, name)}", "auc_before": round(model_auc, 4),
+                                        "auc_after": round(new_auc, 4), "samples": len(rows), "check_gain":
+                                        round(new_auc - model_auc, 4)})))
+            except Exception:  # noqa: BLE001 - the log is informational
+                pass
+            active = active_features(db)
+            model_auc, recent, oof = new_auc, new_recent, new_oof
+            log.info("brain: %s signal '%s' (accuracy on unseen coins %s)", "added" if on else "dropped",
+                     LABELS.get(name, name), _fmt(new_auc))
+    final = Model.fit([r["v"] for r in rows], [r["y"] for r in rows], features=active)
+    final.feature_change = change[:2] if change else None
     final.auc, final.recent_auc, final.ts = model_auc, recent, now
     final.trusted = bool(
         len(rows) >= s.brain_min_samples and pos >= 15 and model_auc is not None and recent is not None
@@ -482,6 +538,64 @@ def train(db, s, now: Optional[float] = None) -> Optional[Model]:
     log.info("brain: trained on %d coins (%d winners) - walk-forward AUC %s, recent %s, %s",
              len(rows), pos, _fmt(model_auc), _fmt(recent), "TRUSTED" if final.trusted else "not trusted yet")
     return final
+
+
+def walk_forward(rows: list[dict], features: list[str]) -> tuple[Optional[float], Optional[float], dict]:
+    """Each fold is predicted by a model trained only on EARLIER coins. (AUC, recent AUC, oof odds)."""
+    size = len(rows) // FOLDS
+    oof: dict[int, float] = {}
+    recent_y, recent_p = [], []
+    for k in range(1, FOLDS):
+        train_rows = rows[:k * size]
+        test_rows = rows[k * size:(k + 1) * size] if k < FOLDS - 1 else rows[k * size:]
+        if sum(r["y"] for r in train_rows) < 5 or len(train_rows) < 40:
+            continue
+        m = Model.fit([r["v"] for r in train_rows], [r["y"] for r in train_rows], features=features)
+        for r in test_rows:
+            oof[r["id"]] = m.predict(r["v"])
+        if k == FOLDS - 1:
+            recent_y = [r["y"] for r in test_rows]
+            recent_p = [oof[r["id"]] for r in test_rows]
+    scored = [r for r in rows if r["id"] in oof]
+    model_auc = auc([r["y"] for r in scored], [oof[r["id"]] for r in scored]) if scored else None
+    recent = auc(recent_y, recent_p) if recent_y else None
+    return model_auc, recent, oof
+
+
+def active_features(db) -> list[str]:
+    """Signals the brain currently uses: the defaults, adjusted by what feature search learned."""
+    try:
+        rows = {r["name"]: r["active"] for r in db.fetchall("SELECT name, active FROM brain_features")}
+    except Exception:  # noqa: BLE001
+        rows = {}
+    return [f for f in ALL_FEATURES if rows.get(f, 1 if f in FEATURES else 0)]
+
+
+def set_feature(db, name: str, on: bool, now: float, reason: str) -> None:
+    db.execute("INSERT INTO brain_features(name, active, changed_at, reason) VALUES (?,?,?,?) ON CONFLICT(name) "
+               "DO UPDATE SET active=excluded.active, changed_at=excluded.changed_at, reason=excluded.reason",
+               (name, 1 if on else 0, now, reason))
+
+
+def search_features(rows: list[dict], active: list[str], base_auc: float, base_recent: Optional[float],
+                    max_drop_tries: int = 5):
+    """Try adding each inactive candidate and dropping the weakest active signals; return the single
+    best change that lifts walk-forward AUC by MIN_GAIN without hurting the most recent fold."""
+    inactive = [f for f in ALL_FEATURES if f not in active
+                and sum(1 for r in rows if r["v"].get(f) is not None) >= max(5, len(rows) // 10)]
+    probe = Model.fit([r["v"] for r in rows], [r["y"] for r in rows], features=active)
+    weakest = sorted(probe.coef, key=lambda f: abs(probe.coef[f]))[:max_drop_tries]
+    best = None
+    for name, on in [(f, True) for f in inactive] + [(f, False) for f in weakest]:
+        feats = active + [name] if on else [f for f in active if f != name]
+        a, rc, oof = walk_forward(rows, feats)
+        if a is None or a < base_auc + MIN_GAIN:
+            continue
+        if base_recent is not None and (rc is None or rc < base_recent - 0.005):
+            continue
+        if best is None or a > best[2]:
+            best = (name, on, a, rc, oof)
+    return best
 
 
 def latest(db) -> Optional[Model]:

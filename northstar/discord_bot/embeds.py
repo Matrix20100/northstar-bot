@@ -90,6 +90,7 @@ def callout_embed(report: dict, detected_at: Optional[float] = None, plan: Optio
     demand_component = next((c for c in components if c.get("name") == "demand"), {})
     moved = market.get("moved_during_research_pct")
     chart_lines = ([report["surge"]["line"]] if (report.get("surge") or {}).get("line") else []) + (
+        [report["context"]["line"]] if (report.get("context") or {}).get("line") else []) + (
         [report["trending"]["line"]] if (report.get("trending") or {}).get("line") else []) + (
         [f"Moved {moved:+.0f}% while Northstar ran its checks; levels use the price at posting"]
         if isinstance(moved, (int, float)) and abs(moved) >= 3 else []) + [
