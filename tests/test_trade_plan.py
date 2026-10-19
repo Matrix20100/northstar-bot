@@ -231,3 +231,19 @@ async def test_free_copy_sent_when_plan_still_open(settings, db):
     db.update_alert(aid, warnings=json.dumps(["PLAN:TP1"]))
     await AlertService(settings, db, pub, p.dex).publish_due_free_posts()
     assert any(ch == 555 for ch, _ in pub.sent)
+
+
+def test_shipped_runner_plan_is_valid():
+    import os
+    from conftest import OLD_PLAN
+    from northstar.config import Settings
+    from northstar.trade_plan import plan_values, valid_values
+    saved = {k: os.environ.pop(k) for k in OLD_PLAN}
+    try:
+        s = Settings(_env_file=None)
+    finally:
+        os.environ.update(saved)
+    v = plan_values(s, "standard")
+    assert (v["tp1"], v["tp1_sell_pct"], v["tp2"], v["tp2_sell_pct"], v["stop"], v["trail_pct"]) == (2.0, 33, 4.0, 33, 0.65, 40.0)
+    assert valid_values(v) and valid_values(plan_values(s, "scalp"))
+    assert not s.config_problems()

@@ -98,9 +98,9 @@ def test_record_dedupes_and_requires_price(db):
 def test_evaluate_due_stores_path_and_gives_up_after_three_tries(db):
     L.init_schema(db)
     now = time.time()
-    L.record(db, MINT, {}, make_pair(price_usd=1.0), "REJECT", None, False, now=now - 3 * 3600)
+    L.record(db, MINT, {}, make_pair(price_usd=1.0), "REJECT", None, False, now=now - 5 * 3600)
     L.record(db, addr("nodata"), {}, make_pair(base_mint=addr("nodata"), pair_address=addr("p2"), price_usd=1.0),
-             "REJECT", None, False, now=now - 3 * 3600)
+             "REJECT", None, False, now=now - 5 * 3600)
 
     class CG:
         async def candles(self, pool, start, end=None, urgent=False, **kw):

@@ -165,14 +165,16 @@ class Settings(BaseSettings):
     # Entry / exit plan posted with every call (see trade_plan.py). Multiples are of the call MC.
     trade_plan_enabled: bool = True
     plan_max_entry_pct: float = 25.0       # don't buy more than this % above the call MC
-    plan_tp1: float = 1.5
-    plan_tp1_sell_pct: int = 50
-    plan_tp2: float = 2.0
-    plan_tp2_sell_pct: int = 25
-    plan_stop: float = 0.7                 # exit at -30%
-    plan_trail_pct: float = 30.0           # after TP1: exit if it falls this % from its high
-    plan_time_stop_minutes: float = 30.0   # exit if it has not reached plan_time_stop_multiple by then
-    plan_time_stop_multiple: float = 1.3
+    # Runner plan (tuned for the biggest peaks): bank a third at 2x, a third at 4x, let the last
+    # third ride with a wide trailing stop. The learner keeps retuning these from real outcomes.
+    plan_tp1: float = 2.0
+    plan_tp1_sell_pct: int = 33
+    plan_tp2: float = 4.0
+    plan_tp2_sell_pct: int = 33
+    plan_stop: float = 0.65                # exit at -35%
+    plan_trail_pct: float = 40.0           # after TP1: exit if it falls this % from its high
+    plan_time_stop_minutes: float = 45.0   # exit if it has not reached plan_time_stop_multiple by then
+    plan_time_stop_multiple: float = 1.2
     # Self-learning (learning.py): records every researched coin, scores decisions on real price paths
     # from CoinGecko, and retunes the selection + plan settings automatically.
     learning_enabled: bool = True
@@ -180,6 +182,17 @@ class Settings(BaseSettings):
     learning_min_samples: int = 20
     learning_days: float = 14.0
     learning_announce: bool = True          # post each change to the warning channel (VIP by default)
+    # Learning brain: a model trained on Northstar's own history (see northstar/brain.py)
+    brain_enabled: bool = True
+    brain_days: float = 21.0                # history window the brain learns from
+    brain_min_samples: int = 150            # evaluated coins before the brain gets a say in calls
+    brain_win_x: float = 2.0                # a "runner" reaches this multiple ...
+    brain_loss_x: float = 0.6               # ... before falling to this one
+    brain_min_auc: float = 0.58             # walk-forward AUC needed to be trusted (0.50 = coin flip)
+    brain_min_probability: float = 0.0      # learned: calls need at least these odds (0 = no veto yet)
+    brain_promote_probability: float = 1.01 # learned: odds that can lift a coin held back only by the
+                                            # hand-written score/narrative/confidence bars (>1 = off)
+    radar_learning: bool = True             # record near-surges so the radar thresholds can be learned
     # RUG SCALP calls (scalp.py): momentum coins that FAIL rug checks but can still be traded.
     # Posted with a loud RUG banner and this much tighter plan. Coins that can trap you
     # (mint/freeze authority, transfer fees, LP that can be pulled, liquidity already being pulled)

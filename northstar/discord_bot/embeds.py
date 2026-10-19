@@ -114,6 +114,9 @@ def callout_embed(report: dict, detected_at: Optional[float] = None, plan: Optio
         *([{"name": "📋 Trade plan" if not scalp else "📋 Scalp plan", "value": _clip("\n".join(plan), 1024),
             "inline": False}] if plan else []),
     ]
+    brain = report.get("brain") or {}
+    if isinstance(brain.get("p"), (int, float)):
+        top.append({"name": "🧠 Learned runner odds", "value": _clip(brain_text(brain), 1024), "inline": False})
     if scalp:
         body = [
             {"name": "☠️ Why this is a rug", "value": _clip(_bullets(scalp.get("rug_reasons") or [], 6)),
@@ -142,6 +145,26 @@ def callout_embed(report: dict, detected_at: Optional[float] = None, plan: Optio
     if isinstance(image_url, str) and image_url.startswith(("https://", "http://")):
         embed["thumbnail"] = {"url": image_url}
     return embed
+
+
+def brain_text(b: dict) -> str:
+    """'23% chance to 2x before -40% (avg coin 13%)' plus what pushed the odds, in plain words."""
+    win, loss = b.get("win_x") or 2.0, b.get("loss_x") or 0.6
+    line = f"**{b['p'] * 100:.0f}%** chance to {win:g}x before {(loss - 1) * 100:.0f}%"
+    if isinstance(b.get("base"), (int, float)):
+        line += f" (average coin: {b['base'] * 100:.0f}%)"
+    parts = [line]
+    if b.get("ups"):
+        parts.append("▲ " + ", ".join(b["ups"]))
+    if b.get("downs"):
+        parts.append("▼ " + ", ".join(b["downs"]))
+    if b.get("promoted"):
+        parts.append("Called because the learning brain rated it highly.")
+    if not b.get("trusted"):
+        parts.append("_Still learning: these odds don't affect calls yet._")
+    elif isinstance(b.get("auc"), (int, float)):
+        parts.append(f"_Learned from {b.get('n', 0)} past coins · accuracy on unseen coins {b['auc']:.2f} (0.50 = coin flip)_")
+    return "\n".join(parts)
 
 
 def _sol(v) -> str:

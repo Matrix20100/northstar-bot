@@ -360,6 +360,10 @@ def install_commands(bot: NorthstarCommands):
             lines += [f"• `{k}` = {v:g}" for k, v in sorted(info['learned'].items())]
         else:
             lines.append("No learned changes yet — settings are your .env values.")
+        lines.append(f"\n**🧠 Brain:** {info['brain']}")
+        if info.get('brain_signals'):
+            lines.append("**What predicts a runner:** " + ", ".join(
+                f"{'▲' if c > 0 else '▼'} {name}" for name, c in info['brain_signals']))
         recent = [r for r in info['recent_changes'] if r['key'] != 'RESET'][:5]
         if recent:
             lines.append("\n**Recent changes:**")

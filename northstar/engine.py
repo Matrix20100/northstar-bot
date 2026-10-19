@@ -152,9 +152,14 @@ class Engine:
         self._inflight: set[str] = set()
         self._radar_slots = asyncio.Semaphore(max(1, s.radar_concurrency))
         self._radar_tasks: set[asyncio.Task] = set()
-        from . import learning
+        from . import brain, learning
         self.learning = learning
+        self.brain_mod = brain
         learning.init_schema(db)
+        self.brain = brain.latest(db) if s.brain_enabled else None
+        self._brain_trusted = bool(self.brain and self.brain.trusted)
+        if self.brain is not None:
+            log.info("brain: %s", brain.describe(self.brain))
         # values from .env/defaults, kept so /learning_reset can restore them
         self._tunable_defaults = {t.key: getattr(s, t.key) for t in learning.TUNABLES}
         self._learned_seen: dict = {}
@@ -311,9 +316,25 @@ class Engine:
             added = await asyncio.to_thread(self.learning.backfill_from_snapshots, self.db, self.s.learning_days)
             if added:
                 log.info("learning: seeded %d past decisions from the database for evaluation", added)
+            filled = await asyncio.to_thread(self.learning.backfill_vectors, self.db)
+            if filled:
+                log.info("brain: rebuilt the numbers for %d earlier coins from saved research", filled)
+        kept = await asyncio.to_thread(self.brain_mod.store_tracking_vectors, self.db)
+        if kept > 50:
+            log.info("brain: stored the numbers for %d tracked decisions", kept)
+        now = time.time()
+        if now - getattr(self, "_learning_pruned", 0) > 6 * 3600:
+            self._learning_pruned = now
+            removed = await asyncio.to_thread(self.learning.prune, self.db, now)
+            if any(removed.values()):
+                log.info("learning: removed old learning rows %s", removed)
         n = await self.learning.evaluate_due(self.db, self.p.coingecko, limit=20)
         if n:
             log.info("learning: evaluated %d coins against their real price path", n)
+        if self.s.radar_learning:
+            r = await self.learning.evaluate_radar_due(self.db, self.p.coingecko, limit=10)
+            if r:
+                log.info("learning: evaluated %d radar observations against their real price path", r)
 
     async def _learning_tune(self) -> None:
         if not getattr(self, "_tune_started", False):
@@ -322,10 +343,25 @@ class Engine:
         changes = await asyncio.to_thread(self.learning.tune, self.db, self.s, self.s.learning_days,
                                           self.s.learning_min_samples)
         self._learned_seen = {r["key"]: r["value"] for r in self.db.fetchall("SELECT key, value FROM learned_settings")}
-        if not changes or not self.s.learning_announce:
+        was_trusted = self._brain_trusted
+        if self.s.brain_enabled:
+            self.brain = self.brain_mod.latest(self.db)
+            self._brain_trusted = bool(self.brain and self.brain.trusted)
+        trust_changed = self._brain_trusted != was_trusted
+        if not (changes or trust_changed) or not self.s.learning_announce:
             return
         info = self.learning.summary(self.db, self.s, self.s.learning_days)
         lines = [self.learning.fmt_change(c) for c in changes]
+        if trust_changed:
+            lines.insert(0, ("**The learning brain is now TRUSTED** — it beats a coin flip on coins it has not seen, "
+                             "so its odds now count in calls." if self._brain_trusted else
+                             "**The learning brain lost its say** — its recent predictions fell below the bar, so "
+                             "calls use the normal rules until it earns trust back."))
+        if self.brain is not None:
+            lines.append("\n🧠 " + self.brain_mod.describe(self.brain))
+            sig = ", ".join(f"{'+' if c > 0 else '−'} {name}" for name, c in self.brain.importance(5))
+            if sig:
+                lines.append(f"Strongest signals it found: {sig}")
         lines.append(f"\nBased on {info['evaluated']} coins scored against their real price path "
                      f"(simulated with fees, worst-case fills). Undo anytime with /learning_reset.")
         embed = {"title": "🧠 Northstar learned something", "description": "\n".join(lines)[:4000],
@@ -335,7 +371,7 @@ class Engine:
         except Exception:  # noqa: BLE001
             log.warning("could not announce learning changes", exc_info=True)
 
-    def _record_shadow(self, mint: str, out, verdict, surge) -> None:
+    def _record_shadow(self, mint: str, out, verdict, surge, brain_p: Optional[float] = None) -> None:
         if not self.s.learning_enabled or out.pair is None:
             return
         if out.score is None and not surge and not verdict:
@@ -345,9 +381,55 @@ class Engine:
         called = out.action == Action.AUTO_POST or bool(verdict)
         call_type = "RUG_SCALP" if verdict else ("STANDARD" if out.action == Action.AUTO_POST else None)
         try:
-            self.learning.record(self.db, mint, out.report, out.pair, out.action.value, call_type, called, surge)
+            self.learning.record(self.db, mint, out.report, out.pair, out.action.value, call_type, called, surge,
+                                 brain_p=brain_p)
         except Exception:  # noqa: BLE001 - learning must never break research
             log.warning("could not record shadow for %s", mint, exc_info=True)
+
+    SOFT_BLOCKERS = ("score ", "confidence ", "narrative score ", "only ")
+
+    def _apply_brain(self, out) -> Optional[float]:
+        """Give the coin its learned odds. A TRUSTED brain can veto a call (odds too low) or lift a coin
+        that only missed the hand-written score/narrative/confidence bars. Safety gates, risk level,
+        momentum rules, market cap floor, cooldowns and caps are never overridden."""
+        m = self.brain
+        if (m is None or not self.s.brain_enabled or out.pair is None
+                or out.report.get("lifecycle") == "PRE_MIGRATION_BONDING_CURVE"):
+            return None
+        try:
+            v = self.brain_mod.vector(out.report)
+            p = m.predict(v)
+            ups, downs = m.reasons(v)
+        except Exception:  # noqa: BLE001 - the brain is advisory; research results stand without it
+            log.warning("brain could not score %s", out.mint, exc_info=True)
+            return None
+        info = {"p": round(p, 3), "trusted": m.trusted, "auc": m.auc, "n": m.n, "ups": ups, "downs": downs,
+                "base": round(m.positives / m.n, 3) if m.n else None,
+                "win_x": self.s.brain_win_x, "loss_x": self.s.brain_loss_x}
+        out.report["brain"] = info
+        if not m.trusted:
+            return p
+        decision = out.report.get("decision") or {}
+        blockers = decision.get("blockers") or []
+        if out.action == Action.AUTO_POST and p < self.s.brain_min_probability:
+            reason = f"🧠 learned odds {p:.0%} below the learned minimum {self.s.brain_min_probability:.0%}"
+            out.action = Action.WATCHLIST
+            info["vetoed"] = True
+        elif (out.action in (Action.WATCHLIST, Action.REJECT) and blockers and p >= self.s.brain_promote_probability
+              and p >= self.s.brain_min_probability and all(b.startswith(self.SOFT_BLOCKERS) for b in blockers)):
+            reason = (f"🧠 promoted by the learning brain: {p:.0%} learned odds "
+                      f"(≥ {self.s.brain_promote_probability:.0%}); held back only by: " + "; ".join(blockers))
+            out.action = Action.AUTO_POST
+            info["promoted"] = True
+        else:
+            return p
+        out.reasons = [reason] + list(out.reasons)
+        out.report["decision"] = {**decision, "action": out.action.value,
+                                  "reasons": [reason] + list(decision.get("reasons") or [])}
+        out.report["final_action"] = out.action.value
+        out.report["reasons"] = out.reasons
+        log.info("brain: %s %s", out.mint, reason)
+        return p
 
     async def _radar(self) -> None:
         for surge in await self.radar.run_once():
@@ -406,11 +488,12 @@ class Engine:
         if trend:
             out.report["trending"] = {**trend, "line": f"🔥 Trending #{trend['rank']} on CoinGecko/GeckoTerminal "
                                                          "(Solana, last 5 min)"}
+        brain_p = self._apply_brain(out)
         verdict = None
         if out.action == Action.REJECT and out.pair is not None:
             from .scalp import check as scalp_check
             verdict = scalp_check(out.report, out.pair, self.s, out.report.get("surge"))
-        self._record_shadow(mint, out, verdict, out.report.get("surge"))
+        self._record_shadow(mint, out, verdict, out.report.get("surge"), brain_p)
         if verdict:
             # Rug with strong momentum: posted ONLY as a clearly labelled scalp with a tight plan.
             out.report["call_type"] = "RUG_SCALP"

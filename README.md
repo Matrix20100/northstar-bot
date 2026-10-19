@@ -31,6 +31,27 @@ A read-only Solana memecoin research engine. It discovers new tokens, verifies t
 
 Every value carries a status (`VERIFIED`, `OBSERVED`, `INFERRED`, `UNKNOWN`, `STALE`, or `UNAVAILABLE`). UNKNOWN never becomes zero risk, and a provider failure never becomes a clean result.
 
+## How Northstar learns
+
+Northstar is tuned to find the **biggest runners** and keeps getting better at it on its own:
+
+1. **Records** every coin it researches (called or not) with ~45 numbers: money flow, buyers,
+   holders, liquidity, chart, radar surge, CoinGecko trending, score parts.
+2. **Checks what happened** 4 hours later on 1-minute candles (CoinGecko / GeckoTerminal), and
+   follows every decision for 24 hours.
+3. **The brain** (`northstar/brain.py`) learns which numbers come before a **runner** (2x before
+   -40%). It is judged only on coins it has not seen (walk-forward AUC; 0.50 = coin flip) and gets
+   a say in calls only once it is trusted. On the first real history it scored 0.66.
+4. **The tuner** (`northstar/learning.py`) replays the trade plan on real paths with worst-case
+   fills and 3% fees, and moves a setting one step at a time only when the change also holds up
+   on the most recent coins: who gets called, the brain's odds bars, TP/stop/trail/time stop,
+   rug-scalp plan, and what the radar counts as a surge (learned from surges *and* near-misses).
+5. Every change is posted to Discord with the numbers behind it. `/learning` shows the state,
+   `/learning_reset` undoes it.
+
+**Never learned:** the rug and safety checks. A coin that fails or cannot confirm one is never
+rescued by the brain.
+
 ## Quick start
 
 ```bash

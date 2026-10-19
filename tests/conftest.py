@@ -17,6 +17,14 @@ import base58
 import struct
 import pytest
 
+# The trade-plan tests were written against these levels (TP1 1.5x/50%, TP2 2x/25%, stop 0.7,
+# trail 30%, time stop 30 min at 1.3x). Pin them for every Settings() in the tests so the plan logic
+# keeps being checked with the same numbers; the shipped runner defaults have their own test.
+OLD_PLAN = {"NORTHSTAR_PLAN_TP1": "1.5", "NORTHSTAR_PLAN_TP1_SELL_PCT": "50", "NORTHSTAR_PLAN_TP2": "2.0",
+            "NORTHSTAR_PLAN_TP2_SELL_PCT": "25", "NORTHSTAR_PLAN_STOP": "0.7", "NORTHSTAR_PLAN_TRAIL_PCT": "30",
+            "NORTHSTAR_PLAN_TIME_STOP_MINUTES": "30", "NORTHSTAR_PLAN_TIME_STOP_MULTIPLE": "1.3"}
+os.environ.update(OLD_PLAN)
+
 from northstar.config import Settings
 from northstar.db import Database
 from northstar.models import PairInfo
