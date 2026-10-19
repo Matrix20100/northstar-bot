@@ -275,6 +275,7 @@ async function openToken(mint){$('drawer').classList.add('on');$('overlay').clas
   <div class="linkrow" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px"><a target="_blank" rel="noopener" href="https://dexscreener.com/solana/${esc(mint)}">DexScreener ↗</a><a target="_blank" rel="noopener" href="https://axiom.trade/t/${esc(mint)}">Axiom ↗</a><a target="_blank" rel="noopener" href="https://rugcheck.xyz/tokens/${esc(mint)}">RugCheck ↗</a><a target="_blank" rel="noopener" href="https://solscan.io/token/${esc(mint)}">Solscan ↗</a></div>
   <div class="card" style="margin-bottom:12px"><h2>Market <span>${sn.ts?ago(sn.ts):''}</span></h2><dl class="kv"><dt>Market cap</dt><dd>${usd(val(m.market_cap))}</dd><dt>Liquidity</dt><dd>${usd(val(m.liquidity_usd))}</dd>
    <dt>Volume 5m / 1h</dt><dd>${usd((m.volume||{}).m5)} / ${usd((m.volume||{}).h1)}</dd><dt>Price change 5m / 1h</dt><dd>${num((m.price_change||{}).m5,1)}% / ${num((m.price_change||{}).h1,1)}%</dd><dt>Found by</dt><dd>${esc((t.sources||[]).join(', '))}</dd></dl></div>
+  ${decisionCard(r.unified)}
   ${br?`<div class="card" style="margin-bottom:12px"><h2>🧠 Learned runner odds</h2><b style="font-size:22px">${Math.round(br.p*100)}%</b> <span class="sub">${br.base!=null?`average coin ${Math.round(br.base*100)}% · `:''}${br.trusted?'trusted':'still learning'}</span>
    ${(br.ups||[]).length?`<div class="up" style="font-size:12.5px;margin-top:6px">▲ ${esc(br.ups.join(', '))}</div>`:''}${(br.downs||[]).length?`<div class="down" style="font-size:12.5px">▼ ${esc(br.downs.join(', '))}</div>`:''}</div>`:''}
   ${verdictCard(r.verdict)}${bubbleCard(r.clusters,mint)}
@@ -282,6 +283,31 @@ async function openToken(mint){$('drawer').classList.add('on');$('overlay').clas
   <div class="card"><h2>Safety checks</h2>${gates.length?gates.map(gate).join(''):'<div class="sub">No checks recorded</div>'}</div>`;
   drawBubbles(r.clusters)}
  catch(e){if(e.message!=='auth')$('drawer').innerHTML='<div class="empty">Could not load this coin.</div>'}}
+const DC={'STRONG OPPORTUNITY':['good','🟢'],'WATCH':['warn','🟡'],'CAUTION':['warn','🟠'],'REJECT':['bad','🔴'],'INSUFFICIENT DATA':['dim','⚪']};
+const RC={'LOW':['good','🟢'],'MODERATE':['warn','🟡'],'HIGH':['warn','🟠'],'EXTREME':['bad','☠️']};
+function bar(pts,w){const p=w?Math.max(0,Math.min(100,pts/w*100)):0;
+ return `<div style="background:#1d222c;border-radius:4px;height:7px;overflow:hidden"><div style="width:${p.toFixed(0)}%;height:100%;background:${p>=70?'var(--green)':p>=40?'var(--amber)':'#6f86b8'}"></div></div>`}
+function decisionCard(u){if(!u||!u.version)return'';const [k,e]=DC[u.decision]||['dim',''];const [rk,re]=RC[u.risk]||['dim',''];
+ const cats=u.categories||{};const order=['safety','liquidity','holders','dev','structure','narrative'];
+ const row=c=>{if(!c)return'';return `<tr><td>${esc(c.label)}${c.thin?' <span class="pill dim">thin</span>':''}</td>
+  <td class="num">${(c.points||0).toFixed(1)} / ${(c.weight||0).toFixed(0)}</td>
+  <td style="min-width:90px">${bar(c.points||0,c.weight||0)}</td>
+  <td class="num sub">${Math.round((c.coverage||0)*100)}%</td>
+  <td class="sub">${esc([...(c.evidence||[]),...(c.weak||[])].slice(0,2).join(' · '))||'—'}</td></tr>`};
+ return `<div class="card" style="margin-bottom:12px"><h2>🎯 Decision <span class="pill ${k}">${e} ${esc(u.decision)}</span></h2>
+ <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"><span class="pill dim">score ${(u.score||0).toFixed(0)}/100</span>
+  <span class="pill ${rk}">${re} ${esc(u.risk)} risk</span><span class="pill dim">confidence ${esc(u.confidence||'')}</span>
+  <span class="pill dim">evidence ${Math.round((u.completeness||0)*100)}%</span>${u.penalty?`<span class="pill warn">−${u.penalty} unproven concerns</span>`:''}</div>
+ ${(u.hard_vetoes||[]).map(x=>`<div class="reason" style="color:var(--red)">⛔ ${esc(x)}</div>`).join('')}
+ ${(u.warnings||[]).map(x=>`<div class="reason" style="color:#ffa3a7">🔺 ${esc(x)}</div>`).join('')}
+ ${(u.unresolved||[]).map(x=>`<div class="reason sub">⚪ ${esc(x)}</div>`).join('')}
+ ${(u.why||[]).map(x=>`<div class="reason sub">ℹ️ ${esc(x)}</div>`).join('')}
+ <div class="tablewrap" style="margin-top:10px"><table><thead><tr><th>Category</th><th>Points</th><th></th><th>Known</th><th>Evidence</th></tr></thead>
+ <tbody>${order.map(o=>row(cats[o])).join('')}</tbody></table></div>
+ ${(u.model||{}).note?`<div class="reason sub" style="margin-top:8px">🧠 ${esc(u.model.note)}</div>`:''}
+ ${(u.ai||{}).used?`<div class="reason sub">🤖 AI ${esc(u.ai.verdict)}${u.ai.score!=null?' '+Math.round(u.ai.score)+'/100':''}${u.ai.reason?' — '+esc(String(u.ai.reason).slice(0,160)):''}</div>`:''}
+ ${(u.invalidation||[]).length?`<div class="sub" style="margin-top:8px"><b>Thesis dies if:</b> ${esc(u.invalidation.slice(0,3).join(' · '))}</div>`:''}
+ ${(u.exit_triggers||[]).length?`<div class="sub"><b>Re-check on:</b> ${esc(u.exit_triggers.slice(0,2).join(' · '))}</div>`:''}</div>`}
 const VC={'RUG LIKELY':['bad','☠️'],'HIGH RISK':['bad','🔴'],'CAUTION':['warn','🟠'],'LOOKS CLEAN':['good','🟢'],'NOT ENOUGH DATA':['dim','⚪']};
 function verdictCard(v){if(!v)return'';const [k,e]=VC[v.level]||['dim',''];
  return `<div class="card" style="margin-bottom:12px"><h2>🧠 Rug check <span class="pill ${k}">${e} ${esc(v.level)} · risk ${v.score}/100</span></h2>

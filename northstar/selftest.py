@@ -209,6 +209,70 @@ def check_engine(engine, db_path: str, now: Optional[float] = None) -> list[dict
 
 
 # ----------------------------------------------------------------------------- learning
+def check_decision_engine(s) -> list[dict]:
+    """Prove the unified engine is wired up and that safety still beats score."""
+    out = []
+    if not getattr(s, "unified_enabled", True):
+        return [_r("decision", "Decision engine", WARN,
+                   "switched off (NORTHSTAR_UNIFIED_ENABLED=false) — v2.3.0 behaviour is in use")]
+    try:
+        from .analysis import unified as U
+    except Exception as e:  # noqa: BLE001
+        return [_r("decision", "Decision engine", FAIL, f"could not load: {type(e).__name__}: {e}")]
+
+    weights = U._weights(s)
+    total = sum(weights.values())
+    out.append(_r("decision", "Category weights", PASS if abs(total - 100) < 0.01 else FAIL,
+                  " · ".join(f"{k} {v:g}" for k, v in weights.items()) + f" (sum {total:g})"))
+
+    good = {"market": {"liquidity_usd": {"value": 60_000}, "market_cap": {"value": 300_000},
+                       "price_usd": {"value": 0.001}, "volume": {"h1": {"value": 90_000}}},
+            "security": {"lp_status": "BURNED or LOCKED — 100%", "liquidity_to_mcap": 0.2,
+                         "volume_to_liquidity_h1": 1.5},
+            "gates": [{"name": n, "status": "PASS", "reason": "ok", "critical": True}
+                      for n in ("mint_authority", "freeze_authority", "token_extensions",
+                                "liquidity_removal", "lp_lock", "rugcheck_danger", "liquidity")],
+            "holders": {"status": "OBSERVED", "top10_adj": 12.0, "max_single_adj": 2.0,
+                        "creator_pct": 0.4},
+            "clusters": {"status": "OBSERVED", "max_cluster_supply_pct": 2.0,
+                         "fresh_wallet_share": 15.0},
+            "creator": {"status": "OBSERVED", "prior_launches": 1, "prior_rugged": 0,
+                        "summary": "clean"},
+            "trades": {"status": "VERIFIED", "sample_size": 120, "buys": 90, "sells": 30,
+                       "unique_buyers": 70, "buyer_trend": "rising"},
+            "market_structure": {"status": "OBSERVED", "constructive": True, "consolidating": True,
+                                 "volume_acceleration": 1.8, "buy_sell_ratio_h1": 2.0,
+                                 "observed_drawdown_pct": 12.0},
+            "narrative": {"evidence_items": 3, "meta_status": "OBSERVED", "meta_match": True,
+                          "social_status": "OBSERVED", "competing_tokens": 2},
+            "sellability": {"checked": [{"usd": 100}, {"usd": 500}, {"usd": 1000}],
+                            "worst_impact_pct": 1.4, "max_sellable_usd": 1000.0,
+                            "no_route_at_usd": None},
+            "verdict": {"level": "LOOKS CLEAN", "score": 0, "red": [], "green": ["LP burned"],
+                        "unknown": []}}
+    try:
+        clean = U.evaluate(good, s)
+        trap = dict(good)
+        trap["verdict"] = {"level": "RUG LIKELY", "score": 100, "green": [], "unknown": [],
+                           "red": [{"key": "transfer_hook", "level": "critical",
+                                    "text": "transfers run custom code"}]}
+        trapped = U.evaluate(trap, s)
+        lifted = U.apply_model(trapped, trap, 0.99, True, baseline=0.15, s=s)
+    except Exception as e:  # noqa: BLE001
+        return out + [_r("decision", "Decision engine", FAIL,
+                         f"evaluation raised {type(e).__name__}: {e}")]
+
+    out.append(_r("decision", "A clean coin can still be called",
+                  PASS if clean["decision"] == U.STRONG else FAIL,
+                  f"reference coin scores {clean['score']:.0f}/100 -> {clean['decision']} "
+                  f"(risk {clean['risk']}, evidence {clean['completeness'] * 100:.0f}%)"))
+    out.append(_r("decision", "Safety beats score",
+                  PASS if trapped["decision"] == U.REJECT and lifted["decision"] == U.REJECT else FAIL,
+                  "the same coin with a transfer hook is rejected, and stays rejected at 99% "
+                  "learned odds"))
+    return out
+
+
 def check_learning(s, db_path: str, now: Optional[float] = None) -> list[dict]:
     now = now or time.time()
     out = []
@@ -291,6 +355,7 @@ async def run_async(s, db_path: str, providers=None, engine=None, include_code: 
     out += check_ai_and_events(s, db_path)
     out += check_database(db_path)
     out += check_engine(engine, db_path)
+    out += check_decision_engine(s)
     out += check_learning(s, db_path)
     if include_code:
         out += await asyncio.to_thread(check_code)

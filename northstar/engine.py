@@ -414,12 +414,17 @@ class Engine:
         except Exception:  # noqa: BLE001 - learning must never break research
             log.warning("could not record shadow for %s", mint, exc_info=True)
 
+    POLICY_PREFIXES = ("alert cooldown", "daily alert cap", "market cap")
     SOFT_BLOCKERS = ("score ", "confidence ", "narrative score ", "only ")
 
     def _apply_brain(self, out) -> Optional[float]:
-        """Give the coin its learned odds. A TRUSTED brain can veto a call (odds too low) or lift a coin
-        that only missed the hand-written score/narrative/confidence bars. Safety gates, risk level,
-        momentum rules, market cap floor, cooldowns and caps are never overridden."""
+        """Give the coin its learned odds, then let the unified engine re-decide with them.
+
+        The brain is a BOUNDED tilt inside the unified score (at most `u_model_tilt` points) and
+        only when it is trusted. It can lower a score and it can lift one, but it cannot clear a
+        veto, invent evidence or move the risk class. When the unified engine is switched off the
+        older behaviour (veto below a minimum, promote past soft blockers) still applies.
+        """
         m = self.brain
         if (m is None or not self.s.brain_enabled or out.pair is None
                 or out.report.get("lifecycle") == "PRE_MIGRATION_BONDING_CURVE"):
@@ -431,10 +436,15 @@ class Engine:
         except Exception:  # noqa: BLE001 - the brain is advisory; research results stand without it
             log.warning("brain could not score %s", out.mint, exc_info=True)
             return None
+        base = round(m.positives / m.n, 3) if m.n else None
         info = {"p": round(p, 3), "trusted": m.trusted, "auc": m.auc, "n": m.n, "ups": ups, "downs": downs,
-                "base": round(m.positives / m.n, 3) if m.n else None,
-                "win_x": self.s.brain_win_x, "loss_x": self.s.brain_loss_x}
+                "base": base, "win_x": self.s.brain_win_x, "loss_x": self.s.brain_loss_x}
         out.report["brain"] = info
+
+        u = out.report.get("unified")
+        if isinstance(u, dict) and u.get("version"):
+            return self._rescore_unified(out, u, p, info, base)
+
         if not m.trusted:
             return p
         decision = out.report.get("decision") or {}
@@ -456,6 +466,116 @@ class Engine:
                                   "reasons": [reason] + list(decision.get("reasons") or [])}
         out.report["final_action"] = out.action.value
         out.report["reasons"] = out.reasons
+        log.info("brain: %s %s", out.mint, reason)
+        return p
+
+    def _refresh_unified(self, out) -> None:
+        """Re-run the unified engine now that live context (ticker crowding, heat) is attached."""
+        if not getattr(self.s, "unified_enabled", True) or not isinstance(out.report.get("unified"), dict):
+            return
+        try:
+            from .analysis import unified as U
+            out.report["unified"] = U.evaluate(out.report, self.s)
+        except Exception:  # noqa: BLE001
+            log.debug("unified refresh failed for %s", out.mint, exc_info=True)
+
+    async def _apply_ai_narrative(self, out) -> Optional[dict]:
+        """Ask the AI judge about coins that are already worth calling or watching.
+
+        The AI contributes capped narrative evidence (see unified.apply_ai): it can lift a WATCH
+        to a call or talk one down, but it can never clear a veto and a STRONG call still has to
+        stand up without most of its narrative points. Coins that are already rejected are never
+        sent, so the budget is spent only where the answer can change something.
+        """
+        u = out.report.get("unified")
+        if not isinstance(u, dict) or not u.get("version"):
+            return None
+        from .analysis import unified as U
+
+        if u.get("decision") not in (U.STRONG, U.WATCH) or not getattr(self.judge, "enabled", False):
+            return None
+        if out.report.get("lifecycle") == "PRE_MIGRATION_BONDING_CURVE":
+            return None          # the early-call path judges those with its own prompt
+        ident = out.report.get("identity") or {}
+        m = out.report.get("market") or {}
+        tr = out.report.get("trades") or {}
+
+        def val(x):
+            return x.get("value") if isinstance(x, dict) else x
+
+        coin = {"name": ident.get("name"), "symbol": ident.get("symbol"),
+                "description": ident.get("description"),
+                "socials": ident.get("socials") or "unknown", "stage": "trading on a DEX pool",
+                "market_cap_usd": val(m.get("market_cap")),
+                "flow": f"{tr.get('buys', 0)} buys / {tr.get('sells', 0)} sells, "
+                        f"{tr.get('unique_buyers', 0)} unique buyers in the sample",
+                "ticker_crowding": (out.report.get("context") or {}).get("ticker_crowding_6h")}
+        try:
+            feed = self.events.snapshot()
+            related = self.events.related(ident.get("name"), ident.get("symbol"),
+                                          ident.get("description"))
+            ai = await self.judge.judge(out.mint, coin, feed, related)
+        except Exception:  # noqa: BLE001 - the judge must never break research
+            log.warning("AI narrative read failed for %s", out.mint, exc_info=True)
+            return None
+        try:
+            new = U.apply_ai(u, out.report, ai, self.s)
+        except Exception:  # noqa: BLE001
+            log.warning("could not fold the AI read into the decision for %s", out.mint, exc_info=True)
+            return None
+        out.report["unified"] = new
+        before, after = u.get("decision"), new.get("decision")
+        if before == after or not ai:
+            return ai
+        decision = out.report.get("decision") or {}
+        policy = [b for b in decision.get("blockers") or [] if b.startswith(self.POLICY_PREFIXES)]
+        action = Action(U.LEGACY_ACTION.get(after, "REJECT"))
+        reason = (f"🤖 AI narrative read ({ai.get('verdict')}"
+                  + (f" {ai['score']:.0f}/100" if isinstance(ai.get("score"), (int, float)) else "")
+                  + f") moved this from {before} to {after}")
+        if action == Action.AUTO_POST and policy:
+            action = Action.WATCHLIST
+            reason += " — held back by publication policy"
+        out.action = action
+        out.reasons = [reason] + list(out.reasons)
+        out.report["decision"] = {**decision, "action": action.value,
+                                  "reasons": [reason] + list(decision.get("reasons") or [])}
+        out.report["final_action"] = action.value
+        out.report["reasons"] = out.reasons
+        log.info("ai: %s %s", out.mint, reason)
+        return ai
+
+    def _rescore_unified(self, out, u: dict, p: float, info: dict, base: Optional[float]) -> float:
+        """Re-run the unified decision with the brain's odds folded in as a bounded tilt."""
+        from .analysis import unified as U
+
+        m = self.brain
+        try:
+            new = U.apply_model(u, out.report, p, bool(m and m.trusted), baseline=base,
+                                auc=getattr(m, "auc", None), s=self.s)
+        except Exception:  # noqa: BLE001
+            log.warning("could not fold the brain into the unified decision for %s", out.mint, exc_info=True)
+            return p
+        out.report["unified"] = new
+        info["tilt"] = (new.get("model") or {}).get("tilt")
+        before, after = u.get("decision"), new.get("decision")
+        if before == after:
+            return p
+        decision = out.report.get("decision") or {}
+        policy = [b for b in decision.get("blockers") or [] if b.startswith(self.POLICY_PREFIXES)]
+        action = Action(U.LEGACY_ACTION.get(after, "REJECT"))
+        reason = (f"🧠 learning brain moved this from {before} to {after}: {p:.0%} learned odds "
+                  f"vs a {(base or 0) * 100:.0f}% base rate ({info['tilt']:+.1f} points)")
+        if action == Action.AUTO_POST and policy:
+            action = Action.WATCHLIST
+            reason += " — held back by publication policy"
+        out.action = action
+        out.reasons = [reason] + list(out.reasons)
+        out.report["decision"] = {**decision, "action": action.value,
+                                  "reasons": [reason] + list(decision.get("reasons") or [])}
+        out.report["final_action"] = action.value
+        out.report["reasons"] = out.reasons
+        info["moved"] = {"from": before, "to": after}
         log.info("brain: %s %s", out.mint, reason)
         return p
 
@@ -522,7 +642,9 @@ class Engine:
             self._heat.add(out.report, now)
         except Exception:  # noqa: BLE001 - context is optional evidence
             log.debug("context failed for %s", mint, exc_info=True)
+        self._refresh_unified(out)
         brain_p = self._apply_brain(out)
+        await self._apply_ai_narrative(out)
         early_called = None
         if out.report.get("lifecycle") == "PRE_MIGRATION_BONDING_CURVE" and self.s.early_call_enabled:
             try:

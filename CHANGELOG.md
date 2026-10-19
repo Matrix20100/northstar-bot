@@ -3,6 +3,59 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.4.0 — 2026-10-19 — one decision engine
+
+Northstar answered the same question four times: an opportunity score, a risk level, a rug
+verdict and a learning brain, with the AI judge on the early-call path only. They penalised the
+same things more than once, the one component measured against real outcomes (the rug verdict)
+ran AFTER the decision and only fed the embed, and the brain was bolted on in the engine where it
+matched blocker strings. v2.4.0 replaces that with a single engine
+(`northstar/analysis/unified.py`, full write-up in `docs/DECISION_ENGINE.md`).
+
+- **One result per coin**: score 0–100, risk LOW/MODERATE/HIGH/EXTREME, decision STRONG
+  OPPORTUNITY / WATCH / CAUTION / REJECT / INSUFFICIENT DATA, plus confidence, data completeness,
+  positives, negatives, entry assessment, what would invalidate the thesis and what should force a
+  re-check. Score, risk, confidence and completeness stay separate numbers; the score is not a
+  probability of reaching 2x.
+- **Nothing is counted twice.** Every observation is one entry in an evidence ledger with one
+  owning category and a provenance grade (FACT / INFERENCE / UNKNOWN / UNAVAILABLE). The gate and
+  the flag that describe the same hazard now share one canonical key, so holder concentration is
+  one warning instead of three.
+- **Safety is not compensatory.** Hazards never enter the score: confirmed traps reject, serious
+  warnings cap the decision, suspicions cost a listed penalty, and an unresolved TRAP check
+  returns INSUFFICIENT DATA. A provider timeout is never treated as evidence of safety. Where the
+  hand-written severity list and the learner disagree, the measured crash rate wins.
+- **A call has to be callable**: essential categories (safety, liquidity, holders, structure) each
+  need real evidence, entry conditions have to be right now, and a STRONG call must still clear
+  the bar with its narrative points removed — a good story on a bad chart cannot be called.
+- **The brain is a bounded tilt** of at most 12 points, only when it is trusted; it can lower or
+  lift a score but never clear a veto. The old string-matching promote/veto path is kept for
+  `NORTHSTAR_UNIFIED_ENABLED=false`.
+- **The AI judge now reaches the main callout path**, asked only about coins already heading for a
+  call or a watch, contributing 6 of the 16 narrative points. Follower growth, tweet velocity and
+  sentiment remain explicitly unavailable — there is no paid X access and they are not invented.
+- **Contradictions are shown, not averaged**: deep liquidity with no sell route, a locked-LP claim
+  the pool disagrees with, liquidity above market cap. Each costs confidence and is printed.
+- **One decision panel** on the callout and in the dashboard coin drawer, the latter with a
+  per-category table of points, weight, coverage and the evidence behind each.
+- **Every v2.3.0 threshold is preserved** (extended price, narrative evidence, volume
+  acceleration, buy/sell ratio, liquidity floor, cooldowns, caps) because several were tuned by
+  the learning loop. Publication policy can only hold a call back, never create one.
+- **Validation** (`scripts/validate_decision_engine.py`, replayed on 509 unique tracked coins):
+  ranking AUC 0.638 for the unified score against 0.498 for the old opportunity score, but only
+  63 coins have a complete report, and a liquidity-only baseline scores 0.596 — so the ordering
+  edge is real and modest. Top 50 by score reached 2x 28.0% of the time against a 16.3% base
+  rate. No weights are fitted, no win rate is claimed, and the database cannot establish whether
+  2x came before or after a drawdown. Limitations are listed in the doc.
+- Tests: 396 pass, 4 skipped. 26 new cases cover a clean coin, a critical vulnerability beating a
+  high score, a failed sell quote, thin liquidity, missing holder data, conflicting providers,
+  narrative versus structure, volume versus concentration, an unavailable AI provider, RugCheck
+  down with and without an on-chain LP read, a stale score, a deteriorating called coin,
+  unresolved outcomes, and a walk-forward leakage guard.
+- No schema change. Rollback: `NORTHSTAR_UNIFIED_ENABLED=false`, or run the previous folder
+  against the same `data/`.
+- Includes everything in 2.3.0 and earlier.
+
 ## 2.3.0 — 2026-10-19 — free AI providers, CoinGecko narratives, real exit checks
 
 - **The AI judge now works without paying for Claude credits** (`ai_judge.py`). Set

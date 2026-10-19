@@ -1902,6 +1902,50 @@ class Researcher:
             social=social_ev,
         )
 
+    # publication policy, not analysis: these may hold a call back but never create one
+    POLICY_PREFIXES = ("alert cooldown", "daily alert cap", "market cap")
+
+    def _merge_unified(self, u: dict, legacy: Decision) -> Decision:
+        """The unified engine makes the call; publication policy can only downgrade it."""
+        from .analysis.unified import LEGACY_ACTION
+
+        action = Action(LEGACY_ACTION.get(u.get("decision"), "REJECT"))
+        policy = [b for b in legacy.blockers if b.startswith(self.POLICY_PREFIXES)]
+        head = (f"{u.get('decision')} — score {u.get('score', 0):.0f}/100, risk {u.get('risk')}, "
+                f"confidence {u.get('confidence')}, evidence "
+                f"{float(u.get('completeness') or 0) * 100:.0f}%")
+        reasons = [head] + list(u.get("why") or [])[:2]
+        if action == Action.AUTO_POST and policy:
+            action = Action.WATCHLIST
+            reasons.insert(1, "held back by publication policy: " + "; ".join(policy))
+        return Decision(action, reasons, policy + [v for v in (u.get("warnings") or [])][:3])
+
+    def _verdict(self, mint: str, report: dict) -> Optional[dict]:
+        """The rug verdict. Computed BEFORE the decision so the unified engine can use it."""
+        if isinstance(report.get("verdict"), dict):
+            return report["verdict"]
+        if report.get("gates") is None and not report.get("holders"):
+            return None
+        try:
+            from .analysis.verdict import assess
+            report["verdict"] = assess(report, self.s, self._flag_stats())
+            return report["verdict"]
+        except Exception:  # noqa: BLE001 - the summary must never break research
+            log.warning("verdict failed for %s", mint, exc_info=True)
+            return None
+
+    def _unified(self, mint: str, report: dict) -> Optional[dict]:
+        """One score, one risk class, one decision (northstar/analysis/unified.py)."""
+        if not getattr(self.s, "unified_enabled", True):
+            return None
+        try:
+            from .analysis import unified
+            report["unified"] = unified.evaluate(report, self.s)
+            return report["unified"]
+        except Exception:  # noqa: BLE001 - never break research over the summary layer
+            log.warning("unified decision failed for %s", mint, exc_info=True)
+            return None
+
     async def _sellability(self, mint: str, mint_acc, pair, report: dict) -> None:
         """Could you actually get out? Live Jupiter quotes at real dollar sizes (free, keyless)."""
         if self.p.jupiter is None:
@@ -2064,6 +2108,10 @@ class Researcher:
             >= s.max_daily_alerts
         )
 
+        # The rug verdict and the unified engine run BEFORE the decision, not after it.
+        self._verdict(mint, report)
+        u = self._unified(mint, report)
+
         decision: Decision = decide(
             sr.total,
             risk,
@@ -2082,8 +2130,11 @@ class Researcher:
                             else (float("inf") if ((pair.txns or {}).get("h1") or {}).get("buys") else None)),
         )
 
+        if u:
+            decision = self._merge_unified(u, decision)
+
         report["decision"] = decision.to_dict()
-        report["confidence"] = sr.confidence.value
+        report["confidence"] = (u or {}).get("confidence") or sr.confidence.value
 
         return self._final(
             mint,
@@ -2121,12 +2172,7 @@ class Researcher:
         report["risk"] = report.get("risk", risk.value)
         report["final_action"] = action.value
         report["reasons"] = reasons
-        if report.get("gates") is not None or report.get("holders"):
-            try:
-                from .analysis.verdict import assess
-                report["verdict"] = assess(report, self.s, self._flag_stats())
-            except Exception:  # noqa: BLE001 - the summary must never break research
-                log.warning("verdict failed for %s", mint, exc_info=True)
+        self._verdict(mint, report)
 
         snapshot_id = self.db.save_research(
             mint,

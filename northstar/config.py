@@ -162,6 +162,24 @@ class Settings(BaseSettings):
     w_wallet_quality: float = 5
     w_evidence: float = 5
 
+    # ------------------------------------------------- Unified decision engine (analysis/unified.py)
+    # One score, one risk class, one decision. Category weights sum to 100 and are starting
+    # assumptions, NOT fitted coefficients: there is not enough resolved history to fit them
+    # (see docs/DECISION_ENGINE.md). Every threshold here is inspectable and overridable by env.
+    unified_enabled: bool = True
+    u_w_safety: float = 18          # only checks that actually RAN and came back clean earn these
+    u_w_liquidity: float = 20       # real depth and what a sell would cost
+    u_w_holders: float = 16         # distribution, fresh wallets, connected clusters
+    u_w_dev: float = 10             # developer history and behaviour
+    u_w_structure: float = 20       # demand quality and price/volume structure
+    u_w_narrative: float = 16       # attention, catalysts, AI narrative read
+    u_strong_min: float = 68.0      # STRONG OPPORTUNITY needs at least this
+    u_watch_min: float = 48.0       # below this it is not worth watching
+    u_min_completeness: float = 0.55  # below this the decision cannot be STRONG
+    u_model_tilt: float = 12.0      # most the learning brain may move the score, either way
+    u_narrative_cap: float = 20.0   # a STRONG call must stand up without this much narrative help
+    u_thin_category_floor: float = 0.5  # coverage below this dampens a category instead of passing it
+
     # ---------------------------------------------------------------- Research depth
     swap_sample_signatures: int = 150
     funding_trace_wallets: int = 12

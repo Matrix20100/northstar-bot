@@ -115,13 +115,33 @@ def callout_embed(report: dict, detected_at: Optional[float] = None, plan: Optio
         *([{"name": "📋 Trade plan" if not scalp else "📋 Scalp plan", "value": _clip("\n".join(plan), 1024),
             "inline": False}] if plan else []),
     ]
+    u = report.get("unified")
+    if isinstance(u, dict) and u.get("version"):
+        from ..analysis.unified import panel_text
+        top.append({"name": "🎯 Decision", "value": _clip(panel_text(u), 1024), "inline": False})
     verdict = report.get("verdict")
     if isinstance(verdict, dict) and verdict.get("level"):
         from ..analysis.verdict import embed_text
-        top.append({"name": "🧠 Rug check", "value": _clip(embed_text(verdict), 1024), "inline": False})
+        # the decision panel already carries the headline, so keep this to the detail
+        top.append({"name": "🧠 Rug check", "value": _clip(embed_text(verdict, max_red=3, max_green=2), 1024),
+                    "inline": False})
     brain = report.get("brain") or {}
-    if isinstance(brain.get("p"), (int, float)):
+    if isinstance(brain.get("p"), (int, float)) and not (isinstance(u, dict) and u.get("version")):
         top.append({"name": "🧠 Learned runner odds", "value": _clip(brain_text(brain), 1024), "inline": False})
+    if isinstance(u, dict) and (u.get("entry") or u.get("invalidation")):
+        lines = []
+        entry = u.get("entry") or {}
+        lines.append(("✅ Entry conditions look acceptable" if entry.get("ok")
+                      else "⚠️ Entry conditions are not ideal") + ":")
+        lines += [f"· {n}" for n in (entry.get("notes") or [])[:3]]
+        if u.get("invalidation"):
+            lines.append("**Thesis is dead if:**")
+            lines += [f"· {x}" for x in u["invalidation"][:3]]
+        if u.get("exit_triggers"):
+            lines.append("**Re-check / exit on:**")
+            lines += [f"· {x}" for x in u["exit_triggers"][:2]]
+        top.append({"name": "🧭 Entry, invalidation and exit", "value": _clip("\n".join(lines), 1024),
+                    "inline": False})
     if scalp:
         body = [
             {"name": "☠️ Why this is a rug", "value": _clip(_bullets(scalp.get("rug_reasons") or [], 6)),
@@ -464,6 +484,10 @@ def early_call_embed(report: dict, call: dict, plan: Optional[list[str]] = None)
     if plan:
         top.append({"name": "📋 Early plan", "value": _clip("\n".join(plan) + (
             f"\n**Plan status:** {call['status_line']}" if call.get("status_line") else ""), 1024), "inline": False})
+    u = report.get("unified")
+    if isinstance(u, dict) and u.get("version"):
+        from ..analysis.unified import panel_text
+        top.append({"name": "🎯 Decision", "value": _clip(panel_text(u, max_lines=2), 1024), "inline": False})
     verdict = report.get("verdict")
     if isinstance(verdict, dict) and verdict.get("level"):
         from ..analysis.verdict import embed_text
