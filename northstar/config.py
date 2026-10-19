@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     pumpportal_api_key: Optional[SecretStr] = None
     # CoinGecko on-chain API (providers/coingecko.py). Without a key the free GeckoTerminal API is used.
     coingecko_api_key: Optional[SecretStr] = None
+    # Web control panel (dashboard.py). Locked until a password is set.
+    dashboard_enabled: bool = True
+    dashboard_host: str = "0.0.0.0"
+    dashboard_port: int = 8080              # Wispbyte's SERVER_PORT / PORT take priority
+    dashboard_password: Optional[SecretStr] = None
     coingecko_plan: str = "demo"                 # demo | pro  (decides base URL and auth header)
     coingecko_rpm: int = 25                      # Demo allows 30/min; Pro plans allow far more
     coingecko_daily_budget: int = 300            # Demo = 10,000 calls/month; raise this on Pro
@@ -335,7 +340,7 @@ class Settings(BaseSettings):
     def secrets(self) -> list[str]:
         out = []
         for s in (self.discord_token, self.helius_api_key, self.pumpportal_api_key,
-                  self.coingecko_api_key):
+                  self.coingecko_api_key, self.dashboard_password):
             if s is not None and s.get_secret_value():
                 out.append(s.get_secret_value())
         return out

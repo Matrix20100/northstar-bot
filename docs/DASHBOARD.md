@@ -1,33 +1,46 @@
-# Northstar web dashboard
+# Northstar control panel
 
-Northstar now provides two interfaces:
+A password-protected web dashboard served by the bot itself (stdlib only: no extra packages,
+no CDN, nothing to install). Open your server's **Web URL** in a browser (on Wispbyte:
+Console page → Server details → Web URL).
 
-- **Discord embeds:** compact alert cards for CALL/WATCH/REJECT/INSUFFICIENT DATA decisions, including the evidence and risk context the engine has actually collected.
-- **Web dashboard:** a dark, minimal, responsive, read-only research terminal with candidate filters, token detail panels, decision reasoning, risk flags, explorer links, provider status, alert monitoring and observed performance summaries.
-
-The dashboard uses Python's standard library only. No frontend package install, external CDN, API key or separate web framework is required. It reads the existing SQLite database and never signs transactions or trades.
-
-## Wispbyte
-
-The dashboard starts automatically with `python main.py` unless disabled. Wispbyte should expose the port assigned by its environment (`PORT`); the app checks `PORT` first, then `NORTHSTAR_DASHBOARD_PORT`, then defaults to `8080`.
-
-Set these environment variables if needed:
+## Setup
 
 ```env
-NORTHSTAR_DASHBOARD_ENABLED=true
-NORTHSTAR_DASHBOARD_HOST=0.0.0.0
-NORTHSTAR_DASHBOARD_PORT=8080
+NORTHSTAR_DASHBOARD_PASSWORD=pick-a-long-password
 ```
 
-Open the web address/port shown by your Wispbyte service panel. The dashboard health endpoint is `/healthz`.
+Restart the bot. Without a password the panel stays **locked** (it shows how to unlock it and
+serves no data), because the server sits on a public address.
 
-To disable the web server while leaving Discord callouts running, set `NORTHSTAR_DASHBOARD_ENABLED=false`.
+The port is taken from Wispbyte's `SERVER_PORT` (or `PORT`), then `NORTHSTAR_DASHBOARD_PORT`,
+then 8080. `NORTHSTAR_DASHBOARD_ENABLED=false` turns it off.
 
-For local development, run the standalone dashboard with `python -m northstar dashboard --port 8080`. Do not run a second dashboard process on the same port while the main bot has its dashboard enabled.
+## Tabs
 
-## Notes
+- **Overview** – bot running/uptime, live/dry-run, research in the last hour, calls in 24 h,
+  the learning brain's state, latest decisions with reasons, decision mix, data-source health.
+- **Watching** – the research queue (what is waiting and why it was found), radar surges and
+  near-misses (last 6 h), CoinGecko trending coins, early watches.
+- **Calls** – every VIP call and rug scalp: called-at and current market cap, peak, low, plan
+  events (TP1, TP2, trailing exit, stop, time stop, danger) and status.
+- **Learning** – the brain: trusted or not, accuracy on unseen coins, which signals push runner
+  odds up or down; what it has checked; every tunable setting with its learned value, your
+  .env value and the range it may try; the full change log.
+- **Settings** – every setting, grouped and searchable, marked *learned*, *from .env* or
+  *default*. Keys and tokens only ever show "set" / "not set".
+- **Self-test** – one button checks settings, Discord login and every channel, DexScreener,
+  RugCheck, Solana RPC, CoinGecko, the database, the running bot, the learning, and (optional)
+  runs the full code test suite. Nothing is posted, nothing is changed. Same checks from a
+  shell: `python main.py selftest --code`.
 
-- Dashboard is read-only; it cannot buy, sell, sign, or submit transactions.
-- The dashboard displays only information saved by the engine. Empty panels mean the database has not recorded those data yet; they are not interpreted as safe/positive signals.
-- Performance figures are observed mark-to-market measurements, not realized P&L or a guarantee of future accuracy. Low sample counts are explicitly cautioned against.
-- The dashboard is intended for a private hosting URL. If you expose it publicly, restrict access using Wispbyte's access controls or a reverse proxy; it is read-only but contains your research and alert history.
+Click any coin to open its research: market numbers, learned runner odds and why, the reasons
+for the decision, every safety check, and links to DexScreener, Axiom, RugCheck and Solscan.
+
+## Security
+
+- Session cookie is HttpOnly and SameSite=Strict; cross-site posts are refused.
+- 5 wrong passwords from one address lock that address out for 10 minutes.
+- The database is opened read-only; the panel cannot trade, sign, post or change settings.
+- Wispbyte's Web URL is plain `http://`, so the password travels unencrypted. Use a password
+  you don't use anywhere else.

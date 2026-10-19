@@ -1,110 +1,506 @@
-"""Read-only Northstar web dashboard; stdlib-only so it works on Wispbyte."""
+"""Northstar control panel: a password-protected web dashboard served by the bot itself.
+
+Tabs: Overview · Watching · Calls · Learning · Settings · Self-test. Stdlib-only HTTP server so
+it runs on Wispbyte without extra packages. The page is northstar/dashboard.html.
+
+Security
+  * Locked until NORTHSTAR_DASHBOARD_PASSWORD is set (the server sits on a public IP and shows
+    strategy, settings and a test button). Login gives an HttpOnly, SameSite=Strict session
+    cookie; 5 wrong passwords from one address lock it out for 10 minutes.
+  * Keys and tokens are never sent to the browser: secret settings only show "set" / "not set".
+  * The database is opened read-only. The only action is the self-test, which never posts to
+    Discord and never changes settings.
+"""
 from __future__ import annotations
-import json, os, sqlite3, threading, time
+
+import asyncio
+import hmac
+import json
+import os
+import secrets as _secrets
+import sqlite3
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
 
-HTML = r'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Northstar · Intelligence</title>
-<style>
-:root{color-scheme:dark;--bg:#090b0f;--panel:#101319;--panel2:#141820;--line:#252a34;--muted:#8b93a3;--text:#f4f6fa;--green:#83e0b0;--red:#ff777d;--amber:#f3c77a;--blue:#a4b8ff;--radius:15px}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 70% -10%,#182033 0,transparent 36%),var(--bg);font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;color:var(--text)}button{font:inherit}.shell{max-width:1480px;margin:auto;padding:26px 24px 50px}.top{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:28px}.brand{display:flex;align-items:center;gap:13px}.mark{width:42px;height:42px;border:1px solid #414a5a;border-radius:13px;display:grid;place-items:center;background:linear-gradient(145deg,#202735,#0b0d12);font-weight:800;font-size:18px;letter-spacing:-2px}.brand h1{font-size:18px;letter-spacing:.14em;margin:0;font-weight:800}.brand p{color:var(--muted);margin:2px 0 0;font-size:11px;letter-spacing:.16em;text-transform:uppercase}.topright{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:12px}.live{display:flex;align-items:center;gap:7px;padding:7px 10px;border:1px solid var(--line);border-radius:99px;color:#cbd3df}.dot{width:7px;height:7px;background:var(--green);border-radius:50%;box-shadow:0 0 12px #83e0b077}.layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(300px,.8fr);gap:17px}.maincol,.sidecol{display:flex;flex-direction:column;gap:17px}.sectionhead{display:flex;justify-content:space-between;align-items:center;margin:0 0 12px}.sectionhead h2{margin:0;font-size:12px;text-transform:uppercase;letter-spacing:.15em;color:#c8ced9}.sectionhead span{font-size:11px;color:var(--muted)}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}.metric,.card{border:1px solid var(--line);background:linear-gradient(155deg,#131720,#0e1117);border-radius:var(--radius)}.metric{padding:17px 18px}.metric label{display:block;color:var(--muted);font-size:11px;letter-spacing:.09em;text-transform:uppercase}.metric strong{display:block;font-size:27px;letter-spacing:-.05em;margin:8px 0 2px}.metric small{color:var(--muted);font-size:11px}.card{padding:18px}.tabs{display:flex;gap:6px}.tab{background:transparent;border:1px solid transparent;color:var(--muted);padding:6px 10px;border-radius:8px;cursor:pointer;font-size:12px}.tab.active{background:#252b37;border-color:#343c4b;color:#fff}.tablewrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:580px}th{text-align:left;color:#777f90;font-size:10px;text-transform:uppercase;letter-spacing:.12em;font-weight:600;padding:10px 9px;border-bottom:1px solid var(--line)}td{padding:13px 9px;border-bottom:1px solid #20242c;white-space:nowrap;font-size:12px}tr:last-child td{border-bottom:0}tbody tr{cursor:pointer}tbody tr:hover{background:#ffffff05}.coin{display:flex;flex-direction:column;gap:2px}.coin b{font-size:13px}.coin small,.sub{font-size:10px;color:var(--muted)}.pill{display:inline-flex;padding:4px 7px;border:1px solid var(--line);border-radius:6px;font-size:10px;font-weight:700;letter-spacing:.04em}.pill.good{color:var(--green);border-color:#315944;background:#10251c}.pill.bad{color:var(--red);border-color:#603238;background:#281418}.pill.warn{color:var(--amber);border-color:#5a492b;background:#241e12}.pill.neutral{color:#c4cad5;background:#1b2029}.score{font-weight:700}.muted{color:var(--muted)}.empty{padding:30px 12px;text-align:center;color:var(--muted)}.details{display:flex;flex-direction:column;gap:14px}.detailtitle{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.detailtitle h3{margin:0;font-size:20px;letter-spacing:-.03em}.detailtitle p{margin:4px 0;color:var(--muted);font-size:11px;overflow-wrap:anywhere}.detailgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}.stat{background:var(--panel2);border:1px solid #252b36;border-radius:10px;padding:11px}.stat label{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.08em}.stat b{display:block;font-size:15px;margin-top:5px}.subhead{font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:#8e98a9;margin-bottom:7px}.reason{padding:9px 10px;border-radius:8px;background:#141820;border:1px solid #242a35;margin:6px 0;font-size:12px;color:#d1d6df}.reason:before{content:'— ';color:#71809b}.linkrow{display:flex;gap:8px;flex-wrap:wrap}.link{color:#d8deeb;text-decoration:none;border:1px solid var(--line);padding:7px 9px;border-radius:8px;font-size:11px}.link:hover{border-color:#65708a}.provider{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #222731;font-size:12px}.provider:last-child{border:0}.healthdot{width:6px;height:6px;border-radius:50%;display:inline-block;margin-right:7px;background:var(--green)}.healthdot.bad{background:var(--red)}.chart{height:145px;width:100%;display:block;margin:6px 0}.performance{display:grid;grid-template-columns:1fr 1fr;gap:10px}.perfbox{padding:12px;background:var(--panel2);border-radius:10px;border:1px solid #252b36}.perfbox b{font-size:19px;display:block}.perfbox span{color:var(--muted);font-size:10px}.footer{color:#596171;text-align:center;font-size:10px;margin-top:25px}.notice{color:var(--amber);font-size:11px;margin-top:8px}.hidden{display:none}@media(max-width:1000px){.layout{grid-template-columns:1fr}.sidecol{display:grid;grid-template-columns:1fr 1fr}.metrics{grid-template-columns:repeat(2,1fr)}}@media(max-width:620px){.shell{padding:16px 12px}.top{align-items:flex-start}.topright{flex-direction:column;align-items:flex-end}.sidecol{display:flex}.metrics{gap:8px}.metric{padding:13px}.metric strong{font-size:23px}.card{padding:13px}.detailgrid{grid-template-columns:repeat(2,1fr)}}
-</style></head><body><div class="shell">
-<header class="top"><div class="brand"><div class="mark">N.</div><div><h1>NORTHSTAR</h1><p>Token intelligence · Solana</p></div></div><div class="topright"><span id="updated">Connecting to local database…</span><div class="live"><i class="dot"></i> LIVE MONITOR</div></div></header>
-<div class="metrics"><div class="metric"><label>Tracked tokens</label><strong id="mTracked">—</strong><small>All recorded candidates</small></div><div class="metric"><label>Qualified / posted</label><strong id="mQualified">—</strong><small>Not a promise of future returns</small></div><div class="metric"><label>Risk / data blocked</label><strong id="mBlocked">—</strong><small>Rejected or incomplete</small></div><div class="metric"><label>Alerts monitored</label><strong id="mAlerts">—</strong><small>Historical + active</small></div></div>
-<div class="layout"><main class="maincol"><section class="card"><div class="sectionhead"><h2>Research queue</h2><div class="tabs"><button class="tab active" data-filter="all">All</button><button class="tab" data-filter="QUALIFIED">Qualified</button><button class="tab" data-filter="WATCHLIST">Watchlist</button><button class="tab" data-filter="REJECTED">Rejected</button></div></div><div class="tablewrap"><table><thead><tr><th>Token</th><th>Decision</th><th>Score</th><th>Risk</th><th>Updated</th></tr></thead><tbody id="candidates"><tr><td colspan="5" class="empty">Waiting for research data…</td></tr></tbody></table></div></section>
-<section class="card"><div class="sectionhead"><h2>Alert performance</h2><span id="perfSample">No outcomes yet</span></div><div class="performance" id="performance"><div class="perfbox"><b>—</b><span>Observed positive outcomes</span></div><div class="perfbox"><b>—</b><span>Median observed return</span></div><div class="perfbox"><b>—</b><span>Reached 2× peak</span></div><div class="perfbox"><b>—</b><span>Severe drawdown</span></div></div><p class="notice">Mark-to-market observations are not realized profit. Small samples are not reliable win-rate estimates.</p></section>
-<section class="card"><div class="sectionhead"><h2>Recent alerts</h2><span>Published and tracked</span></div><div class="tablewrap"><table><thead><tr><th>Token</th><th>Status</th><th>Entry MC</th><th>Current MC</th><th>Peak</th><th>Drawdown</th></tr></thead><tbody id="alerts"><tr><td colspan="6" class="empty">No alerts recorded yet.</td></tr></tbody></table></div></section></main>
-<aside class="sidecol"><section class="card"><div class="sectionhead"><h2>Token research</h2><span id="detailBadge">Select a token</span></div><div id="detail" class="details"><div class="empty">Select any row in the research queue to inspect the latest available evidence, risk flags and links.</div></div></section>
-<section class="card"><div class="sectionhead"><h2>Provider status</h2><span>Data reliability</span></div><div id="providers"><div class="empty">Loading providers…</div></div></section></aside></div><div class="footer">NORTHSTAR · READ-ONLY DASHBOARD · NOT FINANCIAL ADVICE · DATA CAN BE DELAYED OR INCOMPLETE</div></div>
-<script>
-const $=id=>document.getElementById(id);let candidateRows=[],currentFilter='all',selectedMint=null;
-const num=(v,dec=2)=>v==null||!Number.isFinite(Number(v))?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:dec});const usd=v=>v==null||!Number.isFinite(Number(v))?'—':(Math.abs(v)>0&&Math.abs(v)<0.01?'$'+Number(v).toPrecision(3):'$'+num(v,v>=1000?0:4));const pct=v=>v==null?'—':num(v)+'%';const ago=t=>!t?'—':(()=>{let s=Math.max(0,Date.now()/1000-t);return s<60?Math.round(s)+'s ago':s<3600?Math.round(s/60)+'m ago':s<86400?Math.round(s/3600)+'h ago':Math.round(s/86400)+'d ago'})();const short=s=>s&&s.length>17?s.slice(0,7)+'…'+s.slice(-5):s||'—';function badge(s){s=(s||'UNKNOWN').toUpperCase();let c=['QUALIFIED','PUBLISHED','AUTO_POST','SENT'].includes(s)?'good':['REJECTED','REJECT','CRITICAL','FAILED'].includes(s)?'bad':['WATCHLIST','WARNING','INSUFFICIENT_DATA','INCOMPLETE','ELEVATED'].includes(s)?'warn':'neutral';return `<span class="pill ${c}">${s.replaceAll('_',' ')}</span>`}async function api(path){let r=await fetch(path,{cache:'no-store'});if(!r.ok)throw Error(r.status);return r.json()}
-function drawCandidates(){let rows=candidateRows.filter(x=>currentFilter==='all'||x.state===currentFilter);$('candidates').innerHTML=rows.length?rows.map(x=>`<tr data-mint="${x.mint}"><td><div class="coin"><b>${esc(x.symbol||x.name||'Unknown')}</b><small>${esc(short(x.mint))}</small></div></td><td>${badge(x.state)}</td><td class="score">${x.last_score==null?'—':num(x.last_score,0)}</td><td>${badge(x.last_risk||'UNKNOWN')}</td><td class="muted">${ago(x.updated_at)}</td></tr>`).join(''):`<tr><td colspan="5" class="empty">No tokens in this view yet.</td></tr>`;document.querySelectorAll('#candidates tr[data-mint]').forEach(tr=>tr.onclick=()=>loadDetail(tr.dataset.mint))}
-function val(x){return x&&typeof x==='object'?(x.value??null):(x??null)}
-function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-async function loadDetail(mint){selectedMint=mint;$('detail').innerHTML='<div class="empty">Loading evidence…</div>';try{let d=await api('/api/token?mint='+encodeURIComponent(mint));let r=d.report||{},id=r.identity||{},p=r.pool||{},m=r.market||{},score=r.score||{},flags=r.flags||[],reasons=d.reasons||[];$('detailBadge').textContent=d.state||'RESEARCH';let links=[['DexScreener',p.url||`https://dexscreener.com/solana/${mint}`],['Solscan',`https://solscan.io/token/${mint}`],['Birdeye',`https://birdeye.so/token/${mint}?chain=solana`]];$('detail').innerHTML=`<div class="detailtitle"><div><h3>${esc(id.symbol||d.symbol||'Unknown token')} <span class="muted">${esc(id.name||'')}</span></h3><p>${esc(mint)}</p></div>${badge(d.state||'UNKNOWN')}</div><div class="detailgrid"><div class="stat"><label>Score</label><b>${d.last_score==null?'—':num(d.last_score,0)}/100</b></div><div class="stat"><label>Risk</label><b>${esc(d.last_risk||'UNKNOWN')}</b></div><div class="stat"><label>Confidence</label><b>${esc(d.last_confidence||'UNKNOWN')}</b></div><div class="stat"><label>Price</label><b>${usd(val(m.price_usd))}</b></div><div class="stat"><label>Liquidity</label><b>${usd(val(m.liquidity_usd))}</b></div><div class="stat"><label>Market cap</label><b>${usd(val(m.market_cap)??(r.pre_migration||{}).market_cap_usd_current)}</b></div></div><div><div class="subhead">Decision reasoning</div>${(reasons.length?reasons:['No decision reasons recorded.']).map(x=>`<div class="reason">${esc(x)}</div>`).join('')}</div><div><div class="subhead">Risk flags · ${flags.length}</div>${flags.length?flags.slice(0,12).map(f=>`<div class="reason">${badge(f.severity||'INFO')} ${esc(f.message||f.code||'Finding')}</div>`).join(''):'<div class="reason">No flags in the saved report. This does not mean the token is safe.</div>'}</div><div><div class="subhead">Research links</div><div class="linkrow">${links.map(([n,u])=>`<a class="link" href="${esc(u)}" target="_blank" rel="noopener">${n} ↗</a>`).join('')}</div></div><div class="sub"><b>Updated:</b> ${ago(d.updated_at)} · Missing data is not treated as proof of safety.</div>`}catch(e){$('detail').innerHTML='<div class="empty">Could not load this token report.</div>'}}
-async function refresh(){try{let o=await api('/api/overview');$('mTracked').textContent=num(o.tracked,0);$('mQualified').textContent=num(o.qualified,0);$('mBlocked').textContent=num(o.blocked,0);$('mAlerts').textContent=num(o.alert_count,0);$('updated').textContent='Updated '+new Date().toLocaleTimeString();candidateRows=o.candidates||[];drawCandidates();if(selectedMint&&candidateRows.some(x=>x.mint===selectedMint)){}let a=o.alerts||[];$('alerts').innerHTML=a.length?a.map(x=>`<tr data-mint="${x.mint}"><td><div class="coin"><b>${esc(x.symbol||'Unknown')}</b><small>${esc(short(x.mint))}</small></div></td><td>${badge(x.status||x.state)}</td><td>${usd(x.entry_mcap)}</td><td>${usd(x.current_mcap)}</td><td>${x.max_multiple==null?'—':num(x.max_multiple)+'×'}</td><td>${pct(x.max_drawdown_pct)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">No alerts recorded yet.</td></tr>';document.querySelectorAll('#alerts tr[data-mint]').forEach(tr=>tr.onclick=()=>loadDetail(tr.dataset.mint));let ph=o.providers||[];$('providers').innerHTML=ph.length?ph.map(p=>`<div class="provider"><span><i class="healthdot ${p.status==='ERROR'?'bad':''}"></i>${esc(p.provider)}</span><span>${badge(p.status||'UNKNOWN')} <span class="muted">${num(p.ok_count,0)} ok / ${num(p.err_count,0)} err</span></span></div>`).join(''):'<div class="empty">No provider health recorded yet.</div>';renderPerformance(o.performance||{})}catch(e){$('updated').textContent='Waiting for database · retrying';console.error(e)}}
-function renderPerformance(p){let groups=p.groups||{},g=groups.AUTO_POST||groups.PUBLISHED||Object.values(groups)[0],h=g?.horizons?.['1h']||g?.horizons?.['24h']||{};let tr=Object.values(groups).reduce((n,x)=>n+(x.decisions||0),0);$('perfSample').textContent=tr+' tracked decisions';let pos=h.share_positive_observed_pct,ret=h.median_return_observed_pct,early=p.pre_migration||{};$('performance').innerHTML=`<div class="perfbox"><b>${pos==null?'—':num(pos)+'%'}</b><span>Observed positive at selected horizon</span></div><div class="perfbox"><b>${ret==null?'—':(ret>0?'+':'')+num(ret)+'%'}</b><span>Median observed return</span></div><div class="perfbox"><b>${early.reached_2x_pct==null?'—':num(early.reached_2x_pct)+'%'}</b><span>Pre-migration signals that touched 2×</span></div><div class="perfbox"><b>${early.severe_drawdown_50pct_share==null?'—':num(early.severe_drawdown_50pct_share)+'%'}</b><span>Pre-migration signals sampled at −50% or worse</span></div>`}
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');currentFilter=b.dataset.filter;drawCandidates()});refresh();setInterval(refresh,10000);
-</script></body></html>'''
+from . import selftest as ST
 
+PAGE = Path(__file__).with_name("dashboard.html")
+ROOT = Path(__file__).resolve().parents[1]
+SESSION_SECONDS = 7 * 86400
+MAX_FAILS, LOCKOUT = 5, 600
+
+# The live bot registers itself here (cli._run) so the panel can show live state and settings.
+LIVE: dict[str, Any] = {"engine": None, "settings": None, "loop": None}
+
+
+def attach(engine, loop) -> None:
+    LIVE.update(engine=engine, settings=engine.s, loop=loop)
+
+
+def _version() -> str:
+    try:
+        head = (ROOT / ".git" / "HEAD").read_text().strip()
+        if head.startswith("ref:"):
+            ref = ROOT / ".git" / head.split(" ", 1)[1]
+            return ref.read_text().strip()[:7] if ref.exists() else "unknown"
+        return head[:7]
+    except OSError:
+        return "zip upload"
+
+
+class _Ro:
+    """Tiny read-only adapter with the Database methods learning/brain use."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.c = conn
+
+    def fetchall(self, sql, params=()):
+        return [dict(r) for r in self.c.execute(sql, tuple(params)).fetchall()]
+
+    def fetchone(self, sql, params=()):
+        r = self.c.execute(sql, tuple(params)).fetchone()
+        return dict(r) if r else None
+
+
+def _table_ok(c, name: str) -> bool:
+    return c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
+
+
+# ----------------------------------------------------------------------------- data views
+def view_status(c, s, now: float) -> dict:
+    eng = LIVE.get("engine")
+    counts = {r["state"]: r["n"] for r in c.execute("SELECT state, COUNT(*) n FROM candidates GROUP BY state")}
+    open_calls = c.execute("SELECT COUNT(*) FROM alerts WHERE state NOT IN ('CLOSED') AND status='SENT'").fetchone()[0] \
+        if _table_ok(c, "alerts") else 0
+    calls_24h = c.execute("SELECT COUNT(*) FROM alerts WHERE status='SENT' AND sent_at > ?", (now - 86400,)).fetchone()[0]
+    last_research = c.execute("SELECT MAX(ts) FROM research_snapshots").fetchone()[0]
+    researched_1h = c.execute("SELECT COUNT(*) FROM research_snapshots WHERE ts > ?", (now - 3600,)).fetchone()[0]
+    surges_6h = c.execute("SELECT COUNT(*) FROM radar_obs WHERE fired=1 AND ts > ?", (now - 6 * 3600,)).fetchone()[0] \
+        if _table_ok(c, "radar_obs") else 0
+    providers = [dict(r) for r in c.execute(
+        "SELECT provider, status, ok_count, err_count, last_ok, last_err, last_error, budget_used FROM provider_health "
+        "ORDER BY provider")]
+    brain = None
+    if _table_ok(c, "brain_models"):
+        m = c.execute("SELECT ts, n, positives, auc, recent_auc, trusted FROM brain_models ORDER BY ts DESC LIMIT 1").fetchone()
+        brain = dict(m) if m else None
+    actions = {r["action"]: r["n"] for r in c.execute(
+        "SELECT action, COUNT(*) n FROM research_snapshots WHERE ts > ? GROUP BY action", (now - 86400,))}
+    return {
+        "now": now, "version": _version(), "running": eng is not None,
+        "uptime_s": now - eng.stats.get("started_at", now) if eng else None,
+        "stats": dict(eng.stats) if eng else None,
+        "queue": eng.queue.qsize() if eng is not None and getattr(eng, "queue", None) is not None else None,
+        "mode": ("DRY RUN" if s.dry_run else ("LIVE" if s.discord_enabled else "DISCORD OFF")) if s else "unknown",
+        "candidates": counts, "open_calls": open_calls, "calls_24h": calls_24h,
+        "last_research": last_research, "researched_1h": researched_1h, "surges_6h": surges_6h,
+        "actions_24h": actions, "providers": providers, "brain": brain,
+    }
+
+
+def view_watching(c, now: float) -> dict:
+    queue = [dict(r) for r in c.execute(
+        "SELECT mint, symbol, name, state, priority, sources, last_score, last_action, next_research_at, "
+        "last_research_at FROM candidates WHERE state IN ('DISCOVERED','WATCHLIST','QUALIFIED') "
+        "ORDER BY priority DESC, COALESCE(next_research_at, 0) LIMIT 80")]
+    for q in queue:
+        try:
+            q["sources"] = json.loads(q.get("sources") or "[]")
+        except ValueError:
+            q["sources"] = []
+    surges = []
+    if _table_ok(c, "radar_obs"):
+        for r in c.execute("SELECT o.mint, o.ts, o.fired, o.metrics, c.symbol, c.last_action FROM radar_obs o "
+                           "LEFT JOIN candidates c ON c.mint = o.mint WHERE o.ts > ? ORDER BY o.ts DESC LIMIT 60",
+                           (now - 6 * 3600,)):
+            d = dict(r)
+            try:
+                d["metrics"] = json.loads(d["metrics"])
+            except (TypeError, ValueError):
+                d["metrics"] = {}
+            surges.append(d)
+    early = [dict(r) for r in c.execute(
+        "SELECT mint, created_at, updated_at, peak_multiple, min_multiple, score, status, entry_market_cap_sol, "
+        "current_market_cap_sol FROM early_signals ORDER BY created_at DESC LIMIT 30")]
+    eng = LIVE.get("engine")
+    trending = list((getattr(getattr(eng, "radar", None), "trending", None) or {}).values())[:30] if eng else []
+    watch_total = c.execute("SELECT COUNT(*) FROM candidates WHERE state IN ('DISCOVERED','WATCHLIST','QUALIFIED')").fetchone()[0]
+    return {"queue": queue, "queue_total": watch_total, "surges": surges, "early": early, "trending": trending}
+
+
+def view_calls(c) -> dict:
+    cols = {r[1] for r in c.execute("PRAGMA table_info(alerts)")}
+    extra = ", ".join(x for x in ("peak_mcap", "peak_at", "call_type", "plan_json") if x in cols)
+    rows = [dict(r) for r in c.execute(
+        "SELECT id, mint, status, state, created_at, sent_at, symbol, name, entry_mcap, current_mcap, max_multiple, "
+        f"min_multiple, score, risk, closed_at, last_update_at{', ' + extra if extra else ''} FROM alerts "
+        "ORDER BY created_at DESC LIMIT 60")]
+    events: dict[int, list] = {}
+    if rows and _table_ok(c, "alert_events"):
+        ids = tuple(r["id"] for r in rows)
+        q = f"SELECT alert_id, ts, kind FROM alert_events WHERE alert_id IN ({','.join('?' * len(ids))}) ORDER BY ts"
+        for e in c.execute(q, ids):
+            events.setdefault(e["alert_id"], []).append({"ts": e["ts"], "kind": e["kind"]})
+    for r in rows:
+        r["events"] = [e for e in events.get(r["id"], []) if e["kind"] not in ("published",)][-8:]
+        r.pop("plan_json", None)
+    return {"calls": rows}
+
+
+def view_decisions(c) -> dict:
+    rows = [dict(r) for r in c.execute(
+        "SELECT mint, symbol, name, state, last_action, last_score, last_risk, last_confidence, reasons, last_research_at "
+        "FROM candidates WHERE last_research_at IS NOT NULL ORDER BY last_research_at DESC LIMIT 80")]
+    for r in rows:
+        try:
+            r["reasons"] = json.loads(r.get("reasons") or "[]")[:4]
+        except ValueError:
+            r["reasons"] = []
+    return {"decisions": rows}
+
+
+def view_token(c, mint: str) -> Optional[dict]:
+    row = c.execute("SELECT mint, state, symbol, name, last_score, last_risk, last_confidence, reasons, sources, "
+                    "updated_at FROM candidates WHERE mint=?", (mint,)).fetchone()
+    if not row:
+        return None
+    out = dict(row)
+    for k in ("reasons", "sources"):
+        try:
+            out[k] = json.loads(out.get(k) or "[]")
+        except ValueError:
+            out[k] = []
+    snap = c.execute("SELECT report, action, score, risk, confidence, ts FROM research_snapshots WHERE mint=? "
+                     "ORDER BY ts DESC LIMIT 1", (mint,)).fetchone()
+    out["report"] = {}
+    if snap:
+        try:
+            out["report"] = json.loads(snap["report"] or "{}")
+        except ValueError:
+            pass
+        out["snapshot"] = {k: snap[k] for k in ("action", "score", "risk", "confidence", "ts")}
+    return out
+
+
+def view_learning(c, s, now: float) -> dict:
+    from . import brain as B
+    from . import learning as L
+    db = _Ro(c)
+    if not _table_ok(c, "shadow_calls"):
+        return {"ready": False}
+    info = L.summary(db, s, s.learning_days, now) if s else {}
+    m = B.latest(db)
+    learned = {r["key"]: r for r in db.fetchall("SELECT key, value, updated_at FROM learned_settings")}
+    eng = LIVE.get("engine")
+    defaults = getattr(eng, "_tunable_defaults", {}) if eng else {}
+    def live_value(t):
+        if eng is None and t.key in learned:          # panel running without the bot: show what the bot uses
+            return learned[t.key]["value"]
+        return getattr(s, t.key) if s else None
+    tunables = [{"key": t.key, "label": t.label, "kind": t.kind, "grid": list(t.grid), "value": live_value(t),
+                 "default": defaults.get(t.key, getattr(s, t.key) if s else None),
+                 "learned": t.key in learned, "updated_at": (learned.get(t.key) or {}).get("updated_at")}
+                for t in L.TUNABLES]
+    stats = db.fetchone("SELECT COUNT(*) total, SUM(evaluated=1) evaluated, SUM(evaluated=0) pending, "
+                        "SUM(called) called FROM shadow_calls") or {}
+    runners = db.fetchone("SELECT COUNT(*) n FROM shadow_calls WHERE evaluated=1 AND peak_x >= ?",
+                          (getattr(s, "brain_win_x", 2.0) if s else 2.0,)) or {}
+    log_rows = db.fetchall("SELECT ts, key, old, new, detail FROM learning_log ORDER BY ts DESC LIMIT 40")
+    for r in log_rows:
+        try:
+            r["detail"] = json.loads(r["detail"] or "{}")
+        except (TypeError, ValueError):
+            r["detail"] = {}
+    history = db.fetchall("SELECT ts, n, positives, auc, recent_auc, trusted FROM brain_models ORDER BY ts DESC LIMIT 20")
+    radar = db.fetchone("SELECT COUNT(*) total, SUM(fired) fired, SUM(evaluated=1) evaluated FROM radar_obs") or {}
+    brain = None
+    if m is not None:
+        brain = {"trusted": m.trusted, "n": m.n, "positives": m.positives, "auc": m.auc, "recent_auc": m.recent_auc,
+                 "ts": m.ts, "describe": B.describe(m),
+                 "signals": [{"name": B.LABELS.get(f, f), "weight": round(w, 3)}
+                             for f, w in sorted(m.coef.items(), key=lambda kv: -abs(kv[1]))[:16]]}
+    return {"ready": True, "brain": brain, "brain_history": history, "tunables": tunables, "log": log_rows,
+            "shadows": stats, "runners": runners.get("n", 0), "radar": radar,
+            "win_x": getattr(s, "brain_win_x", 2.0) if s else 2.0, "loss_x": getattr(s, "brain_loss_x", 0.6) if s else 0.6,
+            "summary": {k: info.get(k) for k in ("evaluated", "pending", "standard_trades", "standard_avg",
+                                                 "scalp_trades", "scalp_avg", "median_peak")}}
+
+
+GROUPS = [
+    ("Discord & posting", ("discord_", "dry_run", "free_", "vip_", "early_watch", "max_alerts", "alert_", "embed_")),
+    ("Who gets called", ("min_", "max_allowed", "watchlist_", "block_", "require_", "reject_", "max_")),
+    ("Trade plan (VIP calls)", ("plan_", "trade_plan")),
+    ("Rug scalps", ("scalp_",)),
+    ("Surge radar", ("radar_",)),
+    ("Self-learning & brain", ("learning_", "brain_")),
+    ("Score weights", ("w_",)),
+    ("Data sources & keys", ("enable_", "helius", "pumpportal", "coingecko", "geckoterminal", "solana_rpc", "rugcheck",
+                             "dexscreener", "rpc_", "http_", "social")),
+    ("Timing & storage", ("", )),
+]
+SECRETS = {"discord_token", "helius_api_key", "pumpportal_api_key", "coingecko_api_key", "dashboard_password"}
+
+
+def view_settings(c, s) -> dict:
+    if s is None:
+        return {"groups": []}
+    learned = {}
+    if _table_ok(c, "learned_settings"):
+        learned = {r["key"]: r["value"] for r in c.execute("SELECT key, value FROM learned_settings")}
+    from_env = set(getattr(s, "model_fields_set", set()))
+    groups: dict[str, list] = {g: [] for g, _ in GROUPS}
+    for name in type(s).model_fields:
+        raw = getattr(s, name, None)
+        if name in SECRETS or "secret" in name or name.endswith("_api_key") or name.endswith("_token"):
+            value = "set" if raw is not None and (raw.get_secret_value() if hasattr(raw, "get_secret_value") else raw) else "not set"
+            secret = True
+        else:
+            value, secret = raw, False
+            if isinstance(value, (set, tuple)):
+                value = list(value)
+            elif not isinstance(value, (int, float, str, bool, list, dict, type(None))):
+                value = str(value)
+        source = "learned" if name in learned else (".env" if name in from_env else "default")
+        group = next((g for g, prefixes in GROUPS if any(name.startswith(p) for p in prefixes) and prefixes != ("",)),
+                     "Timing & storage")
+        groups[group].append({"name": name, "env": "NORTHSTAR_" + name.upper(), "value": value, "secret": secret,
+                              "source": source})
+    return {"groups": [{"name": g, "settings": v} for g, v in groups.items() if v],
+            "problems": s.config_problems()}
+
+
+# ----------------------------------------------------------------------------- server
 class DashboardServer:
-    def __init__(self, db_path: str | Path, host: str = "0.0.0.0", port: int = 8080):
-        self.db_path = str(db_path); self.host = host; self.port = int(port); self.server = None
+    def __init__(self, db_path: str | Path, host: str = "0.0.0.0", port: int = 8080, settings=None,
+                 password: Optional[str] = None):
+        self.db_path, self.host, self.port = str(db_path), host, int(port)
+        self.settings = settings
+        self.password = password if password is not None else os.getenv("NORTHSTAR_DASHBOARD_PASSWORD", "")
+        self.sessions: dict[str, float] = {}
+        self.fails: dict[str, list[float]] = {}
+        self.runner = ST.Runner()
+        self.server: Optional[ThreadingHTTPServer] = None
+        self._lock = threading.Lock()
 
-    def start_background(self):
-        if self.server: return
+    # -- auth
+    def login(self, ip: str, password: str, now: Optional[float] = None) -> Optional[str]:
+        now = now or time.time()
+        with self._lock:
+            recent = [t for t in self.fails.get(ip, []) if now - t < LOCKOUT]
+            if len(recent) >= MAX_FAILS:
+                self.fails[ip] = recent
+                return None
+            if self.password and hmac.compare_digest(password.encode(), self.password.encode()):
+                self.fails.pop(ip, None)
+                tok = _secrets.token_urlsafe(32)
+                self.sessions = {k: v for k, v in self.sessions.items() if v > now}
+                self.sessions[tok] = now + SESSION_SECONDS
+                return tok
+            self.fails[ip] = recent + [now]
+            return None
+
+    def locked_out(self, ip: str, now: Optional[float] = None) -> bool:
+        now = now or time.time()
+        return len([t for t in self.fails.get(ip, []) if now - t < LOCKOUT]) >= MAX_FAILS
+
+    def valid(self, token: Optional[str], now: Optional[float] = None) -> bool:
+        if not token or not self.password:
+            return False
+        exp = self.sessions.get(token)
+        return exp is not None and exp > (now or time.time())
+
+    # -- self-test
+    def start_selftest(self, include_code: bool) -> bool:
+        s = LIVE.get("settings") or self.settings
+        eng, loop = LIVE.get("engine"), LIVE.get("loop")
+
+        def run():
+            if eng is not None and loop is not None and loop.is_running():
+                fut = asyncio.run_coroutine_threadsafe(ST.run_async(s, self.db_path, eng.p, eng, False), loop)
+                res = fut.result(timeout=150)
+            else:
+                res = asyncio.run(ST.run_async(s, self.db_path, None, None, False))
+            if include_code:
+                res += ST.check_code()
+            return res
+        return self.runner.start(run)
+
+    # -- http
+    def handler(self):
         owner = self
+
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, fmt, *args): return
-            def _send(self, status, body, typ):
+            server_version = "Northstar"
+
+            def log_message(self, fmt, *args):
+                return
+
+            def _ip(self) -> str:
+                return self.client_address[0] if self.client_address else "?"
+
+            def _cookie(self) -> Optional[str]:
+                for part in (self.headers.get("Cookie") or "").split(";"):
+                    k, _, v = part.strip().partition("=")
+                    if k == "ns_session":
+                        return v
+                return None
+
+            def _send(self, status: int, body, typ: str = "application/json", headers: Optional[dict] = None):
                 data = body.encode() if isinstance(body, str) else json.dumps(body, default=str).encode()
-                self.send_response(status); self.send_header('Content-Type', typ); self.send_header('Content-Length', str(len(data)))
-                self.send_header('Cache-Control', 'no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.end_headers(); self.wfile.write(data)
+                self.send_response(status)
+                self.send_header("Content-Type", typ)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Referrer-Policy", "no-referrer")
+                for k, v in (headers or {}).items():
+                    self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(data)
+
             def _db(self):
-                c = sqlite3.connect(f"file:{owner.db_path}?mode=ro", uri=True, timeout=2); c.row_factory = sqlite3.Row; return c
+                c = sqlite3.connect(f"file:{owner.db_path}?mode=ro", uri=True, timeout=3)
+                c.row_factory = sqlite3.Row
+                return c
+
+            def _same_origin(self) -> bool:
+                origin = self.headers.get("Origin")
+                if not origin:
+                    return True
+                host = self.headers.get("Host") or ""
+                return urlparse(origin).netloc == host
+
+            def _body(self) -> dict:
+                n = min(int(self.headers.get("Content-Length") or 0), 10_000)
+                raw = self.rfile.read(n) if n else b""
+                try:
+                    return json.loads(raw or b"{}")
+                except ValueError:
+                    return {}
+
             def do_GET(self):
                 u = urlparse(self.path)
-                if u.path == '/': return self._send(200, HTML, 'text/html; charset=utf-8')
-                if u.path == '/healthz': return self._send(200, {'ok':True,'service':'northstar-dashboard'}, 'application/json')
-                c=None
+                if u.path == "/":
+                    try:
+                        page = PAGE.read_text(encoding="utf-8")
+                    except OSError:
+                        page = "<h1>Northstar</h1><p>dashboard.html missing</p>"
+                    return self._send(200, page, "text/html; charset=utf-8")
+                if u.path == "/healthz":
+                    return self._send(200, {"ok": True, "service": "northstar-dashboard"})
+                if u.path == "/api/session":
+                    return self._send(200, {"configured": bool(owner.password), "authed": owner.valid(self._cookie()),
+                                            "locked_out": owner.locked_out(self._ip())})
+                if not u.path.startswith("/api/"):
+                    return self._send(404, {"error": "not found"})
+                if not owner.password:
+                    return self._send(401, {"error": "locked", "why": "set NORTHSTAR_DASHBOARD_PASSWORD"})
+                if not owner.valid(self._cookie()):
+                    return self._send(401, {"error": "login required"})
+                if u.path == "/api/selftest":
+                    return self._send(200, owner.runner.state())
+                s = LIVE.get("settings") or owner.settings
+                now = time.time()
+                c = None
                 try:
-                    c=self._db()
-                    if u.path == '/api/overview':
-                        candidates=[dict(x) for x in c.execute("SELECT mint,state,priority,discovered_at,name,symbol,last_research_at,last_score,last_risk,last_confidence,reasons,updated_at FROM candidates ORDER BY updated_at DESC LIMIT 100").fetchall()]
-                        for x in candidates:
-                            try: x['reasons']=json.loads(x.get('reasons') or '[]')
-                            except Exception: x['reasons']=[]
-                        counts={x['state']:x['n'] for x in c.execute("SELECT state,COUNT(*) n FROM candidates GROUP BY state")}
-                        alerts=[dict(x) for x in c.execute("SELECT mint,status,state,created_at,sent_at,symbol,name,entry_price,entry_mcap,entry_liq,score,risk,current_price,current_mcap,current_liq,max_multiple,min_multiple,max_drawdown_pct,price_status FROM alerts ORDER BY created_at DESC LIMIT 30").fetchall()]
-                        providers=[dict(x) for x in c.execute("SELECT provider,ok_count,err_count,last_ok,last_err,last_error,status,budget_used FROM provider_health ORDER BY provider").fetchall()]
-                        try:
-                            from .performance import performance_report
-                            # Keep calculations consistent with the CLI report, using a tiny adapter.
-                            class DBAdapter:
-                                def fetchall(self, sql, params=()): return [dict(r) for r in c.execute(sql, tuple(params)).fetchall()]
-                            performance=performance_report(DBAdapter())
-                        except Exception: performance={}
-                        out={'tracked':sum(counts.values()),'qualified':counts.get('QUALIFIED',0)+counts.get('PUBLISHED',0),'blocked':counts.get('REJECTED',0)+counts.get('INSUFFICIENT_DATA',0),'alert_count':c.execute('SELECT COUNT(*) FROM alerts').fetchone()[0],'candidates':candidates,'alerts':alerts,'providers':providers,'performance':performance,'counts':counts}
-                        c.close(); return self._send(200,out,'application/json')
-                    if u.path == '/api/token':
-                        from urllib.parse import parse_qs
-                        mint=(parse_qs(u.query).get('mint') or [''])[0]
-                        if not mint or len(mint)>100: c.close(); return self._send(400,{'error':'mint required'},'application/json')
-                        row=c.execute("SELECT mint,state,symbol,name,last_score,last_risk,last_confidence,reasons,updated_at FROM candidates WHERE mint=?",(mint,)).fetchone()
-                        snap=c.execute("SELECT report,action,score,risk,confidence,ts FROM research_snapshots WHERE mint=? ORDER BY ts DESC LIMIT 1",(mint,)).fetchone()
-                        c.close()
-                        if not row: return self._send(404,{'error':'not found'},'application/json')
-                        out=dict(row); out['reasons']=json.loads(out.get('reasons') or '[]'); out['report']={}
-                        if snap:
-                            try: out['report']=json.loads(snap['report'] or '{}')
-                            except Exception: pass
-                            out['snapshot']={'action':snap['action'],'score':snap['score'],'risk':snap['risk'],'confidence':snap['confidence'],'ts':snap['ts']}
-                        return self._send(200,out,'application/json')
-                    c.close(); return self._send(404,{'error':'not found'},'application/json')
-                except Exception as e:
-                    return self._send(503,{'error':'database temporarily unavailable','detail':type(e).__name__},'application/json')
+                    c = self._db()
+                    if u.path == "/api/status":
+                        return self._send(200, view_status(c, s, now))
+                    if u.path == "/api/watching":
+                        return self._send(200, view_watching(c, now))
+                    if u.path == "/api/calls":
+                        return self._send(200, view_calls(c))
+                    if u.path == "/api/decisions":
+                        return self._send(200, view_decisions(c))
+                    if u.path == "/api/learning":
+                        return self._send(200, view_learning(c, s, now))
+                    if u.path == "/api/settings":
+                        return self._send(200, view_settings(c, s))
+                    if u.path == "/api/token":
+                        mint = (parse_qs(u.query).get("mint") or [""])[0]
+                        if not mint or len(mint) > 64:
+                            return self._send(400, {"error": "mint required"})
+                        tok = view_token(c, mint)
+                        return self._send(200, tok) if tok else self._send(404, {"error": "not found"})
+                    return self._send(404, {"error": "not found"})
+                except sqlite3.Error as e:
+                    return self._send(503, {"error": "database temporarily unavailable", "detail": type(e).__name__})
+                except Exception as e:  # noqa: BLE001 - one bad view must not kill the panel
+                    return self._send(500, {"error": "view failed", "detail": f"{type(e).__name__}: {e}"[:200]})
                 finally:
                     if c is not None:
-                        try: c.close()
-                        except Exception: pass
-        self.server=ThreadingHTTPServer((self.host,self.port),Handler)
-        threading.Thread(target=self.server.serve_forever,name='northstar-dashboard',daemon=True).start()
+                        c.close()
+
+            def do_POST(self):
+                u = urlparse(self.path)
+                if not self._same_origin():
+                    return self._send(403, {"error": "cross-site request refused"})
+                if u.path == "/api/login":
+                    if not owner.password:
+                        return self._send(401, {"error": "locked", "why": "set NORTHSTAR_DASHBOARD_PASSWORD"})
+                    if owner.locked_out(self._ip()):
+                        return self._send(429, {"error": "too many attempts — wait 10 minutes"})
+                    tok = owner.login(self._ip(), str(self._body().get("password") or ""))
+                    if not tok:
+                        return self._send(401, {"error": "wrong password"})
+                    return self._send(200, {"ok": True}, headers={
+                        "Set-Cookie": f"ns_session={tok}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_SECONDS}"})
+                if u.path == "/api/logout":
+                    owner.sessions.pop(self._cookie() or "", None)
+                    return self._send(200, {"ok": True}, headers={
+                        "Set-Cookie": "ns_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"})
+                if not owner.valid(self._cookie()):
+                    return self._send(401, {"error": "login required"})
+                if u.path == "/api/selftest":
+                    started = owner.start_selftest(bool(self._body().get("code", True)))
+                    return self._send(202 if started else 409, {"started": started, **owner.runner.state()})
+                return self._send(404, {"error": "not found"})
+
+        return Handler
+
+    def start_background(self):
+        if self.server:
+            return
+        self.server = ThreadingHTTPServer((self.host, self.port), self.handler())
+        self.server.daemon_threads = True
+        threading.Thread(target=self.server.serve_forever, name="northstar-dashboard", daemon=True).start()
 
     def serve_forever(self):
         self.start_background()
         while True:
             time.sleep(3600)
 
-def start_dashboard(db_path: str | Path, port: int | None = None) -> DashboardServer | None:
-    enabled=os.getenv('NORTHSTAR_DASHBOARD_ENABLED','true').strip().lower() not in {'0','false','no','off'}
-    if not enabled: return None
-    chosen=port or int(os.getenv('PORT') or os.getenv('NORTHSTAR_DASHBOARD_PORT','8080'))
-    host=os.getenv('NORTHSTAR_DASHBOARD_HOST','0.0.0.0')
+
+def pick_port(settings=None) -> int:
+    """Wispbyte/Pterodactyl give the server's public port as SERVER_PORT (some hosts use PORT)."""
+    for var in ("SERVER_PORT", "PORT"):
+        v = os.getenv(var, "").strip()
+        if v.isdigit():
+            return int(v)
+    return int(getattr(settings, "dashboard_port", 0) or os.getenv("NORTHSTAR_DASHBOARD_PORT") or 8080)
+
+
+def start_dashboard(db_path: str | Path, port: int | None = None, settings=None) -> DashboardServer | None:
+    if settings is not None:
+        enabled, host = settings.dashboard_enabled, settings.dashboard_host
+        pw = settings.dashboard_password.get_secret_value() if settings.dashboard_password else ""
+    else:
+        enabled = os.getenv("NORTHSTAR_DASHBOARD_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+        host = os.getenv("NORTHSTAR_DASHBOARD_HOST", "0.0.0.0")
+        pw = os.getenv("NORTHSTAR_DASHBOARD_PASSWORD", "")
+    if not enabled:
+        return None
+    chosen = port or pick_port(settings)
     try:
-        server=DashboardServer(db_path,host,chosen); server.start_background()
-        print(f"Northstar dashboard listening on {host}:{chosen} (read-only)", flush=True)
+        server = DashboardServer(db_path, host, chosen, settings=settings, password=pw)
+        server.start_background()
+        state = "password protected" if pw else "LOCKED until NORTHSTAR_DASHBOARD_PASSWORD is set"
+        print(f"Northstar dashboard listening on {host}:{chosen} ({state})", flush=True)
         return server
     except OSError as e:
         print(f"Northstar dashboard not started on port {chosen}: {e}", flush=True)

@@ -38,10 +38,11 @@ async def _run(s: Settings) -> int:
         return 2
     db = _db(s)
     try:
-        from .dashboard import start_dashboard
-        start_dashboard(db.path)
+        from .dashboard import attach, start_dashboard
+        start_dashboard(db.path, settings=s)
         providers, clients = build_providers(s, db)
         engine = Engine(s, db, providers, build_publisher(s), clients)
+        attach(engine, asyncio.get_running_loop())
         install_signal_handlers(engine)
         if s.discord_enabled and s.discord_token:
             # Own thread + event loop, so engine load can never delay slash-command replies.
@@ -196,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("candidates")
     c.add_argument("--limit", type=int, default=30)
     sub.add_parser("test-discord")
+    st = sub.add_parser("selftest", help="check every part of Northstar (add --code to run the test suite)")
+    st.add_argument("--code", action="store_true")
     sub.add_parser("init-db")
     dash = sub.add_parser("dashboard", help="run the read-only web dashboard")
     dash.add_argument("--port", type=int, default=None)
@@ -213,6 +216,14 @@ def main(argv: list[str] | None = None) -> int:
             return _report(s, args.json)
         if args.cmd == "candidates":
             return _candidates(s, args.limit)
+        if args.cmd == "selftest":
+            from . import selftest as ST
+            db = _db(s)
+            path = str(db.path)
+            db.close()
+            res = asyncio.run(ST.run_async(s, path, include_code=args.code))
+            print(ST.format_text(res))
+            return 1 if ST.summary(res)["overall"] == ST.FAIL else 0
         if args.cmd == "test-discord":
             return asyncio.run(_test_discord(s))
         if args.cmd == "init-db":
@@ -221,10 +232,11 @@ def main(argv: list[str] | None = None) -> int:
             db.close()
             return 0
         if args.cmd == "dashboard":
-            from .dashboard import DashboardServer
+            from .dashboard import DashboardServer, pick_port
             db = _db(s)
-            port = args.port or int(__import__("os").getenv("PORT") or __import__("os").getenv("NORTHSTAR_DASHBOARD_PORT", "8080"))
-            server = DashboardServer(db.path, __import__("os").getenv("NORTHSTAR_DASHBOARD_HOST", "0.0.0.0"), port)
+            port = args.port or pick_port(s)
+            server = DashboardServer(db.path, s.dashboard_host, port, settings=s,
+                                     password=s.dashboard_password.get_secret_value() if s.dashboard_password else "")
             print(f"Northstar dashboard listening on port {port}; press Ctrl+C to stop")
             try:
                 server.serve_forever()

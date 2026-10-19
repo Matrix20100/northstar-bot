@@ -168,4 +168,8 @@ The bot account must have permission to view and send embeds in both channels. T
 
 ## Web dashboard
 
-Northstar also includes a read-only, responsive dark dashboard alongside the compact Discord embeds. It starts automatically with the bot on the hosting `PORT` (or `NORTHSTAR_DASHBOARD_PORT`, default `8080`). See [`docs/DASHBOARD.md`](docs/DASHBOARD.md) for setup and privacy notes. Set `NORTHSTAR_DASHBOARD_ENABLED=false` to disable it.
+A password-protected control panel runs with the bot: what it is watching, every call and its
+plan events, what the learning brain has learned, every setting (keys hidden), and a
+**Self-test** button that checks Discord, every data source, the database, the learning and runs
+the test suite. Set `NORTHSTAR_DASHBOARD_PASSWORD` and open your server's Web URL. See
+[`docs/DASHBOARD.md`](docs/DASHBOARD.md).

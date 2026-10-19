@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Northstar Control</title>
+<style>
+:root{color-scheme:dark;--bg:#090b0f;--panel:#101319;--panel2:#151a23;--line:#252a34;--muted:#8b93a3;--text:#f4f6fa;
+--green:#83e0b0;--red:#ff777d;--amber:#f3c77a;--blue:#a4b8ff;--violet:#c9a7ff;--r:14px}
+*{box-sizing:border-box}html,body{margin:0}body{background:radial-gradient(ellipse at 70% -10%,#182033 0,transparent 40%),var(--bg);
+color:var(--text);font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
+button{font:inherit;cursor:pointer}
+.shell{max-width:1440px;margin:auto;padding:22px 20px 60px}
+.top{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+.brand{display:flex;align-items:center;gap:12px}.mark{width:40px;height:40px;border:1px solid #414a5a;border-radius:12px;display:grid;place-items:center;
+background:linear-gradient(145deg,#202735,#0b0d12);font-weight:800;letter-spacing:-2px}
+.brand h1{font-size:17px;letter-spacing:.14em;margin:0}.brand p{margin:0;color:var(--muted);font-size:11px;letter-spacing:.14em;text-transform:uppercase}
+.topright{display:flex;gap:10px;align-items:center;flex-wrap:wrap;color:var(--muted);font-size:12px}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border:1px solid var(--line);border-radius:99px;font-size:11px;font-weight:600;white-space:nowrap}
+.pill.good{color:var(--green);border-color:#315944;background:#10251c}.pill.bad{color:var(--red);border-color:#603238;background:#281418}
+.pill.warn{color:var(--amber);border-color:#5a492b;background:#241e12}.pill.info{color:var(--blue);border-color:#33406a;background:#141a2d}
+.pill.violet{color:var(--violet);border-color:#4b3a6b;background:#1d1529}.pill.dim{color:#c4cad5;background:#1b2029}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 10px currentColor}
+.btn{background:#1b2130;border:1px solid #343c4b;color:#e8ecf3;padding:7px 12px;border-radius:9px}.btn:hover{border-color:#57627a}
+.btn.primary{background:#23314f;border-color:#3b5185;color:#fff}.btn:disabled{opacity:.5;cursor:default}
+nav.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:18px;overflow-x:auto}
+nav.tabs button{background:none;border:0;color:var(--muted);padding:10px 14px;border-bottom:2px solid transparent;white-space:nowrap;font-weight:600}
+nav.tabs button.on{color:var(--text);border-bottom-color:var(--blue)}
+.grid{display:grid;gap:14px}.g4{grid-template-columns:repeat(4,minmax(0,1fr))}.g2{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr)}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.card{border:1px solid var(--line);background:linear-gradient(155deg,#131720,#0e1117);border-radius:var(--r);padding:16px;min-width:0}
+.card h2{margin:0 0 12px;font-size:12px;text-transform:uppercase;letter-spacing:.14em;color:#c8ced9;display:flex;justify-content:space-between;gap:10px;align-items:center}
+.card h2 span{font-size:11px;letter-spacing:0;text-transform:none;color:var(--muted);font-weight:400}
+.metric label{display:block;color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+.metric strong{display:block;font-size:26px;letter-spacing:-.04em;margin:6px 0 2px}.metric small{color:var(--muted);font-size:11px}
+.tablewrap{overflow-x:auto}table{width:100%;border-collapse:collapse}
+th{text-align:left;color:#7a8394;font-size:10px;text-transform:uppercase;letter-spacing:.1em;font-weight:600;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:9px 8px;border-bottom:1px solid #1d212a;font-size:12.5px;vertical-align:top}tr:last-child td{border-bottom:0}
+tr.click{cursor:pointer}tr.click:hover{background:#ffffff06}
+.coin b{font-size:13px}.coin small,.muted{color:var(--muted)}.sub{font-size:11px;color:var(--muted)}
+.num{font-variant-numeric:tabular-nums;white-space:nowrap}.up{color:var(--green)}.down{color:var(--red)}
+.empty{padding:26px 10px;text-align:center;color:var(--muted)}
+.reason{font-size:11.5px;color:#c9cfda}.reason+.reason{margin-top:2px}
+.bar{height:8px;border-radius:5px;background:#1d2230;overflow:hidden}.bar i{display:block;height:100%}
+.sig{display:grid;grid-template-columns:minmax(0,190px) 1fr 52px;gap:10px;align-items:center;font-size:12.5px;margin:6px 0}
+.sigbar{position:relative;height:10px;background:#1a1f2b;border-radius:5px}.sigbar i{position:absolute;top:0;height:100%;border-radius:5px}
+.sigbar:after{content:"";position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:#3a4252}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:12.5px}.kv dt{color:var(--muted)}.kv dd{margin:0}
+input[type=search],input[type=password]{background:#0c0f15;border:1px solid #2b313d;color:var(--text);padding:8px 11px;border-radius:9px;font:inherit;width:100%}
+.setgroup{margin-bottom:12px}.setgroup summary{cursor:pointer;font-weight:700;padding:8px 2px;color:#dfe4ec}
+.src-learned{color:var(--violet)}.src-env{color:var(--blue)}.src-default{color:var(--muted)}
+.test{display:grid;grid-template-columns:22px minmax(0,200px) 1fr auto;gap:10px;padding:9px 4px;border-bottom:1px solid #1d212a;font-size:13px;align-items:start}
+.test pre{margin:0;white-space:pre-wrap;font:inherit;color:#c9cfda}
+.icon{font-size:15px;line-height:1.2}
+.overlay{position:fixed;inset:0;background:#0009;display:none;z-index:20}.overlay.on{display:block}
+.drawer{position:fixed;right:0;top:0;bottom:0;width:min(560px,100%);background:#0d1016;border-left:1px solid var(--line);z-index:21;
+transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px}.drawer.on{transform:none}
+.login{max-width:380px;margin:12vh auto;text-align:center}.login .card{text-align:left;margin-top:18px}
+.err{color:var(--red);font-size:12.5px;min-height:18px;margin-top:8px}
+.hide{display:none!important}
+.footer{color:#5b6372;text-align:center;font-size:11px;margin-top:28px}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid #3b4558;border-top-color:var(--blue);border-radius:50%;animation:sp 1s linear infinite;vertical-align:-2px}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media(max-width:1000px){.g4{grid-template-columns:repeat(2,minmax(0,1fr))}.g2,.g3{grid-template-columns:1fr}}
+@media(max-width:560px){.shell{padding:14px 12px 40px}.metric strong{font-size:21px}.test{grid-template-columns:22px 1fr}.test .ms,.test .tname{grid-column:2}
+.sig{grid-template-columns:120px 1fr 44px}}
+</style></head><body>
+<div id="loginView" class="login hide">
+  <div class="brand" style="justify-content:center"><div class="mark">N.</div><div style="text-align:left"><h1>NORTHSTAR</h1><p>Control panel</p></div></div>
+  <div class="card">
+    <div id="lockedMsg" class="hide"><b>Dashboard locked.</b><p class="muted">Add <code>NORTHSTAR_DASHBOARD_PASSWORD=your-password</code> to the bot's <code>.env</code> and restart the server. Until then nobody can open this page.</p></div>
+    <form id="loginForm"><label class="muted" for="pw">Password</label>
+      <input id="pw" type="password" autocomplete="current-password" style="margin:6px 0 12px">
+      <button class="btn primary" style="width:100%">Open dashboard</button><div class="err" id="loginErr"></div></form>
+  </div>
+</div>
+
+<div id="app" class="shell hide">
+  <header class="top">
+    <div class="brand"><div class="mark">N.</div><div><h1>NORTHSTAR</h1><p>Control panel · Solana</p></div></div>
+    <div class="topright"><span id="runState" class="pill dim">…</span><span id="modeState" class="pill dim">…</span>
+      <span id="updated">—</span><button class="btn" id="logout">Log out</button></div>
+  </header>
+  <nav class="tabs" id="tabs">
+    <button data-tab="overview" class="on">Overview</button><button data-tab="watching">Watching</button>
+    <button data-tab="calls">Calls</button><button data-tab="learning">Learning</button>
+    <button data-tab="settings">Settings</button><button data-tab="selftest">Self-test</button>
+  </nav>
+
+  <section data-view="overview">
+    <div class="grid g4" style="margin-bottom:14px">
+      <div class="card metric"><label>Uptime</label><strong id="mUp">—</strong><small id="mUpSub">—</small></div>
+      <div class="card metric"><label>Researched (1h)</label><strong id="mRes">—</strong><small id="mResSub">—</small></div>
+      <div class="card metric"><label>Calls (24h)</label><strong id="mCalls">—</strong><small id="mCallsSub">—</small></div>
+      <div class="card metric"><label>Learning brain</label><strong id="mBrain">—</strong><small id="mBrainSub">—</small></div>
+    </div>
+    <div class="grid g2">
+      <div class="card"><h2>Latest decisions <span>newest first · click a coin for its research</span></h2>
+        <div class="tablewrap"><table><thead><tr><th>Coin</th><th>Decision</th><th>Score</th><th>Why</th><th>When</th></tr></thead><tbody id="decisions"></tbody></table></div></div>
+      <div class="grid" style="align-content:start">
+        <div class="card"><h2>Decisions (24h)</h2><div id="actions"></div></div>
+        <div class="card"><h2>Data sources <span>live health</span></h2><div id="providers"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section data-view="watching" class="hide">
+    <div class="grid g2">
+      <div class="card"><h2>Research queue <span id="queueSub"></span></h2>
+        <div class="tablewrap"><table><thead><tr><th>Coin</th><th>State</th><th>Priority</th><th>Found by</th><th>Last score</th><th>Next look</th></tr></thead><tbody id="queue"></tbody></table></div></div>
+      <div class="grid" style="align-content:start">
+        <div class="card"><h2>Surge radar <span>last 6 hours</span></h2>
+          <div class="tablewrap"><table><thead><tr><th>Coin</th><th>Spike</th><th>5m vol</th><th>Buys/sells</th><th>When</th></tr></thead><tbody id="surges"></tbody></table></div></div>
+        <div class="card"><h2>Trending on CoinGecko <span>attention feed</span></h2><div id="trending"></div></div>
+        <div class="card"><h2>Early watches <span>pre-migration</span></h2>
+          <div class="tablewrap"><table><thead><tr><th>Coin</th><th>Status</th><th>Peak</th><th>Now</th><th>Since</th></tr></thead><tbody id="early"></tbody></table></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section data-view="calls" class="hide">
+    <div class="card"><h2>Calls <span>VIP calls and rug scalps · updates live</span></h2>
+      <div class="tablewrap"><table><thead><tr><th>Coin</th><th>Type</th><th>Called at</th><th>Now</th><th>Peak</th><th>Low</th><th>Plan events</th><th>Status</th><th>Called</th></tr></thead><tbody id="calls"></tbody></table></div></div>
+  </section>
+
+  <section data-view="learning" class="hide">
+    <div class="grid g2" style="margin-bottom:14px">
+      <div class="card"><h2>🧠 The brain <span id="brainSub"></span></h2><div id="brain"></div></div>
+      <div class="card"><h2>What it has seen</h2><div id="learnStats"></div></div>
+    </div>
+    <div class="grid g2">
+      <div class="card"><h2>Settings it tunes <span>violet = learned from results</span></h2>
+        <div class="tablewrap"><table><thead><tr><th>Setting</th><th>Now</th><th>Your .env / default</th><th>Range it can try</th></tr></thead><tbody id="tunables"></tbody></table></div></div>
+      <div class="card"><h2>Change log <span>every change and why</span></h2><div id="learnLog"></div></div>
+    </div>
+  </section>
+
+  <section data-view="settings" class="hide">
+    <div class="card" style="margin-bottom:14px"><div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+      <input type="search" id="setSearch" placeholder="Search settings…" style="max-width:340px">
+      <span class="pill" style="color:var(--violet)">learned</span><span class="pill" style="color:var(--blue)">from .env</span><span class="pill dim">default</span>
+      <span class="muted" style="font-size:12px">Keys and tokens are never shown here. Change settings in <code>.env</code> and restart.</span></div>
+      <div id="setProblems"></div></div>
+    <div id="settings"></div>
+  </section>
+
+  <section data-view="selftest" class="hide">
+    <div class="card" style="margin-bottom:14px"><h2>Test everything <span id="stWhen"></span></h2>
+      <p class="muted" style="margin-top:0">Checks your settings, Discord login and channels, every data source, the database, the running bot, the learning, and (optional) runs the full code test suite. Nothing is posted and nothing is changed.</p>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+        <button class="btn primary" id="stRun">Run self-test</button>
+        <label class="muted" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="stCode" checked> include code tests (~30 s)</label>
+        <span id="stSummary"></span></div></div>
+    <div class="card"><div id="stResults"><div class="empty">No test run yet.</div></div></div>
+  </section>
+  <div class="footer" id="footer">Northstar · research, not financial advice</div>
+</div>
+
+<div class="overlay" id="overlay"></div>
+<aside class="drawer" id="drawer"></aside>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num=(v,d=0)=>v==null||!isFinite(v)?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:d});
+const usd=v=>{if(v==null||!isFinite(v))return'—';const a=Math.abs(v);return a>=1e9?'$'+(v/1e9).toFixed(2)+'B':a>=1e6?'$'+(v/1e6).toFixed(2)+'M':a>=1e3?'$'+(v/1e3).toFixed(1)+'K':'$'+num(v,2)};
+const x=v=>v==null||!isFinite(v)?'—':`<span class="${v>=1?'up':'down'}">${Number(v).toFixed(2)}x</span>`;
+const ago=t=>{if(!t)return'—';let s=Date.now()/1000-t,f=s<0;s=Math.abs(s);let o=s<60?Math.round(s)+'s':s<3600?Math.round(s/60)+'m':s<86400?(s/3600).toFixed(1)+'h':(s/86400).toFixed(1)+'d';return f?'in '+o:o+' ago'};
+const dur=s=>s==null?'—':s<3600?Math.round(s/60)+' min':s<86400?(s/3600).toFixed(1)+' h':(s/86400).toFixed(1)+' days';
+const short=m=>m?m.slice(0,4)+'…'+m.slice(-4):'';
+const coin=(m,sym,name)=>`<div class="coin"><b>${esc(sym?'$'+sym:short(m))}</b><br><small>${esc(name||short(m))}</small></div>`;
+const actPill=a=>{const k={AUTO_POST:'good',PUBLISHED:'good',QUALIFIED:'good',WATCHLIST:'info',REJECT:'bad',REJECTED:'bad',INSUFFICIENT_DATA:'warn',WARNING:'warn',DISCOVERED:'dim',CLOSED:'dim'}[a]||'dim';return `<span class="pill ${k}">${esc((a||'—').replace('_',' '))}</span>`};
+async function api(p,opt){const r=await fetch(p,Object.assign({credentials:'same-origin'},opt||{}));if(r.status===401){showLogin();throw new Error('auth')}return r.json()}
+let tab='overview',timer=null;
+
+async function boot(){const s=await (await fetch('/api/session')).json();if(!s.configured){showLogin(true);return}if(!s.authed){showLogin();return}showApp()}
+function showLogin(locked){$('app').classList.add('hide');$('loginView').classList.remove('hide');$('lockedMsg').classList.toggle('hide',!locked);$('loginForm').classList.toggle('hide',!!locked);if(!locked)$('pw').focus()}
+function showApp(){$('loginView').classList.add('hide');$('app').classList.remove('hide');go(location.hash.slice(1)||'overview')}
+$('loginForm').onsubmit=async e=>{e.preventDefault();$('loginErr').textContent='';const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('pw').value})});
+ const d=await r.json();if(r.ok){$('pw').value='';showApp()}else $('loginErr').textContent=d.error||'Login failed'};
+$('logout').onclick=async()=>{await fetch('/api/logout',{method:'POST'});showLogin()};
+document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>go(b.dataset.tab));
+function go(t){if(!document.querySelector(`[data-view="${t}"]`))t='overview';tab=t;location.hash=t;
+ document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
+ document.querySelectorAll('[data-view]').forEach(v=>v.classList.toggle('hide',v.dataset.view!==t));refresh()}
+async function refresh(){clearTimeout(timer);try{await status();const f={overview:overview,watching:watching,calls:calls,learning:learning,settings:settings,selftest:selftest}[tab];await f();
+ $('updated').textContent='updated '+new Date().toLocaleTimeString()}catch(e){if(e.message!=='auth')$('updated').textContent='connection problem — retrying'}
+ const every=tab==='selftest'&&stRunning?2500:(tab==='settings'?60000:15000);timer=setTimeout(()=>{if(!document.hidden)refresh();else timer=setTimeout(refresh,every)},every)}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!$('app').classList.contains('hide'))refresh()});
+
+let S={};
+async function status(){S=await api('/api/status');
+ $('runState').className='pill '+(S.running?'good':'bad');$('runState').innerHTML=`<span class="dot"></span>${S.running?'Bot running':'Bot not running'}`;
+ $('modeState').className='pill '+(S.mode==='LIVE'?'good':'warn');$('modeState').textContent=S.mode;
+ $('footer').textContent=`Northstar · version ${S.version} · research, not financial advice`}
+
+async function overview(){const d=await api('/api/decisions');
+ $('mUp').textContent=S.running?dur(S.uptime_s):'—';$('mUpSub').textContent=S.stats?`${num(S.stats.researched)} researched · ${num(S.stats.errors)} errors`:'not attached to the bot';
+ $('mRes').textContent=num(S.researched_1h);$('mResSub').textContent=`last ${ago(S.last_research)} · queue ${num(S.queue)}`;
+ $('mCalls').textContent=num(S.calls_24h);$('mCallsSub').textContent=`${num(S.open_calls)} open · ${num(S.surges_6h)} radar surges (6h)`;
+ const b=S.brain;$('mBrain').innerHTML=b?(b.trusted?'<span class="up">Trusted</span>':'<span style="color:var(--amber)">Learning</span>'):'—';
+ $('mBrainSub').textContent=b?`accuracy ${b.auc!=null?b.auc.toFixed(2):'n/a'} · ${num(b.n)} coins · trained ${ago(b.ts)}`:'not trained yet';
+ $('decisions').innerHTML=d.decisions.length?d.decisions.map(r=>`<tr class="click" data-mint="${esc(r.mint)}"><td>${coin(r.mint,r.symbol,r.name)}</td><td>${actPill(r.last_action)}</td><td class="num">${num(r.last_score,1)}</td>
+  <td>${(r.reasons||[]).slice(0,2).map(x=>`<div class="reason">${esc(x)}</div>`).join('')}</td><td class="num sub">${ago(r.last_research_at)}</td></tr>`).join(''):'<tr><td colspan=5 class="empty">No research yet</td></tr>';
+ const a=S.actions_24h||{},tot=Object.values(a).reduce((s,v)=>s+v,0)||1,col={AUTO_POST:'var(--green)',WATCHLIST:'var(--blue)',REJECT:'var(--red)',INSUFFICIENT_DATA:'var(--amber)'};
+ $('actions').innerHTML=Object.keys(a).length?Object.entries(a).sort((p,q)=>q[1]-p[1]).map(([k,v])=>`<div style="margin:8px 0"><div style="display:flex;justify-content:space-between;font-size:12.5px"><span>${esc(k.replace('_',' '))}</span><span class="num">${num(v)} · ${Math.round(v/tot*100)}%</span></div><div class="bar"><i style="width:${v/tot*100}%;background:${col[k]||'#6b7385'}"></i></div></div>`).join(''):'<div class="empty">Nothing yet</div>';
+ $('providers').innerHTML=(S.providers||[]).length?S.providers.map(p=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #1d212a;font-size:12.5px"><span>${esc(p.provider)}</span><span>${p.status==='OK'?'<span class="pill good">OK</span>':`<span class="pill ${p.status==='DOWN'?'bad':'warn'}" title="${esc(p.last_error||'')}">${esc(p.status)}</span>`}<span class="sub"> · ${num(p.budget_used)} today</span></span></div>`).join(''):'<div class="empty">No calls yet</div>'}
+
+async function watching(){const d=await api('/api/watching');$('queueSub').textContent=`${num(d.queue_total)} coins being watched · top 80 shown`;
+ $('queue').innerHTML=d.queue.length?d.queue.map(r=>`<tr class="click" data-mint="${esc(r.mint)}"><td>${coin(r.mint,r.symbol,r.name)}</td><td>${actPill(r.state)}</td><td class="num">${num(r.priority,1)}</td>
+  <td class="sub">${esc((r.sources||[]).slice(-3).join(', '))}</td><td class="num">${num(r.last_score,1)}</td><td class="sub num">${ago(r.next_research_at)}</td></tr>`).join(''):'<tr><td colspan=6 class="empty">Queue empty</td></tr>';
+ $('surges').innerHTML=d.surges.length?d.surges.map(s=>{const m=s.metrics||{};return `<tr class="click" data-mint="${esc(s.mint)}"><td>${coin(s.mint,s.symbol)}${s.fired?' <span class="pill good">SURGE</span>':' <span class="pill dim">near miss</span>'}</td><td class="num">${num(m.spike,1)}x</td><td class="num">${usd(m.vol_m5)}</td><td class="num">${num(m.buys)}/${num(m.sells)}</td><td class="sub num">${ago(s.ts)}</td></tr>`}).join(''):'<tr><td colspan=5 class="empty">No surges in the last 6 hours</td></tr>';
+ $('trending').innerHTML=d.trending.length?d.trending.map(t=>`<span class="pill info" style="margin:3px">#${esc(t.rank)} ${esc(t.symbol||t.name||short(t.mint))}</span>`).join(''):'<div class="empty">Nothing trending right now (or the bot isn\'t attached)</div>';
+ $('early').innerHTML=d.early.length?d.early.map(e=>{const now=e.entry_market_cap_sol&&e.current_market_cap_sol?e.current_market_cap_sol/e.entry_market_cap_sol:null;return `<tr class="click" data-mint="${esc(e.mint)}"><td>${coin(e.mint)}</td><td>${actPill(e.status)}</td><td class="num">${x(e.peak_multiple)}</td><td class="num">${x(now)}</td><td class="sub num">${ago(e.created_at)}</td></tr>`}).join(''):'<tr><td colspan=5 class="empty">No early watches</td></tr>'}
+
+async function calls(){const d=await api('/api/calls');
+ $('calls').innerHTML=d.calls.length?d.calls.map(c=>{const nowx=c.entry_mcap&&c.current_mcap?c.current_mcap/c.entry_mcap:null;const ev=(c.events||[]).map(e=>`<span class="pill ${/STOP|DANGER|TIME/.test(e.kind)?'bad':/TP|TRAIL/.test(e.kind)?'good':'dim'}" style="margin:1px">${esc(e.kind)}</span>`).join('');
+  return `<tr class="click" data-mint="${esc(c.mint)}"><td>${coin(c.mint,c.symbol,c.name)}</td><td>${c.call_type==='RUG_SCALP'?'<span class="pill bad">☠️ SCALP</span>':'<span class="pill good">VIP</span>'}</td>
+  <td class="num">${usd(c.entry_mcap)}</td><td class="num">${usd(c.current_mcap)}<br>${x(nowx)}</td><td class="num">${c.peak_mcap?usd(c.peak_mcap)+'<br>':''}${x(c.max_multiple)}</td><td class="num">${x(c.min_multiple)}</td>
+  <td>${ev||'<span class="sub">—</span>'}</td><td>${actPill(c.state||c.status)}</td><td class="sub num">${ago(c.sent_at||c.created_at)}</td></tr>`}).join(''):'<tr><td colspan=9 class="empty">No calls yet</td></tr>'}
+
+async function learning(){const d=await api('/api/learning');if(!d.ready){$('brain').innerHTML='<div class="empty">Learning tables not created yet — the bot creates them on start.</div>';return}
+ const b=d.brain;$('brainSub').textContent=`learns which coins reach ${d.win_x}x before ${Math.round((d.loss_x-1)*100)}%`;
+ if(!b){$('brain').innerHTML='<div class="empty">Not trained yet. It needs 60 checked coins including 8 runners.</div>'}else{
+  const mx=Math.max(...b.signals.map(s=>Math.abs(s.weight)),.01);
+  $('brain').innerHTML=`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">${b.trusted?'<span class="pill good">TRUSTED — has a say in calls</span>':'<span class="pill warn">Learning — no say in calls yet</span>'}
+   <span class="pill dim">accuracy on unseen coins ${b.auc!=null?b.auc.toFixed(2):'n/a'} (recent ${b.recent_auc!=null?b.recent_auc.toFixed(2):'n/a'})</span><span class="pill dim">${num(b.n)} coins · ${num(b.positives)} runners</span><span class="pill dim">trained ${ago(b.ts)}</span></div>
+   <div class="sub" style="margin-bottom:8px">What it learned predicts a runner — <span class="up">green pushes odds up</span>, <span class="down">red pushes them down</span>. 0.50 accuracy = coin flip.</div>
+   ${b.signals.map(s=>{const w=Math.abs(s.weight)/mx*50;return `<div class="sig"><span>${esc(s.name)}</span><div class="sigbar"><i style="${s.weight>=0?`left:50%;width:${w}%;background:var(--green)`:`left:${50-w}%;width:${w}%;background:var(--red)`}"></i></div><span class="num sub">${s.weight>0?'+':''}${s.weight.toFixed(2)}</span></div>`}).join('')}`}
+ const sm=d.summary||{},sh=d.shadows||{},rd=d.radar||{},pct=v=>v==null?'—':(v*100>=0?'+':'')+(v*100).toFixed(1)+'%';
+ $('learnStats').innerHTML=`<dl class="kv"><dt>Coins recorded</dt><dd class="num">${num(sh.total||0)} (${num(sh.called||0)} were called)</dd><dt>Checked against real price</dt><dd class="num">${num(sh.evaluated||0)} · ${num(sh.pending||0)} waiting</dd>
+  <dt>Runners among them</dt><dd class="num">${num(d.runners)}</dd><dt>Median peak after a decision</dt><dd class="num">${sm.median_peak!=null?sm.median_peak+'x':'—'}</dd>
+  <dt>VIP plan, simulated</dt><dd class="num">${num(sm.standard_trades)} trades · avg ${pct(sm.standard_avg)} each</dd><dt>Rug scalps, simulated</dt><dd class="num">${num(sm.scalp_trades)} trades · avg ${pct(sm.scalp_avg)} each</dd>
+  <dt>Radar observations</dt><dd class="num">${num(rd.total||0)} (${num(rd.fired||0)} surges) · ${num(rd.evaluated||0)} checked</dd></dl>
+  <p class="sub" style="margin-bottom:0">Simulated = the plan replayed on 1-minute candles with worst-case fills and 3% fees. Not a promise of future results.</p>
+  ${(d.brain_history||[]).length>1?`<div class="sub" style="margin-top:10px">Accuracy over the last trainings: ${d.brain_history.slice().reverse().map(h=>h.auc!=null?h.auc.toFixed(2):'—').join(' → ')}</div>`:''}`;
+ $('tunables').innerHTML=d.tunables.map(t=>`<tr><td>${esc(t.label)}<br><span class="sub">${esc(t.key)}</span></td><td class="num ${t.learned?'src-learned':''}"><b>${esc(fmt(t.value))}</b>${t.learned?`<br><span class="sub">learned ${ago(t.updated_at)}</span>`:''}</td>
+  <td class="num sub">${esc(fmt(t.default))}</td><td class="sub">${esc(t.grid.map(fmt).join(' · '))}</td></tr>`).join('');
+ $('learnLog').innerHTML=d.log.length?d.log.map(l=>l.key==='RESET'?`<div class="reason" style="padding:7px 0;border-bottom:1px solid #1d212a">↺ <b>Reset</b> to .env values <span class="sub">${ago(l.ts)}</span></div>`:
+  `<div style="padding:7px 0;border-bottom:1px solid #1d212a;font-size:12.5px"><b>${esc((l.detail||{}).label||l.key)}</b>: ${esc(fmt(l.old))} → <b class="src-learned">${esc(fmt(l.new))}</b> <span class="sub">${ago(l.ts)}</span>
+  ${(l.detail||{}).samples?`<div class="sub">tested on ${num(l.detail.samples)} past coins; held up on recent unseen coins (${(l.detail.check_gain>=0?'+':'')+Number(l.detail.check_gain).toFixed(2)})</div>`:''}</div>`).join(''):'<div class="empty">No changes yet. It needs 20 checked coins before it tunes anything.</div>'}
+const fmt=v=>v==null?'—':typeof v==='number'?(Math.abs(v)>=1000?num(v):String(+v.toFixed(4))):String(v);
+
+let SET=null;
+async function settings(){SET=await api('/api/settings');drawSettings()}
+function drawSettings(){if(!SET)return;const q=$('setSearch').value.trim().toLowerCase();
+ $('setProblems').innerHTML=(SET.problems||[]).length?`<div style="margin-top:12px">${SET.problems.map(p=>`<div class="reason down">⚠ ${esc(p)}</div>`).join('')}</div>`:'';
+ $('settings').innerHTML=SET.groups.map(g=>{const rows=g.settings.filter(s=>!q||s.name.includes(q)||s.env.toLowerCase().includes(q)||String(s.value).toLowerCase().includes(q));if(!rows.length)return'';
+  return `<details class="card setgroup" ${q||g.name!=='Timing & storage'?'open':''}><summary>${esc(g.name)} <span class="sub">(${rows.length})</span></summary><div class="tablewrap"><table><thead><tr><th>Setting</th><th>Value</th><th>From</th></tr></thead><tbody>
+  ${rows.map(s=>`<tr><td><b>${esc(s.name)}</b><br><span class="sub">${esc(s.env)}</span></td><td class="num">${s.secret?(s.value==='set'?'<span class="pill good">set</span>':'<span class="pill dim">not set</span>'):`<code>${esc(typeof s.value==='object'&&s.value!==null?JSON.stringify(s.value):fmt(s.value))}</code>`}</td>
+  <td class="src-${s.source==='.env'?'env':s.source}">${esc(s.source)}</td></tr>`).join('')}</tbody></table></div></details>`}).join('')}
+$('setSearch').oninput=drawSettings;
+
+let stRunning=false;
+async function selftest(){const d=await api('/api/selftest');drawTest(d)}
+$('stRun').onclick=async()=>{$('stRun').disabled=true;const d=await api('/api/selftest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:$('stCode').checked})});drawTest(d);refresh()};
+function drawTest(d){stRunning=d.running;$('stRun').disabled=d.running;
+ $('stWhen').textContent=d.running?'running…':d.finished_at?'last run '+ago(d.finished_at):'';
+ const sm=d.summary;$('stSummary').innerHTML=d.running?'<span class="spin"></span> testing everything…':sm?`<span class="pill ${sm.overall==='PASS'?'good':sm.overall==='WARN'?'warn':'bad'}">${sm.overall}</span> <span class="sub">${sm.PASS} pass · ${sm.WARN} warn · ${sm.FAIL} fail · ${sm.SKIP} skipped</span>`:'';
+ if(d.error){$('stResults').innerHTML=`<div class="reason down">Self-test crashed: ${esc(d.error)}</div>`;return}
+ if(!d.results||!d.results.length){if(!d.running)$('stResults').innerHTML='<div class="empty">No test run yet.</div>';return}
+ const ic={PASS:'✅',WARN:'⚠️',FAIL:'❌',SKIP:'⏭️'};let g=null;
+ $('stResults').innerHTML=d.results.map(r=>{let h='';if(r.group!==g){g=r.group;h=`<div style="margin:14px 0 4px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#8e98a9">${esc(g)}</div>`}
+  return h+`<div class="test"><span class="icon">${ic[r.status]}</span><b class="tname">${esc(r.name)}</b><pre>${esc(r.detail)}</pre><span class="sub num ms">${r.ms!=null?r.ms+' ms':''}</span></div>`}).join('')}
+
+document.addEventListener('click',e=>{const tr=e.target.closest('tr[data-mint]');if(tr&&!e.target.closest('a'))openToken(tr.dataset.mint)});
+$('overlay').onclick=closeDrawer;document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDrawer()});
+function closeDrawer(){$('drawer').classList.remove('on');$('overlay').classList.remove('on')}
+const val=v=>v&&typeof v==='object'&&'value' in v?v.value:v;
+async function openToken(mint){$('drawer').classList.add('on');$('overlay').classList.add('on');$('drawer').innerHTML='<div class="empty"><span class="spin"></span> Loading research…</div>';
+ try{const t=await api('/api/token?mint='+encodeURIComponent(mint));const r=t.report||{},m=r.market||{},br=r.brain,gates=r.gates||[],sn=t.snapshot||{};
+  const gate=g=>`<div style="display:flex;gap:8px;font-size:12.5px;padding:3px 0"><span>${g.status==='PASS'?'✅':g.status==='FAIL'?'❌':'❔'}</span><span><b>${esc(g.name)}</b> <span class="sub">${esc(g.reason||'')}</span></span></div>`;
+  $('drawer').innerHTML=`<div style="display:flex;justify-content:space-between;align-items:start;gap:10px"><div><h2 style="margin:0">${esc(t.symbol?'$'+t.symbol:short(mint))}</h2><div class="sub">${esc(t.name||'')}</div><code class="sub" style="word-break:break-all">${esc(mint)}</code></div><button class="btn" onclick="closeDrawer()">Close</button></div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin:12px 0">${actPill(sn.action||t.state)}<span class="pill dim">score ${num(sn.score??t.last_score,1)}</span><span class="pill dim">risk ${esc(sn.risk||t.last_risk||'—')}</span><span class="pill dim">confidence ${esc(sn.confidence||t.last_confidence||'—')}</span></div>
+  <div class="linkrow" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px"><a target="_blank" rel="noopener" href="https://dexscreener.com/solana/${esc(mint)}">DexScreener ↗</a><a target="_blank" rel="noopener" href="https://axiom.trade/t/${esc(mint)}">Axiom ↗</a><a target="_blank" rel="noopener" href="https://rugcheck.xyz/tokens/${esc(mint)}">RugCheck ↗</a><a target="_blank" rel="noopener" href="https://solscan.io/token/${esc(mint)}">Solscan ↗</a></div>
+  <div class="card" style="margin-bottom:12px"><h2>Market <span>${sn.ts?ago(sn.ts):''}</span></h2><dl class="kv"><dt>Market cap</dt><dd>${usd(val(m.market_cap))}</dd><dt>Liquidity</dt><dd>${usd(val(m.liquidity_usd))}</dd>
+   <dt>Volume 5m / 1h</dt><dd>${usd((m.volume||{}).m5)} / ${usd((m.volume||{}).h1)}</dd><dt>Price change 5m / 1h</dt><dd>${num((m.price_change||{}).m5,1)}% / ${num((m.price_change||{}).h1,1)}%</dd><dt>Found by</dt><dd>${esc((t.sources||[]).join(', '))}</dd></dl></div>
+  ${br?`<div class="card" style="margin-bottom:12px"><h2>🧠 Learned runner odds</h2><b style="font-size:22px">${Math.round(br.p*100)}%</b> <span class="sub">${br.base!=null?`average coin ${Math.round(br.base*100)}% · `:''}${br.trusted?'trusted':'still learning'}</span>
+   ${(br.ups||[]).length?`<div class="up" style="font-size:12.5px;margin-top:6px">▲ ${esc(br.ups.join(', '))}</div>`:''}${(br.downs||[]).length?`<div class="down" style="font-size:12.5px">▼ ${esc(br.downs.join(', '))}</div>`:''}</div>`:''}
+  <div class="card" style="margin-bottom:12px"><h2>Why this decision</h2>${(t.reasons||[]).map(x=>`<div class="reason">• ${esc(x)}</div>`).join('')||'<div class="sub">—</div>'}</div>
+  <div class="card"><h2>Safety checks</h2>${gates.length?gates.map(gate).join(''):'<div class="sub">No checks recorded</div>'}</div>`}
+ catch(e){if(e.message!=='auth')$('drawer').innerHTML='<div class="empty">Could not load this coin.</div>'}}
+boot();
+</script></body></html>
