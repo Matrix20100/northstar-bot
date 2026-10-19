@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import concurrent.futures
 import json
 import os
 import secrets as _secrets
@@ -492,7 +493,31 @@ class DashboardServer:
                 if u.path == "/api/selftest":
                     started = owner.start_selftest(bool(self._body().get("code", True)))
                     return self._send(202 if started else 409, {"started": started, **owner.runner.state()})
+                if u.path in ("/api/research", "/api/call"):
+                    return self._manual(u.path, self._body())
                 return self._send(404, {"error": "not found"})
+
+            def _manual(self, path: str, body: dict):
+                """Hand a manual research or call to the running bot and wait for its answer."""
+                eng, loop = LIVE.get("engine"), LIVE.get("loop")
+                if eng is None or loop is None:
+                    return self._send(503, {"ok": False, "error": "The bot is not running, so it cannot "
+                                                                  "research or post right now."})
+                mint = str(body.get("mint") or "").strip()[:64]
+                if path == "/api/research":
+                    coro, wait = eng.manual_research(mint), 150
+                else:
+                    coro, wait = eng.manual_call(mint, note=str(body.get("note") or "")[:500],
+                                                 free_copy=bool(body.get("free_copy", True)),
+                                                 override=bool(body.get("override"))), 90
+                try:
+                    res = asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=wait)
+                except concurrent.futures.TimeoutError:
+                    return self._send(504, {"ok": False, "error": "Still working after "
+                                            f"{wait} seconds. Check Latest decisions in a minute."})
+                except Exception as e:  # noqa: BLE001 - surface it, never crash the panel
+                    return self._send(500, {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"})
+                return self._send(200 if res.get("ok") else 422, res)
 
         return Handler
 

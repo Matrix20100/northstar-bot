@@ -16,6 +16,7 @@ COLOR_UPDATE = 0x3498DB
 COLOR_WARNING = 0xE67E22
 COLOR_CRITICAL = 0xE74C3C
 COLOR_CLOSED = 0x95A5A6
+COLOR_MANUAL = 0x9B59B6       # a call the owner made by hand, not one the engine made
 DISCLAIMER = "Research signal, not a trade recommendation. Not rug-proof. Realized profit unknown."
 
 
@@ -253,15 +254,37 @@ def callout_embed(report: dict, detected_at: Optional[float] = None, plan: Optio
             {"name": "Risk / data limits",
              "value": _clip(f"**{risk_label}** — not rug-proof.\n" + _bullets(caveats, 2), 1024), "inline": False},
         ]
+    manual = report.get("manual") if report.get("call_type") == "MANUAL" else None
+    if manual:
+        # the caller's own words and, if they overrode one, the veto — stated where readers see it
+        extra = []
+        if manual.get("note"):
+            extra.append({"name": "📝 Caller's note", "value": _clip(str(manual["note"]), 1024), "inline": False})
+        if manual.get("override") and manual.get("vetoes"):
+            extra.append({"name": "⚠️ Posted over a hard veto",
+                          "value": _clip("Northstar would not have called this:\n"
+                                         + _bullets(manual["vetoes"], 3), 1024), "inline": False})
+        top = extra + top
     fields = top + body + [{"name": "Links", "value": links(mint, pool.get("address")), "inline": False}]
     from ..scalp import BANNER
+    u = report.get("unified") if isinstance(report.get("unified"), dict) else {}
+    if manual:
+        title = f"📣 MANUAL CALL — ${symbol}"
+        own = (f"Northstar's own read: **{u.get('decision')}** · {u.get('score', 0):.0f}/100"
+               if u.get("decision") else "Northstar's own read was not available")
+        description = f"**{name}**\n`{mint}`\n\nCalled by hand from the dashboard. {own}."
+    elif scalp:
+        title, description = f"☠️ RUG SCALP — ${symbol}", f"**{name}**\n`{mint}`\n\n{BANNER}"
+    else:
+        title, description = f"🚀 NORTHSTAR CALL — ${symbol}", f"**{name}**\n`{mint}`"
     embed = {
-        "title": f"☠️ RUG SCALP — ${symbol}" if scalp else f"🚀 NORTHSTAR CALL — ${symbol}",
+        "title": title,
         "url": token_url,
-        "description": (f"**{name}**\n`{mint}`\n\n{BANNER}" if scalp else f"**{name}**\n`{mint}`"),
-        "color": COLOR_CRITICAL if scalp else COLOR_CALLOUT,
+        "description": description,
+        "color": COLOR_CRITICAL if scalp else (COLOR_MANUAL if manual else COLOR_CALLOUT),
         "fields": fields,
-        "footer": {"text": f"{'RUG — scalp only. ' if scalp else ''}{DISCLAIMER} · mint:{mint}"},
+        "footer": {"text": f"{'RUG — scalp only. ' if scalp else ''}{'Manual call. ' if manual else ''}"
+                           f"{DISCLAIMER} · mint:{mint}"},
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(detected_at or time.time())),
         "_buttons": [{"label": "View on Axiom", "url": f"https://axiom.trade/t/{mint}"}],
     }

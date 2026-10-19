@@ -38,6 +38,19 @@ tr.click{cursor:pointer}tr.click:hover{background:#ffffff06}
 .coin b{font-size:13px}.coin small,.muted{color:var(--muted)}.sub{font-size:11px;color:var(--muted)}
 .num{font-variant-numeric:tabular-nums;white-space:nowrap}.up{color:var(--green)}.down{color:var(--red)}
 .empty{padding:26px 10px;text-align:center;color:var(--muted)}
+.research{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 14px}
+.research input{flex:1 1 320px;min-width:0;background:#0f131b;border:1px solid #2c3442;color:var(--text);border-radius:10px;
+ padding:9px 12px;font:13px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace}
+.research input:focus,.callcard textarea:focus{outline:none;border-color:#56709f;box-shadow:0 0 0 3px #3b518533}
+.callcard{border-color:#4b3a6b;background:linear-gradient(155deg,#191324,#0f0d16)}
+.callcard textarea{width:100%;min-height:62px;resize:vertical;background:#0f0d16;border:1px solid #3a2f52;color:var(--text);
+ border-radius:10px;padding:9px 11px;font:13px/1.45 inherit;margin:2px 0 8px}
+.callcard .check{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;color:#d6d0e4;margin:4px 0}
+.callcard .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+.btn.call{background:#3b2560;border-color:#6a4aa3;color:#fff}.btn.call:hover{border-color:#9b7ad6}
+.btn.danger{background:#4a1c22;border-color:#8a3a43;color:#fff}
+.vetobox{border:1px solid #603238;background:#24131a;border-radius:10px;padding:9px 11px;margin:0 0 10px;font-size:12.5px}
+.vetobox b{color:var(--red)}
 .reason{font-size:11.5px;color:#c9cfda}.reason+.reason{margin-top:2px}
 .bar{height:8px;border-radius:5px;background:#1d2230;overflow:hidden}.bar i{display:block;height:100%}
 .sig{display:grid;grid-template-columns:minmax(0,190px) 1fr 52px;gap:10px;align-items:center;font-size:12.5px;margin:6px 0}
@@ -79,6 +92,10 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
     <div class="topright"><span id="runState" class="pill dim">…</span><span id="modeState" class="pill dim">…</span>
       <span id="updated">—</span><button class="btn" id="logout">Log out</button></div>
   </header>
+  <form class="research" id="researchForm" autocomplete="off">
+    <input id="researchMint" aria-label="Token mint to research" placeholder="Paste a token mint to research it — security, holders, bubblemap, exit, AI read" spellcheck="false">
+    <button class="btn primary" type="submit" id="researchBtn">Research</button>
+  </form>
   <nav class="tabs" id="tabs">
     <button data-tab="overview" class="on">Overview</button><button data-tab="watching">Watching</button>
     <button data-tab="calls">Calls</button><button data-tab="learning">Learning</button>
@@ -267,22 +284,60 @@ document.addEventListener('click',e=>{const tr=e.target.closest('tr[data-mint]')
 $('overlay').onclick=closeDrawer;document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDrawer()});
 function closeDrawer(){$('drawer').classList.remove('on');$('overlay').classList.remove('on')}
 const val=v=>v&&typeof v==='object'&&'value' in v?v.value:v;
-async function openToken(mint){$('drawer').classList.add('on');$('overlay').classList.add('on');$('drawer').innerHTML='<div class="empty"><span class="spin"></span> Loading research…</div>';
- try{const t=await api('/api/token?mint='+encodeURIComponent(mint));const r=t.report||{},m=r.market||{},br=r.brain,gates=r.gates||[],sn=t.snapshot||{};
+async function openToken(mint,pre){$('drawer').classList.add('on');$('overlay').classList.add('on');if(!pre)$('drawer').innerHTML='<div class="empty"><span class="spin"></span> Loading research…</div>';
+ try{const t=pre||await api('/api/token?mint='+encodeURIComponent(mint));const r=t.report||{},m=r.market||{},br=r.brain,gates=r.gates||[],sn=t.snapshot||{},pm=r.pre_migration||{};
   const gate=g=>`<div style="display:flex;gap:8px;font-size:12.5px;padding:3px 0"><span>${g.status==='PASS'?'✅':g.status==='FAIL'?'❌':'❔'}</span><span><b>${esc(g.name)}</b> <span class="sub">${esc(g.reason||'')}</span></span></div>`;
-  $('drawer').innerHTML=`<div style="display:flex;justify-content:space-between;align-items:start;gap:10px"><div><h2 style="margin:0">${esc(t.symbol?'$'+t.symbol:short(mint))}</h2><div class="sub">${esc(t.name||'')}</div><code class="sub" style="word-break:break-all">${esc(mint)}</code></div><button class="btn" onclick="closeDrawer()">Close</button></div>
-  <div style="display:flex;gap:6px;flex-wrap:wrap;margin:12px 0">${actPill(sn.action||t.state)}<span class="pill dim">score ${num(sn.score??t.last_score,1)}</span><span class="pill dim">risk ${esc(sn.risk||t.last_risk||'—')}</span><span class="pill dim">confidence ${esc(sn.confidence||t.last_confidence||'—')}</span></div>
+  $('drawer').innerHTML=`<div style="display:flex;justify-content:space-between;align-items:start;gap:10px"><div><h2 style="margin:0">${esc(t.symbol?'$'+t.symbol:short(mint))}</h2><div class="sub">${esc(t.name||'')}</div><code class="sub" style="word-break:break-all">${esc(mint)}</code></div><div style="display:flex;gap:6px;flex-shrink:0"><button class="btn" id="reResearch">${t.manual?'Research again':'Research now'}</button><button class="btn" onclick="closeDrawer()">Close</button></div></div>
+  ${(()=>{const u=r.unified&&r.unified.version?r.unified:null;
+    /* one verdict per screen: the unified engine's when it ran, the older fields only when it did not */
+    return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:12px 0">${u?`<span class="pill ${(DC[u.decision]||['dim'])[0]}">${esc(u.decision)}</span>`:actPill(sn.action||t.state)}<span class="pill dim">score ${u?num(u.score,0)+'/100':num(sn.score??t.last_score,1)}</span><span class="pill dim">risk ${esc(u?u.risk:(sn.risk||t.last_risk||'—'))}</span><span class="pill dim">confidence ${esc(u?u.confidence:(sn.confidence||t.last_confidence||'—'))}</span></div>`})()}
   <div class="linkrow" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px"><a target="_blank" rel="noopener" href="https://dexscreener.com/solana/${esc(mint)}">DexScreener ↗</a><a target="_blank" rel="noopener" href="https://axiom.trade/t/${esc(mint)}">Axiom ↗</a><a target="_blank" rel="noopener" href="https://rugcheck.xyz/tokens/${esc(mint)}">RugCheck ↗</a><a target="_blank" rel="noopener" href="https://solscan.io/token/${esc(mint)}">Solscan ↗</a></div>
-  <div class="card" style="margin-bottom:12px"><h2>Market <span>${sn.ts?ago(sn.ts):''}</span></h2><dl class="kv"><dt>Market cap</dt><dd>${usd(val(m.market_cap))}</dd><dt>Liquidity</dt><dd>${usd(val(m.liquidity_usd))}</dd>
+  <div class="card" style="margin-bottom:12px"><h2>Market <span>${sn.ts?ago(sn.ts):''}</span></h2><dl class="kv"><dt>Market cap</dt><dd>${val(m.market_cap)!=null?usd(val(m.market_cap)):pm.market_cap_usd_current!=null?usd(pm.market_cap_usd_current)+' <span class="sub">on the curve</span>':'—'}</dd><dt>Liquidity</dt><dd>${usd(val(m.liquidity_usd))}</dd>
    <dt>Volume 5m / 1h</dt><dd>${usd((m.volume||{}).m5)} / ${usd((m.volume||{}).h1)}</dd><dt>Price change 5m / 1h</dt><dd>${num((m.price_change||{}).m5,1)}% / ${num((m.price_change||{}).h1,1)}%</dd><dt>Found by</dt><dd>${esc((t.sources||[]).join(', '))}</dd></dl></div>
   ${decisionCard(r.unified)}
+  ${callCard(t,mint)}
   ${br?`<div class="card" style="margin-bottom:12px"><h2>🧠 Learned runner odds</h2><b style="font-size:22px">${Math.round(br.p*100)}%</b> <span class="sub">${br.base!=null?`average coin ${Math.round(br.base*100)}% · `:''}${br.trusted?'trusted':'still learning'}</span>
    ${(br.ups||[]).length?`<div class="up" style="font-size:12.5px;margin-top:6px">▲ ${esc(br.ups.join(', '))}</div>`:''}${(br.downs||[]).length?`<div class="down" style="font-size:12.5px">▼ ${esc(br.downs.join(', '))}</div>`:''}</div>`:''}
   ${verdictCard(r.verdict)}${bubbleCard(r.clusters,mint)}
   <div class="card" style="margin-bottom:12px"><h2>Why this decision</h2>${(t.reasons||[]).map(x=>`<div class="reason">• ${esc(x)}</div>`).join('')||'<div class="sub">—</div>'}</div>
   <div class="card"><h2>Safety checks</h2>${gates.length?gates.map(gate).join(''):'<div class="sub">No checks recorded</div>'}</div>`;
-  drawBubbles(r.clusters)}
- catch(e){if(e.message!=='auth')$('drawer').innerHTML='<div class="empty">Could not load this coin.</div>'}}
+  drawBubbles(r.clusters);wireCall(t,mint)}
+ catch(e){if(e.message!=='auth')$('drawer').innerHTML=`<div class="empty">Could not load this coin.<br><br><button class="btn" onclick="runResearch('${esc(mint)}')">Research it now</button></div>`}}
+
+/* ---------- manual research and calls ---------- */
+async function post(p,body){const r=await fetch(p,{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})});
+ if(r.status===401){showLogin();throw new Error('auth')}let d={};try{d=await r.json()}catch(_){d={ok:false,error:'The panel got an unreadable answer ('+r.status+').'}}return d}
+async function runResearch(mint){mint=(mint||'').trim();if(!mint)return;
+ $('drawer').classList.add('on');$('overlay').classList.add('on');
+ $('drawer').innerHTML=`<div class="empty"><span class="spin"></span> Researching <code>${esc(short(mint))}</code><br><span class="sub">Security, holders, bubblemap, exit check, decision engine and the AI read. Usually 20–60 seconds.</span></div>`;
+ const b=$('researchBtn');b.disabled=true;
+ try{const d=await post('/api/research',{mint});
+  if(!d.ok){$('drawer').innerHTML=`<div class="empty">${esc(d.error||'Research failed.')}<br><br><button class="btn" onclick="closeDrawer()">Close</button></div>`;return}
+  openToken(mint,d.token)}
+ catch(e){if(e.message!=='auth')$('drawer').innerHTML='<div class="empty">Research failed — the panel lost contact with the bot.</div>'}
+ finally{b.disabled=false}}
+$('researchForm').addEventListener('submit',e=>{e.preventDefault();runResearch($('researchMint').value)});
+function callCard(t,mint){const mn=t.manual;
+ if(!mn)return `<div class="card callcard" style="margin-bottom:12px"><h2>📣 Call this token</h2><div class="sub">A call is posted from fresh research only. Research this token now, then the call button appears here.</div></div>`;
+ if(!mn.callable)return `<div class="card callcard" style="margin-bottom:12px"><h2>📣 Call this token</h2><div class="sub">Nothing to call yet: this token has no pool with a usable price.</div></div>`;
+ const u=(t.report||{}).unified||{},v=u.hard_vetoes||[];
+ return `<div class="card callcard" style="margin-bottom:12px" id="callCard"><h2>📣 Call this token <span>posts to the VIP channel</span></h2>
+  ${v.length?`<div class="vetobox"><b>Hard veto.</b> Northstar would not call this:<br>${v.map(x=>'· '+esc(x)).join('<br>')}<label class="check" style="margin-top:8px"><input type="checkbox" id="callOverride"> Post it anyway. The post will say it overrode this.</label></div>`:''}
+  <label class="sub" for="callNote">Your note (shown in the post, optional)</label>
+  <textarea id="callNote" maxlength="500" placeholder="Why you are calling it"></textarea>
+  <label class="check"><input type="checkbox" id="callFree" checked> Also post a copy to the free channel after the usual delay</label>
+  <div class="row"><button class="btn call" id="callBtn">Post call</button><button class="btn" id="callCancel" hidden>Cancel</button><span class="sub" id="callMsg">Research valid for 15 minutes.</span></div></div>`}
+function wireCall(t,mint){const rr=$('reResearch');if(rr)rr.onclick=()=>runResearch(mint);
+ const btn=$('callBtn');if(!btn)return;const ov=$('callOverride'),msg=$('callMsg'),cancel=$('callCancel');let armed=false;
+ const sync=()=>{btn.disabled=!!ov&&!ov.checked};if(ov){ov.onchange=sync;sync()}
+ cancel.onclick=()=>{armed=false;btn.textContent='Post call';btn.className='btn call';cancel.hidden=true;msg.textContent='Research valid for 15 minutes.'};
+ btn.onclick=async()=>{
+  if(!armed){armed=true;btn.textContent=ov&&ov.checked?'Confirm: post over the veto':'Confirm: post to VIP now';btn.className='btn '+(ov&&ov.checked?'danger':'call');cancel.hidden=false;msg.textContent='This posts to Discord and cannot be unsent.';return}
+  btn.disabled=true;cancel.hidden=true;msg.innerHTML='<span class="spin"></span> Posting…';
+  try{const d=await post('/api/call',{mint,note:$('callNote').value,free_copy:$('callFree').checked,override:!!(ov&&ov.checked)});
+   if(d.ok){$('callCard').innerHTML=`<h2>📣 Called</h2><div class="up" style="font-size:13px">Posted to the VIP channel as alert #${esc(d.alert_id)}${d.dry_run?' — <b>dry run</b>, written to the log instead of Discord':''}.</div>${d.free_copy?`<div class="sub" style="margin-top:6px">A copy goes to the free channel in ${esc(d.free_delay_minutes)} minutes.</div>`:''}<div class="sub" style="margin-top:6px">It is tracked like any other call: peak, plan levels and exits are on the Calls tab.</div>`;refresh()}
+   else{armed=false;btn.disabled=false;btn.textContent='Post call';btn.className='btn call';msg.textContent=d.error||'Not posted.'}}
+  catch(e){armed=false;btn.disabled=false;btn.textContent='Post call';msg.textContent='The panel lost contact with the bot. Nothing was confirmed as posted; check the Calls tab.'}}}
 const DC={'STRONG OPPORTUNITY':['good','🟢'],'WATCH':['warn','🟡'],'CAUTION':['warn','🟠'],'REJECT':['bad','🔴'],'INSUFFICIENT DATA':['dim','⚪']};
 const RC={'LOW':['good','🟢'],'MODERATE':['warn','🟡'],'HIGH':['warn','🟠'],'EXTREME':['bad','☠️']};
 function bar(pts,w){const p=w?Math.max(0,Math.min(100,pts/w*100)):0;

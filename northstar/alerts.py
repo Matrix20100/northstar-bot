@@ -26,6 +26,15 @@ log = logging.getLogger("northstar.alerts")
 MAX_ATTEMPTS = 3
 
 
+
+def wants_free_copy(call_type: str, report: dict) -> bool:
+    """Standard calls get a delayed free-channel copy; scalps never do; manual calls if asked."""
+    if call_type == "STANDARD":
+        return True
+    if call_type == "MANUAL":
+        return bool((report.get("manual") or {}).get("free_copy", True))
+    return False
+
 class AlertService:
     def __init__(
         self,
@@ -39,6 +48,7 @@ class AlertService:
         self.pub = publisher
         self.dex = dex
         self._fresh: dict = {}   # mint -> pool re-read at post time (research can take minutes)
+        self.last_hold: Optional[str] = None   # why the last publish() did not post, in plain words
 
     async def preflight(self, out: ResearchOutcome) -> Optional[str]:
         """Re-check the selected pool immediately before posting."""
@@ -80,15 +90,22 @@ class AlertService:
 
         return None
 
-    async def publish(self, out: ResearchOutcome) -> Optional[int]:
-        """Publish a qualified AUTO_POST outcome, or a RUG SCALP (report["call_type"] == "RUG_SCALP")."""
+    async def publish(self, out: ResearchOutcome, manual: bool = False) -> Optional[int]:
+        """Publish a qualified AUTO_POST outcome, a RUG SCALP, or a MANUAL call from the dashboard.
+
+        A manual call skips the decision gate (the owner made the decision) but nothing else: the
+        pre-flight market check, the cooldown, the VIP-first ordering and the tracking all apply.
+        When it returns None, `last_hold` says why.
+        """
         call_type = out.report.get("call_type") or "STANDARD"
-        assert out.action == Action.AUTO_POST or call_type == "RUG_SCALP"
+        assert manual or out.action == Action.AUTO_POST or call_type == "RUG_SCALP"
         profile = "scalp" if call_type == "RUG_SCALP" else "standard"
+        self.last_hold = None
 
         hold_reason = await self.preflight(out)
 
         if hold_reason:
+            self.last_hold = hold_reason
             log.info(
                 "holding %s: %s",
                 out.mint,
@@ -123,6 +140,7 @@ class AlertService:
                 limit_down = -12.0 if call_type == "RUG_SCALP" else -20.0
                 limit_up = 40.0 if call_type == "RUG_SCALP" else None
                 if moved <= limit_down or (limit_up is not None and moved >= limit_up):
+                    self.last_hold = f"price moved {moved:+.0f}% since the research — research it again"
                     log.info("holding %s: moved %+.1f%% during research", out.mint, moved)
                     self.db.set_state(out.mint, "WATCHLIST",
                                       next_research_at=time.time() + self.s.watchlist_recheck_seconds,
@@ -165,6 +183,8 @@ class AlertService:
         )
 
         if alert_id is None:
+            self.last_hold = (f"already called within the last {self.s.alert_cooldown_hours:g} hours "
+                              "(cooldown)")
             log.info(
                 "duplicate alert suppressed for %s (cooldown)",
                 out.mint,
@@ -182,7 +202,7 @@ class AlertService:
         # The free-channel copy is scheduled only after successful delivery.
         # Scalps are minutes-long trades on rugs: a delayed public copy would be useless and dangerous.
         alert = self.db.get_alert(alert_id)
-        free_channel = self.s.discord_free_channel_id if call_type == "STANDARD" else None
+        free_channel = self.s.discord_free_channel_id if wants_free_copy(call_type, out.report) else None
 
         if (
             free_channel
@@ -209,6 +229,8 @@ class AlertService:
             )
 
         # None means "not delivered (yet)": a retryable failure is retried by resume_pending.
+        if not delivered:
+            self.last_hold = "Discord did not accept the message yet; it will be retried automatically"
         return alert_id if delivered else None
 
     async def publish_due_free_posts(self) -> None:
@@ -833,7 +855,7 @@ class AlertService:
                     alert["id"],
                     callout_embed(report, plan=self._callout_plan(report, values)),
                 )
-                if delivered and report["call_type"] == "STANDARD" and self.s.discord_free_channel_id:
+                if delivered and wants_free_copy(report["call_type"], report) and self.s.discord_free_channel_id:
                     self.db.schedule_free_channel_post(
                         alert["id"], time.time() + max(0, self.s.free_callout_delay_minutes) * 60,
                         self.s.discord_free_channel_id)

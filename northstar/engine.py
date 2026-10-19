@@ -168,6 +168,8 @@ class Engine:
         self.radar = (SurgeRadar(s, db, providers.dex, getattr(providers, "coingecko", None))
                       if (s.radar_enabled and providers.dex) else None)
         self._inflight: set[str] = set()
+        self._manual: dict[str, tuple] = {}      # mint -> (outcome, researched_at) from the dashboard
+        self._manual_busy: set[str] = set()
         self._radar_slots = asyncio.Semaphore(max(1, s.radar_concurrency))
         self._radar_tasks: set[asyncio.Task] = set()
         from . import brain, learning
@@ -485,7 +487,7 @@ class Engine:
         except Exception:  # noqa: BLE001
             log.debug("unified refresh failed for %s", out.mint, exc_info=True)
 
-    async def _apply_ai_narrative(self, out) -> Optional[dict]:
+    async def _apply_ai_narrative(self, out, force: bool = False) -> Optional[dict]:
         """Ask the AI judge about coins that are already worth calling or watching.
 
         The AI contributes capped narrative evidence (see unified.apply_ai): it can lift a WATCH
@@ -498,21 +500,27 @@ class Engine:
             return None
         from .analysis import unified as U
 
-        if u.get("decision") not in (U.STRONG, U.WATCH) or not getattr(self.judge, "enabled", False):
+        if not getattr(self.judge, "enabled", False):
             return None
-        if out.report.get("lifecycle") == "PRE_MIGRATION_BONDING_CURVE":
+        # a manual deep look asks regardless; the automatic path only spends where it can matter
+        if not force and u.get("decision") not in (U.STRONG, U.WATCH):
+            return None
+        curve = out.report.get("lifecycle") == "PRE_MIGRATION_BONDING_CURVE"
+        if curve and not force:
             return None          # the early-call path judges those with its own prompt
         ident = out.report.get("identity") or {}
         m = out.report.get("market") or {}
         tr = out.report.get("trades") or {}
+        pm = out.report.get("pre_migration") or {}
 
         def val(x):
             return x.get("value") if isinstance(x, dict) else x
 
         coin = {"name": ident.get("name"), "symbol": ident.get("symbol"),
                 "description": ident.get("description"),
-                "socials": ident.get("socials") or "unknown", "stage": "trading on a DEX pool",
-                "market_cap_usd": val(m.get("market_cap")),
+                "socials": ident.get("socials") or "unknown",
+                "stage": "pump.fun bonding curve" if curve else "trading on a DEX pool",
+                "market_cap_usd": pm.get("market_cap_usd_current") if curve else val(m.get("market_cap")),
                 "flow": f"{tr.get('buys', 0)} buys / {tr.get('sells', 0)} sells, "
                         f"{tr.get('unique_buyers', 0)} unique buyers in the sample",
                 "ticker_crowding": (out.report.get("context") or {}).get("ticker_crowding_6h")}
@@ -709,6 +717,111 @@ class Engine:
         log.info("decision %s %s score=%s risk=%s", mint, out.action.value, out.score, out.risk.value,
                  extra={"ctx": {"mint": mint, "action": out.action.value, "score": out.score,
                                 "risk": out.risk.value, "reasons": out.reasons[:5]}})
+
+    # ---------------------------------------------------------------- manual (dashboard)
+    MANUAL_TTL = 900      # a manual call must rest on research from the last 15 minutes
+
+    async def manual_research(self, mint: str) -> dict:
+        """Research one token on request, the same way the bot would, and never post it.
+
+        It runs the full pipeline — security, holders, bubblemap, exit check, unified decision,
+        learning brain — and asks the AI judge even when the automatic path would not have, since
+        someone asked for the deep look. The result is kept for 15 minutes so it can be called.
+        """
+        from .analysis.identity import is_valid_mint_format
+
+        mint = (mint or "").strip()
+        if not is_valid_mint_format(mint):
+            return {"ok": False, "error": "That is not a Solana mint address."}
+        if mint in self._manual_busy or mint in self._inflight:
+            return {"ok": False, "error": "Already being researched. Try again in a few seconds."}
+        self._manual_busy.add(mint)
+        self._inflight.add(mint)
+        try:
+            self.db.upsert_discovery(mint, "manual", 10.0)
+            cand = self.db.get_candidate(mint)
+            out = await self.researcher.research(mint, cand, force=True)
+            now = time.time()
+            if not out.not_ready:
+                try:
+                    from .analysis import context as CTX
+                    out.report["context"] = CTX.build(self.db, mint, out.report, cand, now, self._heat)
+                except Exception:  # noqa: BLE001 - context is optional evidence
+                    log.debug("context failed for %s", mint, exc_info=True)
+                self._refresh_unified(out)
+                self._apply_brain(out)
+                await self._apply_ai_narrative(out, force=True)
+                if out.pair is not None:
+                    self.db.set_state(mint, cand["state"] if cand and cand["state"] not in
+                                      ("RESEARCHING",) else "WATCHLIST",
+                                      next_research_at=now + self.s.watchlist_recheck_seconds,
+                                      last_research_at=now, last_action=out.action.value,
+                                      last_score=out.score, last_risk=out.risk.value,
+                                      last_confidence=out.confidence.value, reasons=out.reasons[:20],
+                                      pool_address=out.pair.pair_address,
+                                      name=out.pair.base_name, symbol=out.pair.base_symbol)
+            self._manual[mint] = (out, now)
+            for k in [k for k, (_, ts) in self._manual.items() if now - ts > self.MANUAL_TTL]:
+                self._manual.pop(k, None)
+            log.info("manual research %s -> %s", mint, out.report.get("final_action") or out.action.value)
+            return {"ok": True, "token": self._manual_view(mint, out, now)}
+        except Exception as e:  # noqa: BLE001 - report the failure to the panel, keep the bot running
+            log.warning("manual research failed for %s", mint, exc_info=True)
+            return {"ok": False, "error": f"Research failed: {type(e).__name__}: {str(e)[:160]}"}
+        finally:
+            self._manual_busy.discard(mint)
+            self._inflight.discard(mint)
+
+    def _manual_view(self, mint: str, out, now: float) -> dict:
+        """The same shape the dashboard's coin drawer reads from /api/token."""
+        ident = out.report.get("identity") or {}
+        return {"mint": mint, "state": out.report.get("final_action") or out.action.value,
+                "symbol": ident.get("symbol"), "name": ident.get("name"),
+                "last_score": out.score, "last_risk": out.risk.value,
+                "last_confidence": out.confidence.value, "reasons": out.reasons,
+                "sources": ["manual"], "updated_at": now, "report": out.report,
+                "snapshot": {"action": out.report.get("final_action") or out.action.value,
+                             "score": out.score, "risk": out.risk.value,
+                             "confidence": out.confidence.value, "ts": now},
+                "manual": {"researched_at": now, "callable": out.pair is not None and not out.not_ready,
+                           "expires_in": self.MANUAL_TTL}}
+
+    async def manual_call(self, mint: str, note: str = "", free_copy: bool = True,
+                          override: bool = False) -> dict:
+        """Post a call the owner decided on, through the same publisher as every other call."""
+        entry = self._manual.get((mint or "").strip())
+        if not entry or time.time() - entry[1] > self.MANUAL_TTL:
+            return {"ok": False, "error": "Research this token first. A call needs research from "
+                                          "the last 15 minutes."}
+        out, _ = entry
+        if out.not_ready or out.pair is None:
+            return {"ok": False, "error": "Nothing to call yet: this token has no pool with a usable price."}
+        u = out.report.get("unified") if isinstance(out.report.get("unified"), dict) else {}
+        vetoes = list(u.get("hard_vetoes") or [])
+        if vetoes and not override:
+            return {"ok": False, "needs_override": True, "vetoes": vetoes[:3],
+                    "error": "Northstar found a hard veto on this token. Confirm to post it anyway."}
+        out.report["call_type"] = "MANUAL"
+        out.report["manual"] = {"note": (note or "").strip()[:500], "at": time.time(),
+                                "override": bool(vetoes), "vetoes": vetoes[:3],
+                                "free_copy": bool(free_copy), "decision": u.get("decision")}
+        alert_id = await self.alerts.publish(out, manual=True)
+        if alert_id is None:
+            return {"ok": False, "error": self.alerts.last_hold or "The call was not posted."}
+        self._manual.pop(mint, None)                      # one call per research
+        self.stats["manual_calls"] = self.stats.get("manual_calls", 0) + 1
+        if self.s.learning_enabled:
+            try:
+                self.learning.record(self.db, mint, out.report, out.pair, out.action.value, "MANUAL", True,
+                                     out.report.get("surge"),
+                                     brain_p=(out.report.get("brain") or {}).get("p"))
+            except Exception:  # noqa: BLE001 - learning must never block a call
+                log.warning("could not record manual call for %s", mint, exc_info=True)
+        log.info("manual call %s posted as alert %s%s", mint, alert_id,
+                 " over a hard veto" if vetoes else "")
+        return {"ok": True, "alert_id": alert_id, "dry_run": bool(self.s.dry_run),
+                "free_copy": bool(free_copy and self.s.discord_free_channel_id),
+                "free_delay_minutes": self.s.free_callout_delay_minutes}
 
     async def _curve_radar(self) -> None:
         for mint in await self.curve_radar.run_once():
