@@ -357,3 +357,72 @@ def test_every_check_belongs_to_exactly_one_category(s):
 
 def test_weights_sum_to_one_hundred(s):
     assert sum(U._weights(s).values()) == pytest.approx(100.0)
+
+
+# the callout's new holder and thesis blocks -----------------------------------------------------
+def _holder(owner, pct, **extra):
+    return {"token_account": owner + "ta", "owner": owner, "amount": 1000.0, "pct_raw": pct, **extra}
+
+
+def test_top_holders_block_lists_wallets_with_what_is_known(s):
+    from northstar.discord_bot.embeds import holders_text
+
+    r = report()
+    r["holders"]["holders"] = [
+        _holder("Aa11111111111111111111111111111111111111", 2.61),
+        _holder("Bb22222222222222222222222222222222222222", 2.10),
+        _holder("Cc33333333333333333333333333333333333333", 1.80, insider=True),
+        _holder("Dd44444444444444444444444444444444444444", 9.90, excluded="pool"),
+    ]
+    r["clusters"]["bubbles"] = [
+        {"id": "Aa11111111111111111111111111111111111111", "age_h": 400.0},
+        {"id": "Bb22222222222222222222222222222222222222", "age_h": 4.0, "fresh": True,
+         "cluster": 0, "cluster_strength": "STRONG", "launch_buyer": True},
+    ]
+    text = holders_text(r)
+    assert "2.61%" in text and "2.10%" in text
+    assert "17d old" in text and "4h old" in text and "⚠ fresh" in text
+    assert "🎯 launch buyer" in text and "🫧 group 1" in text and "insider" in text
+    assert "9.90%" not in text, "pool and locker accounts are excluded from the holder list"
+    assert "Top 10 hold **12.0%**" in text and "dev **0.40%**" in text
+    assert len(text) <= 1024
+
+
+def test_holder_block_says_so_when_there_is_no_holder_data(s):
+    from northstar.discord_bot.embeds import holders_text
+
+    assert "not available" in holders_text(report(holders={"status": "UNAVAILABLE"}))
+
+
+def test_thesis_block_carries_the_story_and_the_ai_read(s):
+    from northstar.discord_bot.embeds import thesis_text
+
+    r = report()
+    r["narrative"] |= {"category": "Space / launch meta",
+                       "thesis": "Rides the launch-week attention around the Roadster flight."}
+    r["score"] = {"components": [{"name": "narrative", "points": 18.0, "max_points": 25,
+                                  "evidence": ["matches a trending meta: space/launch"],
+                                  "penalties": ["9 tokens share this ticker"]}]}
+    r["unified"] = U.apply_ai(U.evaluate(r, s), r,
+                              {"verdict": "CALL", "score": 84, "provider": "gemini",
+                               "reason": "biggest attention event of the day"}, s)
+    text = thesis_text(r)
+    assert "Space / launch meta" in text and "Roadster flight" in text
+    assert "3 independent evidence item" in text
+    assert "Against it:" in text and "share this ticker" in text
+    assert "**AI read (gemini):** CALL 84/100" in text and "attention event" in text
+    assert len(text) <= 1024
+
+
+def test_callout_shows_thesis_and_holders(s):
+    from northstar.discord_bot.embeds import callout_embed, embed_size
+
+    r = report()
+    r["holders"]["holders"] = [_holder("Aa11111111111111111111111111111111111111", 2.61)]
+    r["pool"] = {"address": "9Xev", "dex": "pumpswap"}
+    r["unified"] = U.evaluate(r, s)
+    e = callout_embed(r, 1_792_000_000.0)
+    names = [f["name"] for f in e["fields"]]
+    assert "🧵 Thesis" in names and "👥 Top holders" in names
+    assert "Why Northstar selected it" not in names, "the thesis block replaces it"
+    assert embed_size(e) <= 6000

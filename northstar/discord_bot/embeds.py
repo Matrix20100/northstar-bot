@@ -71,6 +71,99 @@ def links(mint: str, pool: Optional[str]) -> str:
     return " · ".join(out)
 
 
+def short_addr(a: Optional[str], n: int = 4) -> str:
+    a = str(a or "")
+    return f"{a[:n]}…{a[-n:]}" if len(a) > n * 2 + 1 else (a or "unknown")
+
+
+def holders_text(report: dict, limit: int = 8) -> str:
+    """The top holders, with what Northstar knows about each wallet.
+
+    Percentages are the raw share of supply. Wallet age, funding links and launch-buying come
+    from the bubblemap trace, so a holder with no trace simply shows no extras rather than a
+    guess. Pool, locker and exchange accounts are excluded from the ordinary-holder maths and
+    are not listed here.
+    """
+    h = report.get("holders") or {}
+    if not h or str(h.get("status")) in ("UNAVAILABLE", "UNKNOWN", ""):
+        return "Holder data was not available for this token."
+    rows = [x for x in (h.get("holders") or []) if isinstance(x, dict) and not x.get("excluded")]
+    cl = report.get("clusters") or {}
+    bubbles = {b.get("id"): b for b in (cl.get("bubbles") or []) if isinstance(b, dict)}
+    lines = []
+    for i, x in enumerate(rows[:limit], 1):
+        owner = x.get("owner") or x.get("token_account")
+        pct = x.get("pct_raw")
+        b = bubbles.get(owner) or {}
+        marks = []
+        age = b.get("age_h")
+        if isinstance(age, (int, float)):
+            marks.append(f"{age:.0f}h old" if age < 48 else f"{age / 24:.0f}d old")
+        elif b.get("busy"):
+            marks.append("old / very active")
+        if b.get("fresh"):
+            marks.append("⚠ fresh")
+        if b.get("kind") == "creator":
+            marks.append("👤 dev")
+        if b.get("launch_buyer"):
+            marks.append("🎯 launch buyer")
+        if b.get("cluster") is not None and b.get("cluster_strength") in ("STRONG", "CONFIRMED"):
+            marks.append(f"🫧 group {int(b['cluster']) + 1}")
+        if x.get("insider"):
+            marks.append("insider")
+        pct_s = f"{pct:.2f}%" if isinstance(pct, (int, float)) else "?"
+        lines.append(f"`{i:>2}` **{pct_s}** `{short_addr(owner)}`"
+                     + (" · " + " · ".join(marks) if marks else ""))
+    if not lines:
+        lines.append("No ordinary holders found outside the pool and locker accounts.")
+
+    tail = []
+    if isinstance(h.get("top10_adj"), (int, float)):
+        tail.append(f"Top 10 hold **{h['top10_adj']:.1f}%**")
+    if isinstance(h.get("max_single_adj"), (int, float)):
+        tail.append(f"largest **{h['max_single_adj']:.2f}%**")
+    if isinstance(h.get("creator_pct"), (int, float)):
+        tail.append(f"dev **{h['creator_pct']:.2f}%**")
+    if isinstance(cl.get("fresh_wallet_share"), (int, float)):
+        tail.append(f"{cl['fresh_wallet_share']:.0f}% fresh wallets")
+    if tail:
+        lines.append(" · ".join(tail) + f" _(adjusted, via {h.get('source', 'unknown')})_")
+    return _clip("\n".join(lines), 1024)
+
+
+def thesis_text(report: dict) -> str:
+    """Why this coin, in plain English: the story, who is paying attention, and the AI's read."""
+    nr = report.get("narrative") or {}
+    u = report.get("unified") if isinstance(report.get("unified"), dict) else {}
+    ai = (u.get("ai") or {}) if u else (report.get("ai") or {})
+    comps = {c.get("name"): c for c in ((report.get("score") or {}).get("components") or [])
+             if isinstance(c, dict)}
+    lines = []
+    head = nr.get("thesis") or nr.get("summary")
+    if head:
+        cat = nr.get("category")
+        lines.append((f"**{cat}.** " if cat and not str(head).startswith(str(cat)) else "") + str(head))
+    attention = [e for e in (comps.get("narrative", {}).get("evidence") or [])
+                 if not str(e).startswith("sub-scores") and "evidence item" not in str(e)][:2]
+    items = nr.get("evidence_items")
+    if isinstance(items, (int, float)):
+        attention.insert(0, f"{int(items)} independent evidence item(s)")
+    if attention:
+        lines.append("**Attention:** " + " · ".join(attention))
+    for pen in (comps.get("narrative", {}).get("penalties") or [])[:1]:
+        lines.append(f"**Against it:** {pen}")
+    if ai.get("used") and ai.get("verdict"):
+        sc = ai.get("score")
+        lines.append(f"**AI read ({ai.get('provider') or 'model'}):** {ai['verdict']}"
+                     + (f" {sc:.0f}/100" if isinstance(sc, (int, float)) else "")
+                     + (f" — {str(ai.get('reason'))[:220]}" if ai.get("reason") else ""))
+    elif ai.get("reason"):
+        lines.append(f"**AI read:** {str(ai['reason'])[:220]}")
+    if not lines:
+        lines.append("No narrative thesis could be formed for this token.")
+    return _clip("\n".join(lines), 1024)
+
+
 def callout_embed(report: dict, detected_at: Optional[float] = None, plan: Optional[list[str]] = None) -> dict:
     """Minimal tracked callout: token image, entry/current market cap, return and coin links."""
     mint = report["mint"]
@@ -101,9 +194,7 @@ def callout_embed(report: dict, detected_at: Optional[float] = None, plan: Optio
                    f"Snapshot history: {structure.get('snapshots_used', 0)} prior observations (not OHLC candles)"]
     if structure.get("volume_acceleration") is not None:
         chart_lines.append(f"1h volume / 6h hourly average: {structure['volume_acceleration']:.2f}x")
-    why_lines = [narrative.get("thesis") or narrative.get("summary") or "Narrative thesis unavailable."]
-    why_lines.extend((narrative_component.get("evidence") or [])[1:3])
-    why_lines.extend((demand_component.get("evidence") or [])[:2])
+    why_lines = list((demand_component.get("evidence") or [])[:2])
     # the unified engine's risk class is the one shown on the decision panel; using the older
     # RiskLevel here as well put two different risk words in the same message
     u_risk = ((report.get("unified") or {}).get("risk")
@@ -154,7 +245,10 @@ def callout_embed(report: dict, detected_at: Optional[float] = None, plan: Optio
         ]
     else:
         body = [
-            {"name": "Why Northstar selected it", "value": _clip(_bullets(why_lines, 4)), "inline": False},
+            {"name": "🧵 Thesis", "value": thesis_text(report), "inline": False},
+            {"name": "👥 Top holders", "value": holders_text(report), "inline": False},
+            *([{"name": "Demand evidence", "value": _clip(_bullets(why_lines, 2)), "inline": False}]
+              if why_lines else []),
             {"name": "Chart & flow evidence", "value": _clip(_bullets(chart_lines, 6)), "inline": False},
             {"name": "Risk / data limits",
              "value": _clip(f"**{risk_label}** — not rug-proof.\n" + _bullets(caveats, 2), 1024), "inline": False},
