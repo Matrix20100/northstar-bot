@@ -39,7 +39,7 @@ def main() -> int:
     tar = subprocess.run(["git", "archive", "--format=tar", "HEAD"], cwd=ROOT, capture_output=True, check=True).stdout
     dest.mkdir(parents=True)
     with tarfile.open(fileobj=io.BytesIO(tar)) as tf:
-        tf.extractall(dest)
+        tf.extractall(dest, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
     (dest / "RELEASE.txt").write_text(f"Northstar v{version}\ncommit {commit}\nbuilt {time.strftime('%Y-%m-%d %H:%M')}\n"
                                       "Complete project: includes every earlier fix and feature.\n"
                                       "Copy your own .env and data/ next to main.py; they are never shipped.\n")
