@@ -106,6 +106,8 @@ class CurveRadar:
             out.append(mint)
             self.db.upsert_discovery(mint, "curve_radar", 9.0, p.base_name, p.base_symbol,
                                      {"market_cap": mc, "buys_m5": buys, "sells_m5": sells})
+            # launches are no longer queued on a timer, so this is what puts one in the queue
+            self.db.execute("UPDATE candidates SET next_research_at=? WHERE mint=?", (now, mint))
         if out:
             log.info("curve radar: %d coin(s) entering the early band: %s", len(out), ", ".join(out[:5]))
         if len(self._last) > 20000:

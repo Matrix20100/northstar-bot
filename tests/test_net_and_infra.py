@@ -163,7 +163,16 @@ def test_duplicate_discoveries_dedup_by_mint(db, settings):
     assert disc.ingest("bad-mint", "dexscreener_profile") is False and disc.invalid_seen == 1
 
 
-def test_new_pumpfun_launch_gets_early_research_schedule(db, settings):
+def test_new_pumpfun_launch_waits_for_the_curve_radar(db, settings):
+    """A launch costs nothing until it shows buying; see tests/test_launch_queue.py."""
+    disc = Discovery(settings, db, None)
+    disc.ingest(MINT, "pumpportal_new", {"traderPublicKey": addr("dev")})
+    assert db.get_candidate(MINT)["next_research_at"] is None
+    assert db.due_candidates(10) == []
+
+
+def test_new_pumpfun_launch_can_still_be_put_on_a_timer(db, settings):
+    settings.research_new_launches_on_timer = True
     disc = Discovery(settings, db, None)
     disc.ingest(MINT, "pumpportal_new", {"traderPublicKey": addr("dev")})
     c = db.get_candidate(MINT)

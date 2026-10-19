@@ -40,8 +40,12 @@ class Discovery:
             return False
         is_new = self.db.upsert_discovery(mint, source, PRIORITY.get(source, 1.0), name, symbol, payload)
         if is_new and source == "pumpportal_new":
-            self.db.execute("UPDATE candidates SET next_research_at=? WHERE mint=?",
-                            (time.time() + self.s.new_token_initial_delay_seconds, mint))
+            if getattr(self.s, "research_new_launches_on_timer", False):
+                self.db.execute("UPDATE candidates SET next_research_at=? WHERE mint=?",
+                                (time.time() + self.s.new_token_initial_delay_seconds, mint))
+            else:
+                # not scheduled: the curve radar researches it once it shows real buying
+                self.db.execute("UPDATE candidates SET next_research_at=NULL WHERE mint=?", (mint,))
         elif not is_new and source == "pumpportal_migration":
             # graduation is new information: research soon even if previously rejected
             self.db.execute("UPDATE candidates SET next_research_at=?, last_data_hash=NULL WHERE mint=? AND state IN "

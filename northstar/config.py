@@ -90,6 +90,12 @@ class Settings(BaseSettings):
     rejected_recheck_seconds: int = 3600  # only re-researched if market data changed
     max_queue_size: int = 500
     new_token_initial_delay_seconds: int = 20  # early-stage check; missing data is rechecked
+    # Pump.fun emits hundreds of launches an hour and almost all of them die within minutes with
+    # no pool and no trades. Researching each one on a timer spends the whole RPC budget to
+    # produce INSUFFICIENT DATA. Left false, a new launch waits in the candidate table until the
+    # curve radar sees it reach the early band with real buy flow (one cheap DexScreener batch
+    # call covers them all), and only then is it researched. True restores the old behaviour.
+    research_new_launches_on_timer: bool = False
     min_curve_trade_events: int = 15
     min_curve_unique_buyers: int = 8
     min_curve_buy_sell_ratio: float = 1.35
