@@ -161,7 +161,11 @@ def curve_report(mc=40_000, **pm):
     base.update(pm)
     return {"mint": MINT, "lifecycle": "PRE_MIGRATION_BONDING_CURVE",
             "identity": {"symbol": "ROADSTER", "name": "Roadster", "description": "the car that flew"},
-            "pre_migration": base, "gates": [{"name": "mint_authority", "status": "PASS"}],
+            "pre_migration": base,
+            # every check an early call requires, run and passed (v2.5: unknown is not a pass)
+            "gates": [{"name": n, "status": "PASS"} for n in
+                      ("mint_authority", "freeze_authority", "token_extensions", "holder_concentration",
+                       "creator_holdings")],
             "verdict": {"level": "LOOKS CLEAN", "score": 0, "red": [], "green": [], "unknown": []}}
 
 
@@ -442,3 +446,45 @@ def test_coingecko_failure_is_not_fatal(db):
     ef = EV.EventFeeds(s, db, cg_markets=FakeCG(fail=True))
     asyncio.run(ef.refresh(NOW))
     assert ef.metas == [] and ef.status["coingecko"]["ok"] is False
+
+
+
+def test_gate_holds_a_coin_whose_holder_check_never_ran(db):
+    """v2.5: the holder check is skipped for quiet curves and can fail on RPC errors; a coin
+    in that state must not reach the AI as if its holders were clean."""
+    s, pub, c = caller(db)
+    r = curve_report()
+    r["gates"] = [g for g in r["gates"] if g["name"] != "holder_concentration"]
+    ok, why = c.gate(outcome(r))
+    assert not ok and "holder concentration not checked" in why
+    r = curve_report()
+    r["gates"][3] = {"name": "holder_concentration", "status": "UNKNOWN", "reason": "holder data unavailable"}
+    ok, why = c.gate(outcome(r))
+    assert not ok and "holder concentration unknown" in why
+    r = curve_report()
+    r["gates"][4] = {"name": "creator_holdings", "status": "UNKNOWN", "reason": "creator unknown"}
+    assert not c.gate(outcome(r))[0]
+
+
+def test_gate_still_posts_a_fully_verified_coin_with_not_enough_data_verdict(db):
+    """Unknown OPTIONAL evidence (wallet clusters, dev history) does not block an early call:
+    the verdict's 'NOT ENOUGH DATA' is allowed when every required check ran and passed."""
+    s, pub, c = caller(db)
+    r = curve_report()
+    r["verdict"] = {"level": "NOT ENOUGH DATA", "score": 0, "red": [], "green": [],
+                    "unknown": ["wallet connections (bubblemap) not traced", "dev history unknown"]}
+    assert c.gate(outcome(r))[0]
+
+
+def test_gate_holds_a_coin_with_one_serious_red_flag(db):
+    """A single HIGH red flag gives verdict CAUTION, which the early gate used to let through.
+    With holder thresholds loosened in config (e.g. 15% single holder), the rug check's measured
+    'one wallet holds 8%+' flag is the only thing standing between that coin and a VIP call."""
+    s, pub, c = caller(db)
+    r = curve_report()
+    r["verdict"] = {"level": "CAUTION", "score": 25, "green": [], "unknown": [],
+                    "red": [{"key": "whale_holder", "level": "high", "text": "one wallet holds 14.0%"}]}
+    ok, why = c.gate(outcome(r))
+    assert not ok and "one wallet holds 14.0%" in why
+    r["verdict"]["red"] = [{"key": "dev_holds", "level": "medium", "text": "dev holds 3.5%"}]
+    assert c.gate(outcome(r))[0], "a medium flag alone still allows the call"

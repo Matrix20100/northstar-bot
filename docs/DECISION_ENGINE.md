@@ -287,6 +287,38 @@ clear a veto. No threshold was lowered to produce more calls.
   dominating rejections of otherwise clean coins, the gate needs its own review.
 * The liquidity/market-cap ratio uses the selected pool only, not the token's total liquidity.
 
+## v2.5.1 — measuring false rejections and rugs called
+
+`python main.py audit` reads the database and prints, per call type and per rejection reason,
+how many coins ran (2x before 0.6x) and how many rugged (0.3x before 1.3x). The tables used:
+`shadow_calls` (ordered minute paths for every post-migration decision), `decision_tracking`
+(high/low only), `alerts` (posted calls) and `early_calls`. It also replays stored reports
+through the current engine, so a change can be judged on coins it was not tuned on.
+
+Paths that post without going through the unified engine, and what 2.5.1 changed in them:
+
+| Path | Before | Now |
+|---|---|---|
+| Early narrative call (curve) | blocked only on a FAIL or verdict RUG LIKELY / HIGH RISK; unchecked holders passed | required checks must PASS; any high/critical red flag holds the call |
+| Rug scalp | read gates only | also refuses no sell route, ruinous exit cost, collapse, trap flags |
+| Curve research | missing SOL amounts counted as 0 SOL; missing trend counted as a miss | unmeasured inputs -> INSUFFICIENT DATA (re-check) |
+
+### Live configuration notes (from the operator's env, 2026-10-21)
+
+These are settings, not code, and were left as the operator set them. They are listed because
+they bear directly on rugs called:
+
+* `MAX_SINGLE_HOLDER_ADJUSTED_PCT=15`, `MAX_CLUSTER_SUPPLY_PCT=35`, `MAX_CREATOR_HOLDING_PCT=15`,
+  `MAX_CREATOR_SELL_PCT_OF_SUPPLY=10` are far above the levels the rug check measured as deadly
+  (one wallet 8%+ crashed 85-100% of the time). The unified engine still treats those red flags
+  as serious warnings, and 2.5.1 makes early calls respect them, but the gates themselves only
+  fire far later. Re-check with `python main.py audit` before loosening further.
+* `U_NARRATIVE_CAP=20` in the env overrides the 2.5 default of 10, so the narrative cap does not
+  bind on that deployment. Remove the line (or set 10) to use the fix.
+* `MAX_PRICE_AGE_SECONDS=100000` effectively disables the price-freshness gate.
+* `EARLY_CALL_MIN_AI_SCORE=55` (default 70) lets weaker AI reads become early calls.
+* `ALERT_COOLDOWN_HOURS=0` and `MAX_DAILY_ALERTS=12000` switch publication limits off.
+
 ## Rollback
 
 v2.5 adds one table (`funnel_events`, created with IF NOT EXISTS) and no columns. Score-only

@@ -1014,6 +1014,15 @@ class Researcher:
 
         buy_sol = total(buys, "sol_amount")
         sell_sol = total(sells, "sol_amount")
+        # Buys whose SOL amount is missing are UNMEASURED, not zero SOL. In the live log of
+        # 2026-10-19 a curve with 79 verified trades was rejected for "buy flow 0.00 SOL".
+        buys_with_sol = sum(1 for e in buys if isinstance(e.get("sol_amount"), (int, float))
+                            and e.get("sol_amount") > 0)
+        buy_flow_measured = (not buys) or buys_with_sol > 0
+        buy_flow_note = (None if buy_flow_measured else
+                         f"UNMEASURED — {len(buys)} buy(s) carried no SOL amount")
+        if buys and 0 < buys_with_sol < len(buys):
+            buy_flow_note = f"PARTIAL — {buys_with_sol} of {len(buys)} buys carried a SOL amount (lower bound)"
         ratio = len(buys) / max(1, len(sells))
 
         caps = []
@@ -1123,7 +1132,8 @@ class Researcher:
             "unique_buyers": len(buyers),
             "unique_sellers": len(sellers),
             "buy_sell_count_ratio": round(ratio, 3),
-            "buy_sol_5m": round(buy_sol, 6),
+            "buy_sol_5m": round(buy_sol, 6) if buy_flow_measured else None,
+            "buy_flow_status": buy_flow_note or "MEASURED",
             "sell_sol_5m": round(sell_sol, 6),
             "market_cap_sol_start": first_cap,
             "market_cap_sol_current": current_cap,
@@ -1160,7 +1170,7 @@ class Researcher:
         pm["sol_usd"] = sol_usd
         pm["market_cap_usd_current"] = (current_cap * sol_usd
                                         if sol_usd and isinstance(current_cap, (int, float)) else None)
-        pm["buy_usd_5m"] = round(buy_sol * sol_usd, 2) if sol_usd else None
+        pm["buy_usd_5m"] = round(buy_sol * sol_usd, 2) if sol_usd and buy_flow_measured else None
 
         if curve_state and curve_state.get("quote_is_sol") is False:
             report["pre_migration"]["quote_mint"] = curve_state.get("quote_mint")
@@ -1429,7 +1439,7 @@ class Researcher:
         report["pre_migration"]["qualification_reasons"] = [
             f"{len(trades)} trade events / {len(buyers)} unique buyers in 5m",
             f"buy/sell count ratio {ratio:.2f}",
-            f"buy flow {buy_sol:.2f} SOL in 5m",
+            (f"buy flow {buy_sol:.2f} SOL in 5m" if buy_flow_measured else "buy flow not measured"),
             (
                 f"market-cap change {change_pct:+.1f}% in SOL terms "
                 f"({trend_window})"
@@ -1483,18 +1493,36 @@ class Researcher:
             misses.append(f"unique buyers {len(buyers)} < {self.s.min_curve_unique_buyers}")
         if ratio < self.s.min_curve_buy_sell_ratio:
             misses.append(f"buy/sell ratio {ratio:.2f} < {self.s.min_curve_buy_sell_ratio:.2f}")
-        if buy_sol < self.s.min_curve_buy_sol_5m:
+        # Unmeasured inputs are kept apart from thresholds that were really missed: a coin whose
+        # only problem is a gap in the data is re-checked (INSUFFICIENT DATA), not rejected.
+        unmeasured = []
+        if not buy_flow_measured:
+            unmeasured.append(f"buy flow not measured ({buy_flow_note})")
+        elif buy_sol < self.s.min_curve_buy_sol_5m:
             misses.append(f"buy flow {buy_sol:.2f} SOL < {self.s.min_curve_buy_sol_5m:.2f} SOL in 5m")
         if change_pct is None:
-            misses.append("market-cap trend unavailable")
+            unmeasured.append("market-cap trend not measured (no launch or earlier curve snapshot)")
         elif change_pct <= 0:
             misses.append(f"market cap {change_pct:+.1f}% (not rising)")
-        if score < self.s.min_curve_early_score:
+        if score < self.s.min_curve_early_score and not unmeasured:
+            # with inputs unmeasured the activity score is understated, so it is not a miss
             misses.append(f"activity score {score:.1f} < {self.s.min_curve_early_score:.0f}")
         if social_ev is not None and social_ev.recycled:
             misses.append("recycled socials (" + ", ".join(social_ev.recycled)
                           + " also used by other recent tokens) — serial-launcher pattern")
 
+        if unmeasured and not misses and not extended:
+            return self._final(
+                mint,
+                Action.INSUFFICIENT_DATA,
+                report,
+                ["pre-migration evidence incomplete, re-checking: " + "; ".join(unmeasured)],
+                score=score,
+                risk=RiskLevel.INCOMPLETE,
+                confidence=Confidence.LOW,
+            )
+
+        misses += unmeasured
         reject_reasons = (
             [
                 "pre-migration activity thresholds not met"

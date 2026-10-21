@@ -262,3 +262,29 @@ async def test_deleted_message_stops_embed_edits(settings, db):
         await mon.run_once()
     assert len(calls) == 1, "a deleted message is tried once, then left alone"
     assert db.get_alert(aid)["max_multiple"] >= 1.7 - 1e-9, "tracking continues"
+
+
+def test_scalp_never_posted_when_the_exit_is_blocked():
+    """v2.5: the scalp check used to read gates only. A rug you cannot sell is not a scalp."""
+    pair = make_pair(market_cap=120_000.0, liquidity_usd=30_000.0)
+    ok = rug_report("holder_concentration")
+    assert scalp.check(ok, pair, S, SURGE), "baseline: a sellable rug with momentum is a scalp"
+
+    no_route = {**ok, "sellability": {"checked": [{"usd": 100}], "no_route_at_usd": 100.0}}
+    assert scalp.check(no_route, pair, S, SURGE) is None
+
+    trap = {**ok, "verdict": {"red": [{"key": "transfer_hook", "level": "critical",
+                                       "text": "transfers run custom code"}]}}
+    assert scalp.check(trap, pair, S, SURGE) is None
+
+    ruinous = {**ok, "unified": {"vetoes": [{"key": "haz:exit_cost", "severity": "STRONG_WARNING",
+                                             "blocking": True, "text": "selling $1,000 costs 22% in impact"}]}}
+    assert scalp.check(ruinous, pair, S, SURGE) is None
+
+    collapsing = {**ok, "market_structure": {**ok["market_structure"], "collapsed": True}}
+    assert scalp.check(collapsing, pair, S, SURGE) is None
+
+    # an ordinary serious warning (the rug itself) does not block the scalp
+    warned = {**ok, "unified": {"vetoes": [{"key": "haz:concentration", "severity": "STRONG_WARNING",
+                                            "blocking": True, "text": "top 10 hold 40%"}]}}
+    assert scalp.check(warned, pair, S, SURGE)

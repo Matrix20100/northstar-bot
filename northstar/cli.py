@@ -2,6 +2,7 @@
 
   python -m northstar run                 continuous engine
   python -m northstar funnel [--hours 24] decision funnel: counts and exact reasons per stage
+  python -m northstar audit [--json]      false rejections vs rugs called on the bot's own history
   python -m northstar health              config, database and live provider checks
   python -m northstar analyze <MINT>      research one token now (never posts to Discord)
   python -m northstar report              historical performance report
@@ -214,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
     st = sub.add_parser("selftest", help="check every part of Northstar (add --code to run the test suite)")
     st.add_argument("--code", action="store_true")
     sub.add_parser("init-db")
+    au = sub.add_parser("audit", help="false rejections vs rugs called, measured on the bot's own history")
+    au.add_argument("--json", action="store_true")
     fn = sub.add_parser("funnel", help="how many coins reached each stage, and why they stopped")
     fn.add_argument("--hours", type=float, default=24.0)
     fn.add_argument("--json", action="store_true")
@@ -241,6 +244,14 @@ def main(argv: list[str] | None = None) -> int:
             res = asyncio.run(ST.run_async(s, path, include_code=args.code))
             print(ST.format_text(res))
             return 1 if ST.summary(res)["overall"] == ST.FAIL else 0
+        if args.cmd == "audit":
+            from . import outcome_audit as OA
+            db = _db(s)
+            path = str(db.path)
+            db.close()
+            a = OA.audit(path, s)
+            print(json.dumps(a, indent=2, default=str) if args.json else OA.format_audit(a))
+            return 0
         if args.cmd == "funnel":
             from . import telemetry as T
             db = _db(s)

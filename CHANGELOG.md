@@ -3,6 +3,30 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.5.1 — 2026-10-21 — false rejections vs rugs called
+
+Targeted fixes to the call paths that skip the unified engine, plus a way to measure both
+error types on the bot's own history. Everything in 2.5.0 is included.
+
+- **`python main.py audit`** (`northstar/outcome_audit.py`): counts rugs called per call type
+  (standard, rug scalp, early narrative, manual) and runners rejected per rejection reason; shows
+  for every failed gate and rug-check red flag whether it catches rugs or only blocks runners;
+  replays the stored reports through the current engine (before vs now) and replays the new
+  early-call gate on past early calls. Ordered price paths are used where they exist; when only
+  the high and low are stored, coins that did both are reported as MIXED, never guessed.
+- **Early narrative calls no longer treat unchecked safety as clean.** Mint/freeze authority,
+  token extensions, holder concentration and creator holding must have RUN and PASSED; a coin
+  whose holder check was skipped or failed to load is held back.
+- **Early calls are held on any serious (high/critical) rug-check red flag.** They bypass the
+  unified engine, so a single serious flag (verdict CAUTION) used to pass — e.g. one wallet
+  holding 14% under a loosened 15% holder threshold.
+- **Rug scalps are never posted when the exit is blocked**: no Jupiter sell route, ruinous exit
+  cost, a collapsing price, or a rug-check trap flag. The scalp check used to read gates only.
+- **Curve stage: unmeasured is not the same as missed.** Buys that carry no SOL amount make the
+  buy flow UNMEASURED (it was counted as 0.00 SOL — live log: 79 verified trades rejected for
+  "buy flow 0.00 SOL"), and a missing market-cap history makes the trend unmeasured. A coin whose
+  only problems are unmeasured inputs is INSUFFICIENT DATA and re-checked, not REJECTED.
+
 ## 2.5.0 — 2026-10-19 — scoring and decision audit
 
 Why almost everything was rejected or INSUFFICIENT DATA, and why one report could show two

@@ -37,6 +37,33 @@ PLAIN = {
 }
 
 
+def exit_blocked(report: dict) -> Optional[str]:
+    """Why a scalp could trap the buyer even though every failed GATE is scalpable.
+
+    Before v2.5 the scalp check read the gates only, so a coin whose Jupiter exit check found no
+    sell route, whose sell cost was ruinous, whose price was already collapsing, or whose rug
+    check found a trap flag (transfer hook, permanent delegate, ...) could still be posted as a
+    scalp. A scalp is only worth posting if the exit works.
+    """
+    u = report.get("unified") if isinstance(report.get("unified"), dict) else {}
+    for v in u.get("vetoes") or []:
+        if not isinstance(v, dict):
+            continue
+        if v.get("severity") == "CONFIRMED_CRITICAL" and not str(v.get("key", "")).startswith("gate:"):
+            return v.get("text") or v.get("key")
+        if v.get("key") in ("haz:exit", "haz:exit_cost", "haz:collapse") and v.get("blocking"):
+            return v.get("text") or v.get("key")
+    for r in (report.get("verdict") or {}).get("red") or []:
+        if isinstance(r, dict) and r.get("level") == "critical":
+            return r.get("text") or r.get("key")
+    sell = report.get("sellability") if isinstance(report.get("sellability"), dict) else {}
+    if sell.get("checked") and sell.get("no_route_at_usd") is not None:
+        return f"a ${sell['no_route_at_usd']:,.0f} sell cannot be routed"
+    if (report.get("market_structure") or {}).get("collapsed"):
+        return "price already collapsed"
+    return None
+
+
 def _gates(report: dict) -> list[dict]:
     return [g for g in report.get("gates") or [] if isinstance(g, dict)]
 
@@ -60,6 +87,8 @@ def check(report: dict, pair, s, surge: Optional[dict] = None) -> Optional[dict]
     passed = {g.get("name") for g in gates if g.get("status") == "PASS"}
     if not MUST_PASS <= passed:
         return None
+    if exit_blocked(report):
+        return None                                        # cannot get out: never a scalp
     mc, liq = pair.market_cap, pair.liquidity_usd
     if not mc or mc < s.scalp_min_market_cap or not liq or liq < s.scalp_min_liquidity:
         return None

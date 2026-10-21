@@ -29,6 +29,41 @@ from .discord_bot.publisher import PublishError
 
 log = logging.getLogger("northstar.early_calls")
 
+# Checks an early call cannot do without. Each must have RUN and PASSED: UNKNOWN (RPC failed,
+# holder check skipped for low activity, creator not identified) holds the call back. These are
+# the curve-stage equivalents of the trap checks; nothing else on the curve can stand in for them.
+EARLY_REQUIRED_PASS = {
+    "mint_authority": "mint authority",
+    "freeze_authority": "freeze authority",
+    "token_extensions": "token extensions",
+    "holder_concentration": "holder concentration",
+    "creator_holdings": "creator holding",
+}
+
+
+def serious_red_flags(report: dict) -> list[str]:
+    """Rug-check red flags at HIGH or CRITICAL level (including medium flags the learner upgraded
+    after they crashed 80%+ of the time). The standard path caps these at WATCH through the
+    unified engine; early calls skip that engine, so before v2.5 a single serious flag (verdict
+    CAUTION — e.g. one wallet holding 14% under a loosened holder threshold) could still be posted.
+    """
+    v = report.get("verdict") or {}
+    return [str(x.get("text") or x.get("key")) for x in v.get("red") or []
+            if isinstance(x, dict) and x.get("level") in ("high", "critical")]
+
+
+def safety_unknowns(report: dict) -> list[str]:
+    """Required early-call checks that did not run and pass (empty list = all verified)."""
+    gates = {g.get("name"): g for g in report.get("gates") or [] if isinstance(g, dict)}
+    missing = []
+    for name, label in EARLY_REQUIRED_PASS.items():
+        g = gates.get(name)
+        if g is None:
+            missing.append(f"{label} not checked")
+        elif g.get("status") != "PASS":
+            missing.append(f"{label} {str(g.get('status')).lower()}: {str(g.get('reason') or '')[:60]}")
+    return missing
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS early_calls (
     mint TEXT PRIMARY KEY,
@@ -149,6 +184,14 @@ class EarlyCaller:
         level = (r.get("verdict") or {}).get("level")
         if level in ("RUG LIKELY", "HIGH RISK"):
             return False, f"rug check {level}"
+        # A check that never ran is not a pass. Before v2.5 a curve coin whose holder check was
+        # skipped (or whose RPC read failed) went to the AI as if its holders were clean.
+        missing = safety_unknowns(r)
+        if missing:
+            return False, "safety not verified: " + "; ".join(missing)
+        serious = serious_red_flags(r)
+        if serious:
+            return False, "serious rug-check red flag: " + "; ".join(serious[:2])
         if ((pm.get("socials") or {}).get("recycled")):
             return False, "recycled socials"
         if self.s.early_call_max_per_hour:
