@@ -463,7 +463,7 @@ def contradictions(report: dict, led: Ledger, s: Any) -> list[str]:
     # price disagreement between DexScreener and RugCheck (RugCheck's price is often cached):
     # recorded as a conflict, never a hard veto (v2.4 rejected the coin outright for it)
     for f in report.get("flags") or []:
-        if isinstance(f, dict) and f.get("code") == "PRICE_DISCREPANCY":
+        if isinstance(f, dict) and f.get("code") in ("PRICE_DISCREPANCY", "LP_PROVIDER_CONFLICT"):
             out.append(str(f.get("message") or "price sources disagree"))
     for text in out:
         led.veto(f"conflict:{abs(hash(text)) % 10 ** 8}", UNVERIFIED_SUSPICION,

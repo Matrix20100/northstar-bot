@@ -282,8 +282,10 @@ clear a veto. No threshold was lowered to produce more calls.
   `MIN_OPPORTUNITY_SCORE`, which the unified engine does not use). Its other tunables (momentum
   bars, callout market-cap minimum) still act.
 * Tokens held inside withdrawable DLMM positions are not counted as holder supply.
-* RugCheck "danger" risks remain a hard gate; if the funnel shows `rugcheck_danger` dominating
-  rejections of otherwise clean coins, that gate needs its own review.
+* RugCheck "danger" risks remain a hard gate, except "LP unlocked" when Northstar has read the
+  burn on-chain (then it is a recorded provider conflict). If the funnel shows `rugcheck_danger`
+  dominating rejections of otherwise clean coins, the gate needs its own review.
+* The liquidity/market-cap ratio uses the selected pool only, not the token's total liquidity.
 
 ## Rollback
 

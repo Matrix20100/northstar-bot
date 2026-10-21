@@ -35,6 +35,10 @@ scores. Full write-up: `docs/DECISION_ENGINE.md`, section "v2.5". Regressions:
 - **Trades are sampled from the decodable PumpSwap pool** when the deepest pool is DLMM/CLMM;
   every pool of the token is excluded from holder maths.
 - **Decision funnel telemetry**: `funnel_events` table, `python main.py funnel`, dashboard card.
+- **RugCheck "Large Amount of LP Unlocked" vs an on-chain burn read.** In the live log this
+  danger alone hard-rejected coins before analysis. When Northstar has read the LP burn on-chain,
+  a contradicting RugCheck LP danger becomes a provider conflict (lower confidence); every other
+  RugCheck danger, and the LP danger without an on-chain read, still fails the gate.
 - Score scale changed: re-run `scripts/validate_decision_engine.py` on the live database before
   relying on the 68/48 thresholds. Includes everything in 2.4.1 and earlier.
 

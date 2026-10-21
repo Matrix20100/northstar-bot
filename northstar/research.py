@@ -464,6 +464,7 @@ class Researcher:
         la = assess_liquidity(pair, rc, history, s, now)
         await self._verify_lp_onchain(pair, mint, la, report)
         await self._resolve_lp_floor(pair, pairs, mint, rc, la, report)
+        self._reconcile_rugcheck_lp(la, g3, f3, report)
         await self._sellability(mint, mint_acc, pair, report)
 
         gates += g1 + g2 + g3 + la.gates
@@ -2063,6 +2064,39 @@ class Researcher:
             la.lp_status = Datum("WITHDRAWABLE — " + res["reason"], DataStatus.OBSERVED, "dexscreener")
             la.flags[:] = [f for f in la.flags if f.code != "LP_STATUS_UNKNOWN"]
             la.flags.append(Flag("LP_NOT_LOCKED", Severity.HIGH, res["reason"], DataStatus.OBSERVED))
+
+    LP_DANGER_WORDS = ("lp unlocked", "lp providers", "liquidity unlocked")
+
+    def _reconcile_rugcheck_lp(self, la, g3: list, f3: list, report: dict) -> None:
+        """RugCheck's "Large Amount of LP Unlocked" danger vs Northstar's own LP measurement.
+
+        Both describe the same fact. When Northstar has READ the burn on-chain (lp_lock PASS from
+        a verified PumpSwap burn), a contradicting RugCheck LP danger is a provider disagreement,
+        not a proven trap: it is recorded as a conflict (lower confidence) and removed from the
+        rugcheck_danger gate. Every other RugCheck danger still fails the gate, and without an
+        on-chain read the RugCheck LP danger stands. Live log 2026-10-19 showed this danger
+        alone hard-rejecting coins before any analysis ran.
+        """
+        lp_gate_ = next((g for g in la.gates if g.name == "lp_lock"), None)
+        if lp_gate_ is None or lp_gate_.status != GateStatus.PASS or la.lp_status.status != DataStatus.VERIFIED:
+            return
+        gate = next((g for g in g3 if g.name == "rugcheck_danger" and g.status == GateStatus.FAIL), None)
+        if gate is None:
+            return
+        names = [n.strip() for n in gate.reason.replace("RugCheck danger:", "").split(",") if n.strip()]
+        lp = [n for n in names if any(w in n.lower() for w in self.LP_DANGER_WORDS)]
+        if not lp:
+            return
+        rest = [n for n in names if n not in lp]
+        text = (f"RugCheck reports '{', '.join(lp)}' but the LP burn was read on-chain: "
+                f"{lp_gate_.reason[:160]}")
+        f3.append(Flag("LP_PROVIDER_CONFLICT", Severity.MEDIUM, text, DataStatus.OBSERVED))
+        report.setdefault("provider_conflicts", []).append(text)
+        if rest:
+            gate.reason = "RugCheck danger: " + ", ".join(rest)
+        else:
+            gate.status, gate.critical = GateStatus.PASS, False
+            gate.reason = "only RugCheck danger was LP-unlocked, contradicted by the on-chain burn read"
 
     @staticmethod
     def _trade_pool(pair: PairInfo, pairs: list, mint: str) -> str:

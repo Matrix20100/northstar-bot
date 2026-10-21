@@ -591,3 +591,55 @@ async def test_dashboard_funnel_view_reads_the_same_numbers(settings, db):
     finally:
         c.close()
     assert sm["approved"] == 1 and sm["researched"] == 1
+
+
+# =============================================================================================
+# 9. RugCheck "Large Amount of LP Unlocked" vs Northstar's own on-chain burn read
+#    (live log 2026-10-19: this danger alone hard-rejected coins before any analysis)
+# =============================================================================================
+def _rc_lp_unlocked(*extra_dangers):
+    risks = [{"name": "Large Amount of LP Unlocked", "level": "danger"}]
+    risks += [{"name": n, "level": "danger"} for n in extra_dangers]
+    return rc_report(mint=DOPE, price=0.00338, risks=risks,
+                     markets=[{"pubkey": DOPE_PUMPSWAP, "marketType": "pump_amm", "lp": {"lpLockedPct": 0.0}}])
+
+
+def _pumpswap_only():
+    # one pool only; market cap lowered so the liquidity/market-cap ratio gate passes and the
+    # test isolates the RugCheck LP question
+    pairs = [p for p in dope_pairs() if p.pair_address == DOPE_PUMPSWAP]
+    for p in pairs:
+        p.market_cap = p.fdv = 1_500_000
+    return pairs
+
+
+async def test_rugcheck_lp_danger_contradicted_by_onchain_burn_is_a_conflict(settings, db):
+    p = dope_providers(rugcheck_up=True)
+    p.dex.pairs = _pumpswap_only()
+    p.rugcheck = FakeRugCheck(_rc_lp_unlocked())
+    out = await research(settings, db, p, DOPE)
+    gates_ = {g["name"]: g for g in out.report["gates"]}
+    assert gates_["lp_lock"]["status"] == "PASS" and "VERIFIED on-chain" in gates_["lp_lock"]["reason"]
+    assert gates_["rugcheck_danger"]["status"] == "PASS"
+    assert out.report["final"]["reason_class"] != "SAFETY_FAIL"
+    assert any("LP Unlocked" in c for c in out.report["unified"]["conflicts"])
+    assert out.report["unified"]["confidence"] != "HIGH"
+
+
+async def test_rugcheck_lp_danger_stands_without_an_onchain_read(settings, db):
+    p = dope_providers(rugcheck_up=True, lp_read_fails=True)
+    p.dex.pairs = _pumpswap_only()
+    p.rugcheck = FakeRugCheck(_rc_lp_unlocked())
+    out = await research(settings, db, p, DOPE)
+    assert out.action == Action.REJECT
+    assert any("rugcheck_danger" in r or "lp_lock" in r for r in out.reasons)
+
+
+async def test_other_rugcheck_dangers_still_fail_the_gate(settings, db):
+    p = dope_providers(rugcheck_up=True)
+    p.dex.pairs = _pumpswap_only()
+    p.rugcheck = FakeRugCheck(_rc_lp_unlocked("Copycat token"))
+    out = await research(settings, db, p, DOPE)
+    gate = next(g for g in out.report["gates"] if g["name"] == "rugcheck_danger")
+    assert gate["status"] == "FAIL" and "Copycat" in gate["reason"] and "LP Unlocked" not in gate["reason"]
+    assert out.action == Action.REJECT
