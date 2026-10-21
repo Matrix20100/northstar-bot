@@ -435,12 +435,11 @@ def rugcheck_findings(rc: Optional[dict], s: Settings, price_usd: Optional[float
         if dev > s.max_source_price_discrepancy_pct:
             flags.append(Flag("PRICE_DISCREPANCY", Severity.HIGH,
                               f"DexScreener and RugCheck prices differ by {dev:.0f}%", DataStatus.OBSERVED))
-            # Two providers disagreeing is a confidence problem, not proof the coin is unsafe
-            # (RugCheck's price is often a cached value from an earlier pool). v2.4 FAILED a
-            # critical gate here, which rejected the coin before any analysis ran. It is now
-            # recorded as UNKNOWN (non-critical) and as a contradiction in the unified engine.
-            gates.append(GateResult("source_consistency", GateStatus.UNKNOWN,
-                                    f"price sources disagree by {dev:.0f}%", critical=False))
+            # v2.5.2: blocks calls again (operator decision, 21 Oct). v2.5.0 had made this a
+            # confidence note; on the live history coins rejected for it rugged 64% of the time
+            # (23 of 36). It is graded as a risk threshold (unified.THRESHOLD_GATES), not a trap.
+            gates.append(GateResult("source_consistency", GateStatus.FAIL,
+                                    f"price sources disagree by {dev:.0f}%"))
     tok = rc.get("token") or {}
     try:
         rc_supply = int(tok.get("supply")) / 10 ** int(tok.get("decimals"))

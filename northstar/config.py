@@ -246,7 +246,10 @@ class Settings(BaseSettings):
     # Posted with a loud RUG banner and this much tighter plan. Coins that can trap you
     # (mint/freeze authority, transfer fees, LP that can be pulled, liquidity already being pulled)
     # are never posted, not even as a scalp.
-    scalp_enabled: bool = True
+    # v2.5.2 (operator decision, 21 Oct): off by default. On the live history (17-21 Oct) rug scalps
+    # were 37 of 41 calls and lost about 7% per call on their real price paths with the learned
+    # scalp plan (10 wins of 28, worst -97%). true = post them again.
+    scalp_enabled: bool = False
     scalp_min_market_cap: float = 50_000.0
     scalp_min_liquidity: float = 15_000.0
     scalp_require_surge: bool = True        # only when the radar sees money flowing in right now

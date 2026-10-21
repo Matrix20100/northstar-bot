@@ -17,7 +17,14 @@ from northstar.monitor import Monitor
 from northstar.net import ProviderClient
 from northstar.providers.coingecko import CoinGeckoOnchain, peak_after
 
-S = Settings(_env_file=None)
+S = Settings(_env_file=None, scalp_enabled=True)     # scalps are off by default since v2.5.2
+
+
+def test_scalps_are_off_by_default():
+    """v2.5.2 operator decision: on the live history rug scalps lost money on their real paths."""
+    assert Settings(_env_file=None).scalp_enabled is False
+    pair = make_pair(market_cap=120_000.0, liquidity_usd=30_000.0)
+    assert scalp.check(rug_report("holder_concentration"), pair, Settings(_env_file=None), SURGE) is None
 SURGE = {"line": "⚡ Surge: $30,050 volume in 5 min (2.7x the hour's pace), 277 buys / 146 sells"}
 
 
@@ -44,7 +51,7 @@ def test_scalp_only_for_tradeable_rugs_with_momentum():
     assert scalp.check(rug_report("holder_concentration"), make_pair(market_cap=20_000.0), S, SURGE) is None
     assert scalp.check(rug_report(), pair, S, SURGE) is None
     # strong 1h momentum counts only when a surge is not required
-    loose = Settings(_env_file=None, scalp_require_surge=False)
+    loose = Settings(_env_file=None, scalp_require_surge=False, scalp_enabled=True)
     assert scalp.check(rug_report("holder_concentration", acc=3.0, bs=1.6), pair, loose, None)
     assert scalp.check(rug_report("holder_concentration", acc=0.8, bs=1.6), pair, loose, None) is None
 
@@ -77,6 +84,7 @@ def test_scalp_plan_sells_everything_and_stops():
 async def test_engine_posts_scalp_instead_of_rejecting(settings, db, monkeypatch):
     from conftest import MemoryPublisher
     from northstar.engine import Engine
+    settings.scalp_enabled = True                  # off by default since v2.5.2
     from northstar.models import Action, Confidence, RiskLevel
     from northstar.research import Providers, ResearchOutcome
 
@@ -204,7 +212,7 @@ def test_review_scalp_needs_surge_when_required_and_all_trap_checks_run():
     assert scalp.check(no_lp, pair, S, SURGE) is None
     rc_down = rug_report("holder_concentration", unknown=("rugcheck",))
     assert scalp.check(rc_down, pair, S, SURGE) is None
-    allow = Settings(_env_file=None, allow_active_freeze_authority=True)
+    allow = Settings(_env_file=None, allow_active_freeze_authority=True, scalp_enabled=True)
     assert scalp.check(rug_report("holder_concentration"), pair, allow, SURGE) is None
 
 

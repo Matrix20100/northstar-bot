@@ -17,8 +17,8 @@ This reads the facts directly from the chain:
 Verified against the live $UV pool (8Xev4P…): base mint matched, lp_supply 4,193,388,318,622,
 current LP supply 0 -> 100% burned.
 
-The result is only used when every identity check passes (pool owned by PumpSwap, base mint is
-the token being researched, LP mint owned by a token program). Anything else returns None and
+The result is only used when every identity check passes (pool owned by PumpSwap, the token being
+researched on one side of the pool, LP mint owned by a token program). Anything else returns None and
 the gate stays UNKNOWN — the check can confirm a burn, never invent one.
 """
 from __future__ import annotations
@@ -77,23 +77,45 @@ def _mint_supply(acc: dict) -> Optional[int]:
     return None
 
 
-async def pumpswap_lp_burn(rpc: Any, pool: str, mint: str) -> Optional[dict]:
-    """{'burned_pct', 'lp_mint', 'lp_supply', 'current_supply'} when fully verified, else None."""
+async def pumpswap_lp_burn(rpc: Any, pool: str, mint: str, diag: Optional[dict] = None) -> Optional[dict]:
+    """{'burned_pct', 'lp_mint', 'lp_supply', 'current_supply'} when fully verified, else None.
+
+    `diag`, when given, receives {'reason': ...} saying why nothing could be verified. On the live
+    history (17-21 Oct) this check confirmed none of 126 PumpSwap pools for non-pump.fun tokens and
+    left no trace of why; the reason is now recorded so the audit can show it.
+    v2.5.2: the token may sit on either side of the pool (base or quote). Pools created by hand
+    on PumpSwap do not always put the token on the base side; v2.5.1 refused those outright.
+    """
+    def fail(reason: str) -> None:
+        if diag is not None:
+            diag["reason"] = reason
+        return None
+
     if not rpc or not pool:
-        return None
+        return fail("no RPC or no pool")
     pool_acc = await rpc.get_account_info(pool)
-    if not pool_acc or pool_acc.get("owner") != PUMPSWAP_PROGRAM:
-        return None
+    if not pool_acc:
+        return fail("pool account not found")
+    if pool_acc.get("owner") != PUMPSWAP_PROGRAM:
+        return fail(f"pool not owned by PumpSwap (owner {str(pool_acc.get('owner'))[:12]})")
     raw = _raw_bytes(pool_acc)
     parsed = parse_pumpswap_pool(raw) if raw else None
-    if parsed is None or parsed.base_mint != mint or parsed.lp_supply <= 0:
-        return None
+    if parsed is None:
+        return fail("pool account could not be decoded (not base64 or too short)")
+    if mint not in (parsed.base_mint, parsed.quote_mint):
+        return fail("pool does not hold this token on either side")
+    if parsed.lp_supply <= 0:
+        return fail("pool reports zero LP supply")
     lp_acc = await rpc.get_account_info(parsed.lp_mint)
-    if not lp_acc or lp_acc.get("owner") not in TOKEN_PROGRAMS:
-        return None
+    if not lp_acc:
+        return fail("LP mint account not found")
+    if lp_acc.get("owner") not in TOKEN_PROGRAMS:
+        return fail("LP mint not owned by a token program")
     current = _mint_supply(lp_acc)
-    if current is None or current < 0 or current > parsed.lp_supply:
-        return None
+    if current is None or current < 0:
+        return fail("LP mint supply unreadable")
+    if current > parsed.lp_supply:
+        return fail(f"LP mint supply {current} exceeds the pool's recorded LP supply {parsed.lp_supply}")
     burned = (1 - current / parsed.lp_supply) * 100
     return {"burned_pct": burned, "lp_mint": parsed.lp_mint, "lp_supply": parsed.lp_supply,
             "current_supply": current}

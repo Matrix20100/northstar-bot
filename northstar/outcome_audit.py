@@ -27,6 +27,7 @@ A market-cap multiple is not a realised return; fees and slippage are not modell
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import statistics
 import sys
@@ -263,20 +264,26 @@ def _red_flags(r: dict) -> list:
     return [x.get("key") for x in v.get("red") or [] if isinstance(x, dict) and x.get("key")]
 
 
-def discrimination(rows: list[dict], base: dict, keyfn) -> list[dict]:
-    """For each gate/flag: does it fire more on rugs than on runners, relative to the base rates?
+def discrimination(rows: list[dict], keyfn, population=None) -> list[dict]:
+    """For each gate/flag: among comparable coins, does it fire more on rugs than on runners?
 
-    lift_rug    = rug rate among coins with the signal / overall rug rate     (>1 = catches rugs)
-    lift_runner = runner rate among coins with it    / overall runner rate   (>1 = blocks runners)
-    A signal with lift_runner >= 1 and lift_rug <= 1 rejects good coins without catching rugs.
+    Like-for-like: a signal is compared with coins from the SAME population that did not have it
+    (`population(row)` selects them; default: every row). Comparing against all decisions instead
+    made almost every signal look "weak", because the baseline was dominated by dead coins that
+    never reached the checks at all (v2.5.1 audit, fixed in v2.5.2).
+
+    lift_rug    = rug rate with the signal / rug rate without it        (>1 = catches rugs)
+    lift_runner = runner rate with it      / runner rate without it     (>1 = blocks runners)
     """
+    pop = [r for r in rows if population is None or population(r)]
     out = []
-    for name, st in _group(rows, keyfn).items():
+    for name, st in _group(pop, keyfn).items():
         if name == "(none)":
             continue
-        lr = (st["rug_pct"] / base["rug_pct"]) if base.get("rug_pct") else None
-        lw = (st["runner_pct"] / base["runner_pct"]) if base.get("runner_pct") else None
-        if st["small_sample"] or lr is None or lw is None:
+        without = _rates([r for r in pop if name not in [str(k) for k in (keyfn(r) or [])]])
+        lr = _lift(st["rug_pct"], without["rug_pct"])
+        lw = _lift(st["runner_pct"], without["runner_pct"])
+        if st["small_sample"] or without["n"] < MIN_GROUP or lr is None or lw is None:
             verdict = "too few to judge"
         elif lw >= 1 and lr <= 1:
             verdict = "blocks runners, does not catch rugs"
@@ -284,19 +291,39 @@ def discrimination(rows: list[dict], base: dict, keyfn) -> list[dict]:
             verdict = "catches rugs"
         else:
             verdict = "weak signal"
-        out.append({"signal": name, **st, "lift_rug": None if lr is None else round(lr, 2),
+        out.append({"signal": name, **st, "without_n": without["n"],
+                    "without_runner_pct": without["runner_pct"], "without_rug_pct": without["rug_pct"],
+                    "lift_rug": None if lr is None else round(lr, 2),
                     "lift_runner": None if lw is None else round(lw, 2), "verdict": verdict})
     return out
+
+
+def _lift(with_pct: Optional[float], without_pct: Optional[float]) -> Optional[float]:
+    if with_pct is None or without_pct is None:
+        return None
+    if without_pct == 0:
+        return 1.0 if with_pct == 0 else float("inf")
+    return with_pct / without_pct
+
+
+def _analysed(r: dict) -> bool:
+    """Reached the security checks (has gates)."""
+    return bool((r.get("report") or {}).get("gates"))
+
+
+def _fully_analysed(r: dict) -> bool:
+    """Reached holder and trade analysis, where the rug-check red flags are computed."""
+    rep = r.get("report") or {}
+    return bool(rep.get("holders")) and bool(rep.get("trades")) and bool((rep.get("verdict") or {}).get("level"))
 
 
 # ----------------------------------------------------------------------------- replay
 def replay(rows: list[dict], s: Any = None) -> dict:
     """Re-decide stored post-migration reports with the CURRENT unified engine.
 
-    Gates produced by older code are re-graded only where the meaning of a gate changed and the
-    stored report says enough to do it honestly (provider price disagreement is no longer a hard
-    fail). Reports that stopped at a gate before the analysis ran cannot be replayed in full;
-    they are counted separately.
+    Stored gates are replayed as they were recorded (gate logic itself is not re-run). Reports
+    that stopped at a gate before the analysis ran cannot be replayed in full; they are counted
+    separately.
     """
     from .analysis import unified as U
     from .analysis.verdict import assess
@@ -310,10 +337,6 @@ def replay(rows: list[dict], s: Any = None) -> dict:
         if r["stage"] != "POOL" or not rep.get("gates"):
             continue
         rep = json.loads(json.dumps(rep, default=str))
-        for g in rep["gates"]:
-            if g.get("name") == "source_consistency" and g.get("status") == "FAIL":
-                g["status"], g["critical"] = "UNKNOWN", False
-                rep.setdefault("flags", []).append({"code": "PRICE_DISCREPANCY", "message": g.get("reason")})
         if not rep.get("holders") and not rep.get("trades"):
             partial += 1
         rep.pop("unified", None)
@@ -376,11 +399,18 @@ def audit(path: str, s: Any = None) -> dict:
         "decisions_by_action": _group(decided, "action"),
         "rejections_by_reason": _group(rejected, lambda r: [reason_family(_reasons_of(r))]),
         "rejections_by_stage": _group(rejected, "stage"),
-        "gate_discrimination": discrimination(decided, base, lambda r: _failed_gates(r) or ["(none)"]),
-        "flag_discrimination": discrimination(decided, base, lambda r: _red_flags(r) or ["(none)"]),
+        "gate_discrimination": discrimination(decided, lambda r: _failed_gates(r) or ["(none)"], _analysed),
+        "flag_discrimination": discrimination(decided, lambda r: _red_flags(r) or ["(none)"], _fully_analysed),
         "false_rejections": sum(1 for r in rejected if r["label"] == RUNNER),
         "rugs_called": sum(1 for r in calls if r["label"] == RUG),
     }
+    reasons: dict[str, int] = {}
+    for r in rows:
+        why = (r.get("report") or {}).get("lp_onchain_check")
+        if why:
+            key = re.sub(r"\d+(\.\d+)?", "N", str(why))[:90]
+            reasons[key] = reasons.get(key, 0) + 1
+    res["lp_onchain_reasons"] = dict(sorted(reasons.items(), key=lambda kv: -kv[1]))
     res["replay"] = replay(rows, s)
     try:
         res["early_gate_replay"] = early_gate_replay(rows)
@@ -413,12 +443,14 @@ def format_audit(a: dict) -> str:
     L += [f"  -> false rejections (REJECT/INSUFFICIENT that ran {RUN_X:g}x): {a['false_rejections']}", "",
           "REJECTIONS BY REASON", HEAD]
     L += [_line(k, v) for k, v in a["rejections_by_reason"].items()]
-    for title, key in (("FAILED GATES — do they separate rugs from runners?", "gate_discrimination"),
-                       ("RUG-CHECK RED FLAGS", "flag_discrimination")):
-        L += ["", title, f"  {'signal':<30}{'coins':>6}{'runner':>9}{'rug':>9}{'rug lift':>10}{'run lift':>10}  verdict"]
+    for title, key in (("FAILED GATES vs coins that reached the same checks and passed them", "gate_discrimination"),
+                       ("RUG-CHECK RED FLAGS vs fully analysed coins without the flag", "flag_discrimination")):
+        L += ["", title, f"  {'signal':<30}{'coins':>6}{'runner':>9}{'rug':>9}{'| without':>10}{'runner':>8}"
+                         f"{'rug':>8}  verdict"]
         for d in sorted(a[key], key=lambda d: -d["n"])[:25]:
             L.append(f"  {d['signal'][:30]:<30}{d['n']:>6}{(d['runner_pct'] or 0):>8.1f}%{(d['rug_pct'] or 0):>8.1f}%"
-                     f"{(d['lift_rug'] or 0):>10.2f}{(d['lift_runner'] or 0):>10.2f}  {d['verdict']}")
+                     f"{d['without_n']:>10}{(d['without_runner_pct'] or 0):>7.1f}%{(d['without_rug_pct'] or 0):>7.1f}%"
+                     f"  {d['verdict']}")
     rp = a["replay"]
     L += ["", f"REPLAY WITH THE CURRENT ENGINE ({rp['replayed']} stored pool reports; "
               f"{rp['stopped_before_analysis']} stopped at a gate before analysis, replayed as stored)",
@@ -428,6 +460,9 @@ def format_audit(a: dict) -> str:
         L.append(f"  {('before' if k == 'old' else 'current code'):<16}{t['called']['n']:>7}{t['rugs_called']:>13}"
                  f"{t['rejected']['n']:>10}{t['runners_rejected']:>18}")
     L += ["  moves:", HEAD] + [_line(k, v) for k, v in list(rp["moves"].items())[:12]]
+    if a.get("lp_onchain_reasons"):
+        L += ["", "ON-CHAIN LP CHECK — why it could or could not verify the LP"]
+        L += [f"  {n:>6}  {why}" for why, n in list(a["lp_onchain_reasons"].items())[:10]]
     eg = a.get("early_gate_replay") or {}
     if "posted" in eg:
         L += ["", "EARLY NARRATIVE CALLS — v2.5 gate (required checks ran, no serious red flag)", HEAD,

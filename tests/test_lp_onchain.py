@@ -102,3 +102,28 @@ def test_rpc_error_leaves_gate_unknown():
             raise RuntimeError("rpc down")
     la = _verify(Broken())
     assert next(g for g in la.gates if g.name == "lp_lock").status == GateStatus.UNKNOWN
+
+
+def test_token_on_the_quote_side_is_accepted():
+    """v2.5.2: hand-made PumpSwap pools do not always put the token on the base side."""
+    class QuoteSide(Rpc):
+        def __init__(self):
+            super().__init__(base="So11111111111111111111111111111111111111112")
+            raw = bytearray(pool_bytes(base="So11111111111111111111111111111111111111112"))
+            raw[75:107] = b58decode(MINT).rjust(32, b"\0")          # token on the quote side
+            self.accounts[POOL]["data"] = [base64.b64encode(bytes(raw)).decode(), "base64"]
+    r = asyncio.run(pumpswap_lp_burn(QuoteSide(), POOL, MINT))
+    assert r is not None and r["burned_pct"] == 100.0
+
+
+def test_failed_reads_say_why():
+    diag = {}
+    assert asyncio.run(pumpswap_lp_burn(Rpc(pool_owner="11111111111111111111111111111111"), POOL, MINT, diag)) is None
+    assert "not owned by PumpSwap" in diag["reason"]
+    diag = {}
+    assert asyncio.run(pumpswap_lp_burn(Rpc(current=9_999_999_999_999), POOL, MINT, diag)) is None
+    assert "exceeds the pool's recorded LP supply" in diag["reason"]
+    diag = {}
+    other = "So11111111111111111111111111111111111111112"
+    assert asyncio.run(pumpswap_lp_burn(Rpc(base=other), POOL, MINT, diag)) is None
+    assert "either side" in diag["reason"]

@@ -1986,13 +1986,17 @@ class Researcher:
         gate = next((g for g in la.gates if g.name == "lp_lock"), None)
         if gate is None or gate.status == GateStatus.PASS or self.p.rpc is None:
             return
+        diag: dict = {}
         try:
-            res = await pumpswap_lp_burn(self.p.rpc, pair.pair_address, mint)
+            res = await pumpswap_lp_burn(self.p.rpc, pair.pair_address, mint, diag)
         except Exception as e:  # noqa: BLE001 - optional evidence; never break research
             log.info("on-chain LP check failed for %s: %s", mint, e)
+            report["lp_onchain_check"] = f"error: {type(e).__name__}: {str(e)[:120]}"
             return
         if res is None:
+            report["lp_onchain_check"] = diag.get("reason") or "not verified"
             return
+        report["lp_onchain_check"] = f"verified: {res['burned_pct']:.1f}% burned"
         pct = res["burned_pct"]
         report["sources"]["lp_onchain"] = "OK"
         if pct >= LPC.BURNED_PCT:
@@ -2055,11 +2059,14 @@ class Researcher:
                 if kind == "UNKNOWN" and (p.dex_id or "").lower() == "pumpswap" and self.p.rpc is not None \
                         and reads < self.MAX_LP_RPC_READS:
                     reads += 1
+                    diag: dict = {}
                     try:
-                        res = await pumpswap_lp_burn(self.p.rpc, p.pair_address, mint)
+                        res = await pumpswap_lp_burn(self.p.rpc, p.pair_address, mint, diag)
                     except Exception as e:  # noqa: BLE001 - optional evidence; never break research
                         log.info("on-chain LP check failed for %s pool %s: %s", mint, p.pair_address, e)
-                        res = None
+                        res, diag = None, {"reason": f"error: {type(e).__name__}"}
+                    row["onchain_check"] = (f"verified: {res['burned_pct']:.1f}% burned" if res
+                                            else diag.get("reason") or "not verified")
                     if res is not None:
                         read_ok = True
                         pct = float(res["burned_pct"])

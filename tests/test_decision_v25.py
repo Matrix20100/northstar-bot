@@ -494,16 +494,16 @@ def test_worthless_without_the_collapse_is_still_not_a_call(s):
 # =============================================================================================
 # 7. Legitimate opportunity still gets through; conflicting providers no longer hard-reject
 # =============================================================================================
-async def test_a_stale_rugcheck_price_is_a_conflict_not_a_rejection(settings, db):
+async def test_a_provider_price_disagreement_blocks_the_call(settings, db):
+    """v2.5.2 (operator decision): back to blocking. v2.5.0 had made it a confidence note, but on
+    the live history coins rejected for it rugged 64% of the time (23 of 36)."""
     p = strong_providers()
     p.rugcheck = FakeRugCheck(rc_report(price=0.0040))          # DexScreener says 0.0012
     out = await research(settings, db, p, addr("mockmint"))
     gate = next(g for g in out.report["gates"] if g["name"] == "source_consistency")
-    assert gate["status"] == "UNKNOWN" and gate["critical"] is False
-    assert out.action != Action.REJECT or out.report["final"]["reason_class"] != U.RC_SAFETY
-    assert any("differ" in c for c in out.report["unified"]["conflicts"])
-    assert any("sources disagree" in x for x in out.report["unified"]["suspicions"])
-    assert out.report["unified"]["confidence"] != "HIGH"
+    assert gate["status"] == "FAIL"
+    assert out.action == Action.REJECT
+    assert out.report["final"]["reason_class"] == "RISK_THRESHOLD", "a risk threshold, not a proven trap"
 
 
 async def test_strong_coin_is_still_called(settings, db):

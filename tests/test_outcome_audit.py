@@ -151,14 +151,15 @@ def test_audit_separates_signals_that_catch_rugs_from_ones_that_block_runners(hi
     assert gates_["mint_authority"]["verdict"] == "catches rugs"
 
 
-def test_replay_with_current_engine_keeps_traps_and_frees_provider_conflicts(history):
+def test_replay_with_current_engine_keeps_traps_and_blocking_gates(history):
     a = OA.audit(str(history.path))
     rp = a["replay"]
     assert rp["replayed"] >= 26
-    assert rp["new"]["runners_rejected"] < rp["old"]["runners_rejected"]
     moved = rp["moves"]
     assert "REJECT -> REJECT" in moved and moved["REJECT -> REJECT"]["rug"] >= 8, \
         "every mint-authority rug is still rejected"
+    # stored gates are replayed as recorded: a price disagreement still rejects (v2.5.2)
+    assert rp["new"]["runners_rejected"] == rp["old"]["runners_rejected"]
 
 
 def test_early_gate_replay_holds_the_unverified_rug_and_keeps_the_verified_runner(history):

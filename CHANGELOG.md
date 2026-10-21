@@ -3,6 +3,28 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.5.2 — 2026-10-21 — decisions from the live history
+
+Measured on the live database (17–21 Oct, v2.4.1 running): see the project doc
+"northstar-history-audit-2026-10-21". Operator decisions taken on those numbers:
+
+- **Rug scalps are off by default** (`NORTHSTAR_SCALP_ENABLED=false`). They were 37 of 41 calls and,
+  replayed on their real price paths with the learned scalp plan, lost about 7% per call (median
+  −12%, 10 wins of 28, worst −97%). The code stays; `true` turns them back on.
+- **A DexScreener/RugCheck price disagreement blocks calls again** (it was a confidence note in
+  2.5.0). Coins rejected for it rugged 64% of the time (23 of 36). Graded as a risk threshold.
+- **Unlocked LP keeps rejecting.** RugCheck's "Large Amount of LP Unlocked" rejected 131 coins (all
+  hand-made PumpSwap pools, 0% locked) that did not rug more than average, but the LP really can be
+  pulled, so it stays a hard stop. Northstar's own on-chain LP read confirmed none of them; it now
+  accepts the token on either side of a PumpSwap pool and records why a read failed
+  (`report.lp_onchain_check`, shown by `python main.py audit`).
+- **Holder concentration keeps rejecting** (unchanged; it did not separate rugs from runners on
+  this history, to be re-measured).
+- **The audit compares like for like**: a failed gate against coins that reached the same checks
+  and passed, a red flag against fully analysed coins without it. Before, everything was compared
+  with all decisions, mostly dead coins, which made every signal look "weak". Stored gates are
+  now replayed exactly as recorded.
+
 ## 2.5.1 — 2026-10-21 — false rejections vs rugs called
 
 Targeted fixes to the call paths that skip the unified engine, plus a way to measure both
