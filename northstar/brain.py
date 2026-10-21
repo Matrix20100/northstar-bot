@@ -41,7 +41,7 @@ log = logging.getLogger("northstar.brain")
 
 WIN_X = 2.0            # a "runner" reaches this multiple ...
 LOSS_X = 0.6           # ... before touching this one
-TRACK_MIN_HOURS = 6.0  # decision-tracking rows: followed at least this long (or already a runner)
+TRACK_MIN_HOURS = 6.0  # kept for compatibility; tracking rows now need a complete window (TRACK_MIN_SAMPLES)
 L2 = 1.0               # regularisation strength (standardised features)
 MAX_ROWS = 5000        # newest coins used per training run
 FOLDS = 5              # walk-forward folds
@@ -111,7 +111,8 @@ def init_schema(db) -> None:
     with db._lock:
         db._conn.executescript(SCHEMA)
     cols = {r["name"] for r in db.fetchall("PRAGMA table_info(shadow_calls)")}
-    for col, typ in (("brain_p", "REAL"), ("brain_oof", "REAL"), ("vector", "TEXT"), ("win", "INTEGER")):
+    for col, typ in (("brain_p", "REAL"), ("brain_oof", "REAL"), ("vector", "TEXT"), ("win", "INTEGER"),
+                     ("label", "TEXT")):
         if cols and col not in cols:
             db.execute(f"ALTER TABLE shadow_calls ADD COLUMN {col} {typ}")
     tcols = {r["name"] for r in db.fetchall("PRAGMA table_info(decision_tracking)")}
@@ -252,16 +253,85 @@ def vector(report: dict, ts: Optional[float] = None) -> dict:
     return {k: v.get(k) for k in ALL_FEATURES}
 
 
-def outcome(path: list, win_x: float = WIN_X, loss_x: float = LOSS_X) -> Optional[int]:
-    """1 if the path hit win_x before loss_x (same minute = loss), else 0. None if no path."""
+# ----------------------------------------------------------------------------- outcome labels
+# ONE definition, used by every learning path (brain training, shadow evaluation, rug-flag
+# statistics, the outcome audit):
+#   RUNNER      reached win_x (2x) before falling to loss_x (0.6x)
+#   RUG         fell to rug_x (0.3x) before reaching escape_x (1.3x)
+#   FLAT        decided, and neither: stopped out before 2x without a rug, or a complete
+#               history in which nothing decisive happened
+#   AMBIGUOUS   the decisive events happened but their order is unknown (both inside one candle,
+#               or only the high and the low are stored and they conflict) — never forced
+#   INCOMPLETE  nothing decisive yet and the history does not cover the window — no label
+# Binary training (runner vs not) uses RUNNER=1, RUG/FLAT=0 and drops AMBIGUOUS/INCOMPLETE.
+# Before this, a coin whose 24h high touched 2x counted as a runner even if it had first
+# dumped to 0.1x, a pump-and-rug could be learned as a winner, and a path that simply stopped
+# early (missing candles) was counted as a non-runner.
+RUNNER, RUG, FLAT, AMBIGUOUS, INCOMPLETE = "RUNNER", "RUG", "FLAT", "AMBIGUOUS", "INCOMPLETE"
+RUG_X = 0.3
+ESCAPE_X = 1.3
+PATH_COMPLETE_MINUTES = 120.0   # a path with no decisive event must reach this far to count as FLAT
+TRACK_MIN_SAMPLES = 30          # 24h tracking rows need this many price polls to count as complete
+
+
+def label_path(path: list, win_x: float = WIN_X, loss_x: float = LOSS_X, rug_x: float = RUG_X,
+               escape_x: float = ESCAPE_X, complete_minutes: float = PATH_COMPLETE_MINUTES) -> Optional[str]:
+    """Ordered label from a minute path [[minute, high_x, low_x, close_x], ...]. None if no path."""
     if not path:
         return None
+    escaped = stopped = False
     for _m, high, low, _c in path:
-        if low <= loss_x:
-            return 0
-        if high >= win_x:
-            return 1
-    return 0
+        if low <= rug_x and not escaped:
+            # the rug level and the escape level inside one candle: which came first is unknown
+            return AMBIGUOUS if high >= escape_x else RUG
+        if low <= loss_x and not stopped:
+            if high >= win_x:
+                return AMBIGUOUS          # 2x and the 0.6x stop inside one candle
+            stopped = True
+        if high >= win_x and not stopped:
+            return RUNNER
+        if high >= escape_x:
+            escaped = True
+    if stopped:
+        return FLAT                        # stopped out before 2x, and no rug before an escape
+    try:
+        covered = float(path[-1][0])
+    except (TypeError, ValueError, IndexError):
+        covered = 0.0
+    return FLAT if covered >= complete_minutes else INCOMPLETE
+
+
+def label_extremes(peak: Optional[float], trough: Optional[float], complete: bool,
+                   win_x: float = WIN_X, loss_x: float = LOSS_X, rug_x: float = RUG_X,
+                   escape_x: float = ESCAPE_X) -> Optional[str]:
+    """Label from the highest and lowest multiple only (no order). None if either is unknown.
+
+    `complete` = the whole tracking window was observed; without it, "nothing happened" is
+    INCOMPLETE rather than FLAT.
+    """
+    if peak is None or trough is None or peak <= 0 or trough < 0:
+        return None
+    if peak >= win_x and trough <= loss_x:
+        return AMBIGUOUS                   # 2x and the stop both happened; order unknown
+    if peak >= win_x:
+        return RUNNER                      # never touched the stop, so 2x came first
+    if trough <= rug_x:
+        # a rug needs the drop BEFORE any escape; with an escape on record the order is unknown
+        return RUG if peak < escape_x else AMBIGUOUS
+    if trough <= loss_x:
+        return FLAT                        # stopped out, never 2x, never a rug
+    return FLAT if complete else INCOMPLETE
+
+
+def binary(label: Optional[str]) -> Optional[int]:
+    """Runner target for training: 1, 0, or None (do not train on it)."""
+    return {RUNNER: 1, RUG: 0, FLAT: 0}.get(label) if label else None
+
+
+def outcome(path: list, win_x: float = WIN_X, loss_x: float = LOSS_X) -> Optional[int]:
+    """1 if the path hit win_x before loss_x, 0 if it did not, None when the order is ambiguous,
+    the history is incomplete, or there is no path. (See label_path.)"""
+    return binary(label_path(path, win_x, loss_x))
 
 
 # ----------------------------------------------------------------------------- model
@@ -423,7 +493,7 @@ def training_rows(db, days: float, now: float, win_x: float = WIN_X, loss_x: flo
             continue
         rows.append({"id": r["id"], "ts": r["ts"], "v": v, "y": y, "src": "path"})
         shadow_times.setdefault(r["mint"], []).append(r["ts"])
-    rows += _tracking_rows(db, days, now, win_x, shadow_times)
+    rows += _tracking_rows(db, days, now, win_x, shadow_times, loss_x)
     rows.sort(key=lambda r: r["ts"])
     return rows[-MAX_ROWS:]
 
@@ -462,21 +532,22 @@ def store_tracking_vectors(db, limit: int = 2000) -> int:
     return filled
 
 
-def _tracking_rows(db, days: float, now: float, win_x: float, shadow_times: dict) -> list[dict]:
+def _tracking_rows(db, days: float, now: float, win_x: float, shadow_times: dict,
+                   loss_x: float = LOSS_X) -> list[dict]:
     try:
         found = db.fetchall(
-            "SELECT d.snapshot_id, d.mint, d.decided_at, d.entry_price, d.max_price, d.done, d.brain_vector, "
-            "r.report FROM decision_tracking d LEFT JOIN research_snapshots r ON r.id = d.snapshot_id "
+            "SELECT d.snapshot_id, d.mint, d.decided_at, d.entry_price, d.max_price, d.min_price, d.samples, "
+            "d.done, d.brain_vector, r.report FROM decision_tracking d "
+            "LEFT JOIN research_snapshots r ON r.id = d.snapshot_id "
             "WHERE d.samples > 0 AND d.entry_price > 0 AND d.max_price IS NOT NULL AND d.decided_at > ? "
             "ORDER BY d.decided_at", (now - days * 86400,))
     except Exception:  # noqa: BLE001 - older databases without the table
         return []
     out = []
     for r in found:
-        peak = r["max_price"] / r["entry_price"]
-        followed_h = (now - r["decided_at"]) / 3600
-        if peak < win_x and not r["done"] and followed_h < TRACK_MIN_HOURS:
-            continue                          # too early to call it a non-runner
+        y = binary(tracking_label(r, win_x, loss_x))
+        if y is None:
+            continue                          # ambiguous order or not followed long enough: no label
         if any(abs(t - r["decided_at"]) < 1800 for t in shadow_times.get(r["mint"], ())):
             continue                          # the shadow path (with minute order) is the better example
         v = None
@@ -494,9 +565,19 @@ def _tracking_rows(db, days: float, now: float, win_x: float, shadow_times: dict
                 v = vector(rep, r["decided_at"])
         if not v:
             continue
-        out.append({"id": -int(r["snapshot_id"]), "ts": r["decided_at"], "v": v,
-                    "y": 1 if peak >= win_x else 0, "src": "tracking"})
+        out.append({"id": -int(r["snapshot_id"]), "ts": r["decided_at"], "v": v, "y": y, "src": "tracking"})
     return out
+
+
+def tracking_label(r: dict, win_x: float = WIN_X, loss_x: float = LOSS_X) -> Optional[str]:
+    """Label for one decision_tracking row (24h high/low, no order)."""
+    entry = r.get("entry_price")
+    if not entry or entry <= 0 or r.get("max_price") is None:
+        return None
+    lo = r.get("min_price")
+    complete = bool(r.get("done")) and (r.get("samples") or 0) >= TRACK_MIN_SAMPLES
+    return label_extremes(r["max_price"] / entry, (lo / entry) if lo is not None else None, complete,
+                          win_x, loss_x)
 
 
 def train(db, s, now: Optional[float] = None) -> Optional[Model]:

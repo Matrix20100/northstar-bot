@@ -40,7 +40,9 @@ def test_extremes_never_guess_the_order():
     assert OA.label_extremes(2.4, 0.5) == OA.MIXED
     assert OA.label_extremes(2.4, 0.8) == OA.RUNNER
     assert OA.label_extremes(1.1, 0.2) == OA.RUG
-    assert OA.label_extremes(1.6, 0.2) == OA.NEUTRAL
+    # escaped to 1.6x and fell to 0.2x: whether the rug came first is unknown -> MIXED, not FLAT
+    assert OA.label_extremes(1.6, 0.2) == OA.MIXED
+    assert OA.label_extremes(1.1, 0.9, complete=False) is None      # nothing happened yet: no label
     assert OA.label_extremes(None, 0.5) is None
 
 
@@ -58,7 +60,7 @@ def test_reason_families_group_numbers_together():
 # =============================================================================================
 RUN_PATH = [[1, 1.2, 0.95, 1.1], [20, 2.6, 1.0, 2.4]]
 RUG_PATH = [[1, 1.05, 0.2, 0.25]]
-FLAT_PATH = [[1, 1.1, 0.8, 1.0], [60, 1.15, 0.85, 0.9]]
+FLAT_PATH = [[1, 1.1, 0.8, 1.0], [60, 1.15, 0.85, 0.9], [180, 1.1, 0.8, 0.95]]   # whole window seen
 
 
 def _snapshot(db, mint, ts, action, report):

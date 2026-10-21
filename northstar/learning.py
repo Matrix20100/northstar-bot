@@ -93,7 +93,9 @@ CREATE TABLE IF NOT EXISTS flag_outcomes (
     n INTEGER NOT NULL,
     crash INTEGER NOT NULL,
     run2x INTEGER NOT NULL,
-    updated_at REAL NOT NULL
+    updated_at REAL NOT NULL,
+    rug INTEGER,
+    labelled INTEGER
 );
 CREATE TABLE IF NOT EXISTS learning_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,6 +156,11 @@ BY_KEY = {t.key: t for t in TUNABLES}
 def init_schema(db) -> None:
     with db._lock:
         db._conn.executescript(SCHEMA)
+        # columns added after release (v2.5.1): older databases gain them, existing rows keep NULL
+        have = {r[1] for r in db._conn.execute("PRAGMA table_info(flag_outcomes)")}
+        for col in ("rug", "labelled"):
+            if col not in have:
+                db._conn.execute(f"ALTER TABLE flag_outcomes ADD COLUMN {col} INTEGER")
     B.init_schema(db)
 
 
@@ -277,11 +284,21 @@ CRASH_X = 0.3          # "crashed" = fell below 30% of the price at the decision
 
 
 def flag_outcomes(db, now: Optional[float] = None, days: float = 30.0, min_hours: float = 6.0) -> dict:
-    """How often each rug-check red flag was followed by a crash (and by a 2x first), measured on
-    Northstar's own 24h decision tracking. Stored in flag_outcomes; '_all' is the baseline."""
+    """How often each rug-check red flag was followed by a crash, a rug and a 2x run, measured on
+    Northstar's own 24h decision tracking. Stored in flag_outcomes; '_all' is the baseline.
+
+      crash     fell below CRASH_X (0.3x) at any point in 24h. Unchanged on purpose: the rug check's
+                learned flag upgrades read this number, and live scoring is not changed here.
+      run2x     RUNNER under the shared label (brain.label_extremes): reached 2x WITHOUT touching
+                the 0.6x stop. Before v2.5.1 any coin whose 24h high reached 2x counted, including
+                ones that dumped first.
+      rug       RUG under the shared label (0.3x before 1.3x).
+      labelled  rows whose label could be decided (not AMBIGUOUS / INCOMPLETE): the denominator
+                for run2x and rug rates.
+    """
     now = now or time.time()
     try:
-        rows = db.fetchall("SELECT verdict_keys, entry_price, max_price, min_price FROM decision_tracking "
+        rows = db.fetchall("SELECT verdict_keys, entry_price, max_price, min_price, samples, done FROM decision_tracking "
                            "WHERE verdict_keys IS NOT NULL AND samples > 0 AND entry_price > 0 AND decided_at > ? "
                            "AND (done = 1 OR decided_at < ?)", (now - days * 86400, now - min_hours * 3600))
     except Exception:  # noqa: BLE001 - older databases
@@ -293,17 +310,24 @@ def flag_outcomes(db, now: Optional[float] = None, days: float = 30.0, min_hours
         except (TypeError, ValueError):
             continue
         crash = 1 if (r["min_price"] or r["entry_price"]) / r["entry_price"] < CRASH_X else 0
-        run = 1 if (r["max_price"] or 0) / r["entry_price"] >= 2 else 0
+        lab = B.tracking_label(r)
+        decided = 1 if lab in (B.RUNNER, B.RUG, B.FLAT) else 0
+        run = 1 if lab == B.RUNNER else 0
+        rug = 1 if lab == B.RUG else 0
         for k in list(keys) + ["_all"]:
-            s_ = stats.setdefault(k, [0, 0, 0])
+            s_ = stats.setdefault(k, [0, 0, 0, 0, 0])
             s_[0] += 1
             s_[1] += crash
             s_[2] += run
-    for k, (n, c, r2) in stats.items():
-        db.execute("INSERT INTO flag_outcomes(key, n, crash, run2x, updated_at) VALUES (?,?,?,?,?) "
+            s_[3] += rug
+            s_[4] += decided
+    for k, (n, c, r2, rg, lb) in stats.items():
+        db.execute("INSERT INTO flag_outcomes(key, n, crash, run2x, updated_at, rug, labelled) VALUES (?,?,?,?,?,?,?) "
                    "ON CONFLICT(key) DO UPDATE SET n=excluded.n, crash=excluded.crash, run2x=excluded.run2x, "
-                   "updated_at=excluded.updated_at", (k, n, c, r2, now))
-    return {k: {"n": n, "crash": c, "run2x": r2} for k, (n, c, r2) in stats.items()}
+                   "updated_at=excluded.updated_at, rug=excluded.rug, labelled=excluded.labelled",
+                   (k, n, c, r2, now, rg, lb))
+    return {k: {"n": n, "crash": c, "run2x": r2, "rug": rg, "labelled": lb}
+            for k, (n, c, r2, rg, lb) in stats.items()}
 
 
 def load_flag_stats(db) -> dict:
@@ -350,9 +374,10 @@ async def evaluate_due(db, cg, limit: int = 20, now: Optional[float] = None) -> 
                        (attempts, -1 if attempts >= 3 else 0, row["id"]))
             continue
         peak_i = max(range(len(path)), key=lambda i: path[i][1])
-        db.execute("UPDATE shadow_calls SET evaluated=1, path=?, peak_x=?, trough_x=?, minutes_to_peak=?, win=? "
-                   "WHERE id=?", (json.dumps(path), path[peak_i][1], min(p[2] for p in path), path[peak_i][0],
-                                  B.outcome(path), row["id"]))
+        lab = B.label_path(path)          # the shared label (brain.py); win is its binary form
+        db.execute("UPDATE shadow_calls SET evaluated=1, path=?, peak_x=?, trough_x=?, minutes_to_peak=?, win=?, "
+                   "label=? WHERE id=?", (json.dumps(path), path[peak_i][1], min(p[2] for p in path),
+                                          path[peak_i][0], B.binary(lab), lab, row["id"]))
         done += 1
     return done
 

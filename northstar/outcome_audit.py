@@ -12,63 +12,46 @@ Read-only. Answers, with counts:
   * what the CURRENT decision engine would have decided on the same stored reports
     (replay), so a change can be judged on coins it was not tuned on.
 
-Outcome labels
+Outcome labels — the bot's single definition, brain.label_path / brain.label_extremes
 --------------
-With a minute price path (shadow_calls, recorded for every post-migration decision):
-    RUNNER   reached RUN_X (2x) before falling to STOP_X (0.6x)       [same rule as the brain]
-    RUG      fell to RUG_X (0.3x) before ever reaching ESCAPE_X (1.3x)
-    NEUTRAL  everything else
-Without one (decision_tracking, alerts, early_calls store only the highest and lowest value):
-    RUNNER   peak >= 2x and trough > 0.6x       (no drawdown that could have come first)
-    RUG      trough <= 0.3x and peak < 1.3x     (never offered a profitable exit)
-    MIXED    peak >= 2x AND trough <= 0.6x      (order unknown: counted separately, never guessed)
-    NEUTRAL  everything else
+    RUNNER   reached 2x before falling to 0.6x
+    RUG      fell to 0.3x before reaching 1.3x
+    NEUTRAL  (brain.FLAT) decided, and neither
+    MIXED    (brain.AMBIGUOUS) the decisive events happened in an unknown order — never guessed
+Coins whose history is INCOMPLETE (nothing decisive and the window not covered) are left out.
+With only the high and low stored (decision_tracking, alerts, early_calls): peak >= 2x with
+trough > 0.6x is a runner; trough <= 0.3x with peak < 1.3x is a rug; a 2x AND a 0.6x, or a
+0.3x after a 1.3x was seen, is MIXED.
 A market-cap multiple is not a realised return; fees and slippage are not modelled here.
 """
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 import statistics
 import sys
 from typing import Any, Iterable, Optional
 
-RUN_X, STOP_X, RUG_X, ESCAPE_X = 2.0, 0.6, 0.3, 1.3
-RUNNER, RUG, NEUTRAL, MIXED = "RUNNER", "RUG", "NEUTRAL", "MIXED"
+from . import brain as B
+
+# One label definition for the whole bot (brain.label_path / brain.label_extremes).
+RUN_X, STOP_X, RUG_X, ESCAPE_X = B.WIN_X, B.LOSS_X, B.RUG_X, B.ESCAPE_X
+RUNNER, RUG, NEUTRAL, MIXED, INCOMPLETE = B.RUNNER, B.RUG, B.FLAT, B.AMBIGUOUS, B.INCOMPLETE
 REJECTED = ("REJECT", "INSUFFICIENT_DATA")
 MIN_GROUP = 8          # below this a rate is printed but flagged as too few to act on
 
 
 # ----------------------------------------------------------------------------- labels
 def label_path(path: list) -> Optional[str]:
-    """Ordered label from [[minute, high_x, low_x, close_x], ...]."""
-    if not path:
-        return None
-    escaped = stopped = False
-    for _m, high, low, _c in path:
-        # inside one candle the worst case comes first (same convention as brain.outcome)
-        if low <= RUG_X and not escaped:
-            return RUG
-        if low <= STOP_X:
-            stopped = True
-        if high >= RUN_X and not stopped:
-            return RUNNER
-        if high >= ESCAPE_X:
-            escaped = True
-    return NEUTRAL
+    """Ordered label (brain.label_path). INCOMPLETE paths are reported as None: no label."""
+    lab = B.label_path(path)
+    return None if lab == INCOMPLETE else lab
 
 
-def label_extremes(peak: Optional[float], trough: Optional[float]) -> Optional[str]:
-    if peak is None or trough is None or peak <= 0:
-        return None
-    if peak >= RUN_X and trough <= STOP_X:
-        return MIXED
-    if peak >= RUN_X:
-        return RUNNER
-    if trough <= RUG_X and peak < ESCAPE_X:
-        return RUG
-    return NEUTRAL
+def label_extremes(peak: Optional[float], trough: Optional[float], complete: bool = True) -> Optional[str]:
+    """High/low-only label (brain.label_extremes). INCOMPLETE is reported as None: no label."""
+    lab = B.label_extremes(peak, trough, complete)
+    return None if lab == INCOMPLETE else lab
 
 
 # ----------------------------------------------------------------------------- reasons
@@ -182,7 +165,8 @@ def load_observations(c) -> list[dict]:
     # 2. unordered extremes for decisions with no shadow path (incl. pre-migration snapshots)
     if _has(c, "decision_tracking"):
         q = ("SELECT d.mint, d.action, d.decided_at ts, d.max_price/d.entry_price peak, "
-             "d.min_price/d.entry_price trough, r.report FROM decision_tracking d "
+             "d.min_price/d.entry_price trough, d.entry_price, d.max_price, d.min_price, d.samples, d.done, "
+             "r.report FROM decision_tracking d "
              "JOIN research_snapshots r ON r.id=d.snapshot_id WHERE d.entry_price>0 AND d.samples>=3 "
              "ORDER BY d.decided_at")
         for r in c.execute(q):
@@ -190,8 +174,8 @@ def load_observations(c) -> list[dict]:
             kind = r["action"]
             if (r["mint"], kind) in seen or (r["mint"], "CALL") in seen:
                 continue
-            lab = label_extremes(r["peak"], r["trough"])
-            if lab is None:
+            lab = B.tracking_label(r)
+            if lab in (None, INCOMPLETE):
                 continue
             seen.add((r["mint"], kind))
             rep = _json(r.get("report"), {})
@@ -203,7 +187,7 @@ def load_observations(c) -> list[dict]:
     # 3. posted calls: alerts (standard / scalp / manual)
     if _has(c, "alerts"):
         ct = "call_type" if "call_type" in _cols(c, "alerts") else "'STANDARD' AS call_type"
-        for r in c.execute(f"SELECT mint, created_at ts, max_multiple, min_multiple, {ct}, snapshot_id "
+        for r in c.execute(f"SELECT mint, created_at ts, max_multiple, min_multiple, {ct}, snapshot_id, closed_at "
                            "FROM alerts WHERE status IN ('SENT','DRY_RUN') ORDER BY created_at"):
             r = dict(r)
             if (r["mint"], "CALL") in seen:
@@ -212,7 +196,7 @@ def load_observations(c) -> list[dict]:
                     if o["mint"] == r["mint"] and o["called"]:
                         o["call_type"] = r["call_type"] or o["call_type"]
                 continue
-            lab = label_extremes(r["max_multiple"], r["min_multiple"])
+            lab = label_extremes(r["max_multiple"], r["min_multiple"], complete=bool(r.get("closed_at")))
             if lab is None:
                 continue
             seen.add((r["mint"], "CALL"))
@@ -225,14 +209,16 @@ def load_observations(c) -> list[dict]:
 
     # 4. early narrative calls (bonding curve)
     if _has(c, "early_calls"):
-        for r in c.execute("SELECT mint, created_at ts, entry_mcap, peak_mcap, low_mcap, report FROM early_calls "
+        for r in c.execute("SELECT mint, created_at ts, entry_mcap, peak_mcap, low_mcap, report, closed_at FROM early_calls "
                            "WHERE status IN ('SENT','DRY_RUN','CLOSED','MIGRATED','OPEN') ORDER BY created_at"):
             r = dict(r)
             if not r["entry_mcap"]:
                 continue
             peak = (r["peak_mcap"] or r["entry_mcap"]) / r["entry_mcap"]
             trough = (r["low_mcap"] or r["entry_mcap"]) / r["entry_mcap"]
-            lab = label_extremes(peak, trough)
+            lab = label_extremes(peak, trough, complete=bool(r.get("closed_at")))
+            if lab is None:
+                continue
             obs.append({"mint": r["mint"], "ts": r["ts"], "source": "early_calls (no order)", "stage": "CURVE",
                         "action": "AUTO_POST", "called": True, "call_type": "EARLY_NARRATIVE", "label": lab,
                         "ordered": False, "peak": peak, "trough": trough, "features": {},
@@ -245,7 +231,7 @@ def _rates(rows: list[dict]) -> dict:
     n = len(rows)
     cnt = {k: sum(1 for r in rows if r["label"] == k) for k in (RUNNER, RUG, MIXED, NEUTRAL)}
     peaks = [r["peak"] for r in rows if isinstance(r.get("peak"), (int, float))]
-    return {"n": n, **{k.lower(): v for k, v in cnt.items()},
+    return {"n": n, "runner": cnt[RUNNER], "rug": cnt[RUG], "mixed": cnt[MIXED], "neutral": cnt[NEUTRAL],
             "runner_pct": round(cnt[RUNNER] / n * 100, 1) if n else None,
             "rug_pct": round(cnt[RUG] / n * 100, 1) if n else None,
             "mixed_pct": round(cnt[MIXED] / n * 100, 1) if n else None,

@@ -61,8 +61,11 @@ def test_vector_has_every_feature_and_reads_reports():
 def test_runner_label_needs_2x_before_the_drop():
     assert B.outcome(runner_path()) == 1
     assert B.outcome(dud_path()) == 0
-    assert B.outcome([[0, 2.1, 0.5, 1.0]]) == 0                 # both in the same minute: counted as a loss
-    assert B.outcome([[0, 1.9, 0.9, 1.0]]) == 0                 # never got there
+    # v2.5.1: both in the same minute is an UNKNOWN order (was counted as a loss) — not trained on
+    assert B.outcome([[0, 2.1, 0.5, 1.0]]) is None
+    # v2.5.1: one minute of history proves nothing (was counted as "never got there")
+    assert B.outcome([[0, 1.9, 0.9, 1.0]]) is None
+    assert B.outcome([[0, 1.9, 0.9, 1.0], [130, 1.5, 0.9, 1.2]]) == 0   # whole window seen, never 2x
     assert B.outcome([]) is None
 
 
@@ -104,11 +107,13 @@ def test_decision_tracking_is_a_second_source(db):
     L.init_schema(db)
     now = time.time()
 
-    def snap(i, mint, ts, peak, done=1):
+    def snap(i, mint, ts, peak, done=1, samples=40):
+        # v2.5.1: "finished, never ran" needs a complete window (done AND enough price polls)
         db.execute("INSERT INTO research_snapshots(id, mint, ts, action, report) VALUES (?,?,?,?,?)",
                    (i, mint, ts, "REJECT", json.dumps(report())))
         db.execute("INSERT INTO decision_tracking(snapshot_id, mint, action, decided_at, entry_price, max_price, "
-                   "min_price, samples, done) VALUES (?,?,?,?,?,?,?,?,?)", (i, mint, "REJECT", ts, 1.0, peak, 0.8, 10, done))
+                   "min_price, samples, done) VALUES (?,?,?,?,?,?,?,?,?)",
+                   (i, mint, "REJECT", ts, 1.0, peak, 0.8, samples, done))
     snap(1, addr("a"), now - 30 * 3600, 3.0)                    # runner
     snap(2, addr("b"), now - 30 * 3600, 1.2)                    # finished, never ran
     snap(3, addr("c"), now - 2 * 3600, 1.1, done=0)             # too early to judge: skipped
@@ -234,7 +239,12 @@ def test_flag_outcomes_are_learned_from_tracking(db):
                    (100 + i, addr(f"w{i}"), "REJECT", now - 30 * 3600, 2.1 if i < 3 else 1.1, 0.05 if i < 10 else 0.9))
     B.store_tracking_vectors(db)
     stats = L.flag_outcomes(db, now)
-    assert stats["whale_holder"] == {"n": 12, "crash": 10, "run2x": 3} and stats["_all"]["n"] == 12
+    # crash (24h low < 0.3x) is unchanged; run2x now uses the shared label: the three coins that
+    # touched 2.1x AND fell to 0.05x have an unknown order, so they are not counted as runs (v2.4
+    # counted them). Seven fell to 0.05x without ever reaching 1.3x: rugs. The two with only 20
+    # polls and nothing decisive are incomplete, so 7 of 12 rows are labelled.
+    assert stats["whale_holder"] == {"n": 12, "crash": 10, "run2x": 0, "rug": 7, "labelled": 7}
+    assert stats["_all"]["n"] == 12
     assert L.load_flag_stats(db)["whale_holder"]["crash"] == 10
 
 

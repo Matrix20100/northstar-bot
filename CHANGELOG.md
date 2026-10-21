@@ -27,6 +27,15 @@ error types on the bot's own history. Everything in 2.5.0 is included.
   "buy flow 0.00 SOL"), and a missing market-cap history makes the trend unmeasured. A coin whose
   only problems are unmeasured inputs is INSUFFICIENT DATA and re-checked, not REJECTED.
 
+- **One outcome label for every learning path** (`brain.label_path` / `brain.label_extremes`):
+  runner = 2x before 0.6x, rug = 0.3x before 1.3x. Events whose order is unknown (both inside one
+  candle, or a 24h high and low that conflict) are AMBIGUOUS, and histories that stop early are
+  INCOMPLETE; neither is trained on. The brain's 24h-tracking rows no longer count any coin whose
+  high touched 2x as a winner, shadow evaluation stores the label, the red-flag statistics count
+  runs and rugs by it (the `crash` figure the rug check reads is unchanged), and the outcome audit
+  uses the same functions. Old databases gain `shadow_calls.label` and `flag_outcomes.rug/labelled`
+  in place; existing rows are kept.
+
 ## 2.5.0 — 2026-10-19 — scoring and decision audit
 
 Why almost everything was rejected or INSUFFICIENT DATA, and why one report could show two
