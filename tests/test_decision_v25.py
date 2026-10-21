@@ -632,7 +632,10 @@ async def test_rugcheck_lp_danger_stands_without_an_onchain_read(settings, db):
     p.rugcheck = FakeRugCheck(_rc_lp_unlocked())
     out = await research(settings, db, p, DOPE)
     assert out.action == Action.REJECT
-    assert any("rugcheck_danger" in r or "lp_lock" in r for r in out.reasons)
+    # v2.5.3: with shadow testing on, this coin is analysed to the end (shadow_test.continue_research)
+    # and rejected by the unified engine's hard veto ("rugcheck danger: ..."), not the early gate exit
+    assert out.report["final"]["reason_class"] == "SAFETY_FAIL"
+    assert any(k in r for r in out.reasons for k in ("rugcheck_danger", "rugcheck danger", "lp_lock", "lp lock"))
 
 
 async def test_other_rugcheck_dangers_still_fail_the_gate(settings, db):

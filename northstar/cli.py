@@ -220,6 +220,10 @@ def main(argv: list[str] | None = None) -> int:
     fn = sub.add_parser("funnel", help="how many coins reached each stage, and why they stopped")
     fn.add_argument("--hours", type=float, default=24.0)
     fn.add_argument("--json", action="store_true")
+    sh = sub.add_parser("shadow", help="live decisions vs the proposed scoring policy, with outcomes")
+    sh.add_argument("--days", type=float, default=7.0)
+    sh.add_argument("--policy", default=None)
+    sh.add_argument("--json", action="store_true")
     dash = sub.add_parser("dashboard", help="run the read-only web dashboard")
     dash.add_argument("--port", type=int, default=None)
     args = ap.parse_args(argv)
@@ -260,6 +264,16 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 db.close()
             print(json.dumps(sm, indent=2, default=str) if args.json else T.format_summary(sm))
+            return 0
+        if args.cmd == "shadow":
+            from . import shadow_test as SH
+            db = _db(s)
+            try:
+                SH.evaluate_due(db)
+                sm = SH.summary(db, args.days, policy=args.policy)
+            finally:
+                db.close()
+            print(json.dumps(sm, indent=2, default=str) if args.json else SH.format_summary(sm))
             return 0
         if args.cmd == "test-discord":
             return asyncio.run(_test_discord(s))

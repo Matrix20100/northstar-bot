@@ -489,15 +489,22 @@ class Researcher:
         }
 
         if any(g.status == GateStatus.FAIL for g in gates):
-            return self._finish(
-                mint,
-                pair,
-                dh,
-                report,
-                gates,
-                flags,
-                partial=True,
-            )
+            from . import shadow_test as SH
+
+            if SH.continue_research([g.to_dict() for g in gates], report, s):
+                # shadow testing only: the analysis is finished so the proposed policy can be
+                # compared; the failed gates stay hard vetoes, so the live decision is REJECT
+                report["shadow_deep_research"] = True
+            else:
+                return self._finish(
+                    mint,
+                    pair,
+                    dh,
+                    report,
+                    gates,
+                    flags,
+                    partial=True,
+                )
 
         # 7. Holders.
         creator, creator_src = None, ""

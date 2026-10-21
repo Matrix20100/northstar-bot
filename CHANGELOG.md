@@ -3,6 +3,36 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.5.3 — 2026-10-21 — shadow testing
+
+Record-only comparison of the live decisions with a proposed scoring policy. **No live decision,
+callout, threshold or stored snapshot changes.** Report: `python main.py shadow [--days 7] [--json]`.
+
+- **`northstar/shadow_test.py`, table `shadow_tests`** (added automatically). For every coin the
+  engine decides, one row holds the live decision and the proposed one for the same report, both
+  score breakdowns (points per category, suspicion penalty, brain tilt, completeness), the reason
+  class and reasons of each, and which proposal rules changed something.
+- **Same scoring code.** The proposal re-derives the decision with the unified engine from the live
+  result's own evidence, brain tilt and AI read. With no rules it reproduces the live decision
+  exactly (tested). Proven traps (authorities, transfer hooks, liquidity removal, no exit) are never
+  relaxed.
+- **Proposal p1** (from the 21 Oct history audit; `NORTHSTAR_SHADOW_TEST_RULES`):
+  `lp_unverified_warn`: on PumpSwap, an unlocked LP reported by RugCheck but not read on-chain
+  caps at WATCH instead of a hard veto. `holder_gate_warn`: holder concentration over the bar
+  caps at WATCH instead of rejecting. Extra unified-engine settings can be tried with
+  `NORTHSTAR_SHADOW_TEST_OVERRIDES` (JSON, `u_*` only); each proposal is stored under its own name.
+- **Outcomes without future data**, from data Northstar already records (no extra API calls): the
+  learning shadow's minute path recorded in the same pass, else the 24h tracking of the same
+  snapshot. Rows are labelled only after the whole window; INCOMPLETE stays unlabelled.
+- **No duplicates**: one row per snapshot and policy; a coin re-researched within 30 minutes
+  with the same live and proposed decisions is not recorded again. The report counts each
+  coin once per decision pair.
+- **Coins rejected ONLY for the unverified PumpSwap LP are now analysed to the end**
+  (`NORTHSTAR_SHADOW_TEST_DEEP_RESEARCH`, default on), so the LP proposal can be compared.
+  Their live decision is still REJECT: the unified engine's hard veto, class SAFETY_FAIL. Their
+  reasons read "hard veto: rugcheck danger: ..." instead of "gate failed: rugcheck_danger ...".
+  Each of these coins now costs the normal holder and trade lookups.
+
 ## 2.5.2 — 2026-10-21 — decisions from the live history
 
 Measured on the live database (17–21 Oct, v2.4.1 running): see the project doc

@@ -241,6 +241,15 @@ class Settings(BaseSettings):
     brain_min_probability: float = 0.0      # learned: calls need at least these odds (0 = no veto yet)
     brain_promote_probability: float = 1.01 # learned: odds that can lift a coin held back only by the
                                             # hand-written score/narrative/confidence bars (>1 = off)
+    # Shadow testing (shadow_test.py): record what a PROPOSED decision policy would have done next
+    # to every live decision, with outcomes, for `python main.py shadow`. Record-only: it never
+    # changes a live decision, a callout or a setting.
+    shadow_test_enabled: bool = True
+    shadow_test_rules: str = "lp_unverified_warn,holder_gate_warn"
+    shadow_test_overrides: str = ""         # JSON of unified-engine (u_*) settings to try, e.g. {"u_watch_min": 45}
+    shadow_test_dedupe_minutes: float = 30.0
+    shadow_test_deep_research: bool = True  # finish analysing coins whose only failed gates the LP rule
+                                            # would soften (their live decision stays REJECT)
     radar_learning: bool = True             # record near-surges so the radar thresholds can be learned
     # RUG SCALP calls (scalp.py): momentum coins that FAIL rug checks but can still be traded.
     # Posted with a loud RUG banner and this much tighter plan. Coins that can trap you

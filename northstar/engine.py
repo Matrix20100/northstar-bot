@@ -368,6 +368,17 @@ class Engine:
         n = await self.learning.evaluate_due(self.db, self.p.coingecko, limit=20)
         if n:
             log.info("learning: evaluated %d coins against their real price path", n)
+        if getattr(self.s, "shadow_test_enabled", True):
+            try:
+                from . import shadow_test as SH
+                k = await asyncio.to_thread(SH.evaluate_due, self.db, now)
+                if k:
+                    log.info("shadow test: attached outcomes to %d recorded decisions", k)
+                if now - getattr(self, "_shadow_pruned", 0) > 6 * 3600:
+                    self._shadow_pruned = now
+                    await asyncio.to_thread(SH.prune, self.db, now)
+            except Exception:  # noqa: BLE001 - housekeeping must never break the bot
+                log.debug("shadow test evaluation failed", exc_info=True)
         if self.s.radar_learning:
             r = await self.learning.evaluate_radar_due(self.db, self.p.coingecko, limit=10)
             if r:
@@ -422,6 +433,18 @@ class Engine:
                                  brain_p=brain_p)
         except Exception:  # noqa: BLE001 - learning must never break research
             log.warning("could not record shadow for %s", mint, exc_info=True)
+
+    def _record_shadow_test(self, out, since: float) -> None:
+        """Live vs proposed decision for this coin (shadow_test.py). Record-only, never raises."""
+        if not getattr(self.s, "shadow_test_enabled", True):
+            return
+        try:
+            from . import shadow_test as SH
+            row = self.db.fetchone("SELECT id FROM shadow_calls WHERE mint=? AND ts>=? ORDER BY id DESC LIMIT 1",
+                                   (out.mint, since)) if self.s.learning_enabled else None
+            SH.record(self.db, out, self.s, shadow_call_id=row["id"] if row else None)
+        except Exception:  # noqa: BLE001 - shadow testing must never break research
+            log.debug("shadow test failed for %s", out.mint, exc_info=True)
 
     POLICY_PREFIXES = ("alert cooldown", "daily alert cap", "market cap")
     SOFT_BLOCKERS = ("score ", "confidence ", "narrative score ", "only ")
@@ -695,7 +718,9 @@ class Engine:
         if out.action == Action.REJECT and out.pair is not None:
             from .scalp import check as scalp_check
             verdict = scalp_check(out.report, out.pair, self.s, out.report.get("surge"))
+        t_shadow = time.time()
         self._record_shadow(mint, out, verdict, out.report.get("surge"), brain_p)
+        self._record_shadow_test(out, t_shadow)
         if verdict:
             # Rug with strong momentum: posted ONLY as a clearly labelled scalp with a tight plan.
             out.report["call_type"] = "RUG_SCALP"
