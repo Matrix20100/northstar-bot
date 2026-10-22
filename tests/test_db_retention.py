@@ -237,7 +237,7 @@ def test_retention_settings_defaults_bounds_and_example_file():
     assert (d.curve_retention_hours, d.snapshot_compact_hours, d.tracking_poll_limit) == (6.0, 24.0, 600)
     odd = Settings(_env_file=None, curve_retention_hours=-1, snapshot_compact_hours=-5, tracking_poll_limit=-3)
     assert (odd.curve_retention_hours, odd.snapshot_compact_hours, odd.tracking_poll_limit) == (0.0, 0.0, 600)
-    assert Settings(_env_file=None, tracking_poll_limit=10 ** 6).tracking_poll_limit == 3000
+    assert Settings(_env_file=None, tracking_poll_limit=10 ** 6).tracking_poll_limit == 1200
     with pytest.raises(ValidationError):
         Settings(_env_file=None, curve_retention_hours="six")
     from pathlib import Path
@@ -295,3 +295,95 @@ def test_every_open_row_is_polled_and_new_rows_are_not_starved(db):
     assert len(db.active_tracking(600)) == 8
     asyncio.run(tr.run_once(now + 20))
     assert Dex.calls == 4
+
+
+# ------------------------------------------------------------------ final review: called coins, coverage, resume
+def _track_action(db, sid, decided_at, action):
+    _track(db, sid, decided_at)
+    db.execute("UPDATE decision_tracking SET action=? WHERE snapshot_id=?", (action, sid))
+
+
+def test_a_new_callout_is_checked_on_the_very_next_pass_and_every_pass(db):
+    now = time.time()
+    for sid in range(1, 21):                                  # a backlog of never-checked rejections
+        _track(db, sid, now - 3600 + sid)
+    _track_action(db, 99, now, "AUTO_POST")                    # the newest row: a callout
+
+    class Dex:
+        async def tokens_batch(self, mints):
+            return [make_pair(base_mint=m, price_usd=1.2) for m in mints]
+
+    tr = OutcomeTracker(db, Dex())
+    tr.poll_limit = 5
+    for k in range(4):
+        assert db.active_tracking(5)[0]["snapshot_id"] == 99
+        asyncio.run(tr.run_once(now + k))
+    rows = {r["snapshot_id"]: r["samples"] for r in db.fetchall("SELECT snapshot_id, samples FROM decision_tracking")}
+    assert rows[99] == 4
+    assert sum(1 for sid in range(1, 21) if rows[sid] == 1) == 16, "the backlog still advances 4 rows a pass"
+    for k in range(4, 8):
+        asyncio.run(tr.run_once(now + k))
+    rows = {r["snapshot_id"]: r["samples"] for r in db.fetchall("SELECT snapshot_id, samples FROM decision_tracking")}
+    assert min(rows[sid] for sid in range(1, 21)) >= 1, "every older open decision is reached"
+
+
+def test_coverage_numbers_and_warning(db):
+    import logging
+    from northstar.performance import MAX_POLL_LIMIT, checks_per_day
+    # the 21 Oct backup had 2,100-3,300 open rows: with 600 a pass every 2 min, 120-180 checks a day
+    assert checks_per_day(3300, 600, 120) == 120.0 and checks_per_day(2100, 600, 120) == 180.0
+    assert checks_per_day(2648, 600, 120) == 144.0
+    assert checks_per_day(0, 600, 120) == float("inf") and MAX_POLL_LIMIT == 1200
+    now = time.time()
+    for sid in range(1, 40):
+        _track(db, sid, now - 60)
+    tr = OutcomeTracker(db, None)
+    tr.poll_interval = 3600.0                                  # absurdly slow: must warn
+    seen = []
+
+    class H(logging.Handler):
+        def emit(self, record):
+            seen.append(record.getMessage())
+
+    lg, h = logging.getLogger("northstar.performance"), H(level=logging.WARNING)
+    lg.addHandler(h)
+    try:
+        tr._check_coverage(1, now)
+        tr._check_coverage(1, now + 10)                        # at most once an hour
+    finally:
+        lg.removeHandler(h)
+    assert sum("NORTHSTAR_TRACKING_POLL_LIMIT" in m for m in seen) == 1
+
+
+def test_cleanup_while_new_events_arrive_keeps_every_count(db):
+    """The bot keeps inserting while the one-time merge runs; nothing is double-counted or lost."""
+    m, t = addr("live"), time.time() - 600
+    for i in range(6):
+        _raw(db, m, "dexscreener_boost", t + i, {"amount": 5})
+    db.upsert_discovery(m, "dexscreener_boost", 1.0, payload={"amount": 5})   # arrives before the merge
+    RT.collapse_discovery_duplicates(db, max_rows=2)
+    db.upsert_discovery(m, "dexscreener_boost", 1.0, payload={"amount": 5})   # arrives after the merge
+    rows = _events(db, m)
+    assert len(rows) == 1 and rows[0]["seen"] == 8
+    assert RT.collapse_discovery_duplicates(db, force=True) == 0 and _events(db, m)[0]["seen"] == 8
+
+
+def test_db_command_is_a_dry_run_by_default(tmp_path, monkeypatch, capsys):
+    from northstar import cli
+    from northstar.config import get_settings
+    from northstar.db import Database
+    monkeypatch.setenv("NORTHSTAR_DATA_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    d = Database(tmp_path / "northstar.db")
+    d.open()
+    for i in range(3):
+        d.execute("INSERT INTO discovery_events(mint, source, ts, payload) VALUES ('m', 's', ?, '{}')", (i,))
+    d.close()
+    assert cli.main(["db", "--vacuum"]) == 0
+    out = capsys.readouterr().out
+    assert "DRY RUN" in out and "--vacuum ignored" in out
+    d = Database(tmp_path / "northstar.db")
+    d.open()
+    assert d.fetchone("SELECT COUNT(*) n FROM discovery_events")["n"] == 3, "dry run changed nothing"
+    d.close()
+    get_settings.cache_clear()

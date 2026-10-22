@@ -287,8 +287,11 @@ def main(argv: list[str] | None = None) -> int:
                 if args.apply:
                     print("retention pass:", json.dumps(RT.maintain(db, s), default=str))
                 else:
-                    print("dry run — would remove:", json.dumps(RT.estimate(db, s), default=str))
-                    print("run with --apply to do it (and --vacuum, with the bot stopped, to shrink the file)")
+                    print("DRY RUN (nothing changed) — would remove:", json.dumps(RT.estimate(db, s), default=str))
+                    if args.vacuum:
+                        print("--vacuum ignored: it only runs together with --apply")
+                    print("python main.py db --apply            runs the retention pass now")
+                    print("python main.py db --apply --vacuum   also shrinks the file (stop the bot first)")
             finally:
                 db.close()
             if args.apply and args.vacuum:

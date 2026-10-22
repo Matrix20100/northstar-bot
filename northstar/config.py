@@ -347,9 +347,10 @@ class Settings(BaseSettings):
     @classmethod
     def _poll_limit(cls, v: int) -> int:
         # SQLite treats a negative LIMIT as "no limit": one pass would then price-check every open
-        # row at once. 0/negative -> the default; capped so one pass stays within ~100 requests.
+        # row at once. 0/negative -> the default; capped at 1200 (40 DexScreener requests a pass,
+        # shared with research on the 200 rpm pairs limiter).
         v = int(v)
-        return 600 if v <= 0 else min(v, 3000)
+        return 600 if v <= 0 else min(v, 1200)
 
     @field_validator("max_allowed_risk")
     @classmethod

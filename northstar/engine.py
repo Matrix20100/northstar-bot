@@ -167,6 +167,7 @@ class Engine:
         self.outcomes = OutcomeTracker(db, providers.dex) if providers.dex else None
         if self.outcomes:
             self.outcomes.poll_limit = int(getattr(s, "tracking_poll_limit", 600) or 600)
+            self.outcomes.poll_interval = float(getattr(s, "outcome_interval_seconds", 120) or 120)
         from .radar import SurgeRadar
         self.radar = (SurgeRadar(s, db, providers.dex, getattr(providers, "coingecko", None))
                       if (s.radar_enabled and providers.dex) else None)

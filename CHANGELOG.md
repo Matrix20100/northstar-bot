@@ -27,8 +27,12 @@ Measured on a copy of the 21 Oct 17:22 database (394 MB). The production databas
   mid-way loses nothing and nothing is counted twice. Compacted reports keep every market key,
   only without provider metadata, so the brain's feature vectors are unchanged.
   `--vacuum` refuses while the bot holds its lock or when free disk is too small. Negative
-  retention hours mean off, and the poll limit is clamped to 1–3000; SQLite would have read a
+  retention hours mean off, and the poll limit is clamped to 1–1200 (40 DexScreener requests a pass); SQLite would have read a
   negative LIMIT as "every row".
+- Final review: called-out coins are price-checked on every pass, then decisions never checked,
+  then the least recently checked. The log warns hourly if open decisions are too many for 60
+  checks a day. The poll limit is capped at 1,200. `python main.py db` says DRY RUN and ignores
+  `--vacuum` without `--apply`. Commands and the Wispbyte shrink procedure are in `docs/DATABASE.md`.
 - `python main.py db` shows space per table and what the retention pass would remove.
   `--apply` runs the pass; `--vacuum` also shrinks the file and needs the bot stopped.
 - On the copy: 394 MB → 179 MB after the retention pass and VACUUM. Alerts, price history,

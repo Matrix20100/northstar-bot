@@ -1502,19 +1502,27 @@ class Database:
             (now or time.time(), limit),
         )
 
+    def open_tracking_count(self) -> int:
+        return self.fetchone("SELECT COUNT(*) n FROM decision_tracking WHERE done = 0")["n"]
+
     def active_tracking(self, limit: int = 600) -> list[dict]:
         """Open tracking rows, least recently polled first.
 
         v2.5.3 and earlier took the 600 OLDEST rows every time. With more than 600 open rows
         (live DB 21 Oct: ~2,600) the newest decisions were never polled until they became the
         oldest, so a coin's first ~12 hours — when most runs and rugs happen — went unobserved.
+        Order now: called-out coins every pass (at most the daily alert cap of rows), then rows
+        never checked yet, then everything else least recently checked first, so every open row
+        is reached within ceil(open / limit) passes.
         """
         return self.fetchall(
             """
             SELECT *
             FROM decision_tracking
             WHERE done = 0
-            ORDER BY COALESCE(last_polled_at, 0), decided_at
+            ORDER BY CASE WHEN action = 'AUTO_POST' THEN 0
+                          WHEN last_polled_at IS NULL THEN 1 ELSE 2 END,
+                     COALESCE(last_polled_at, 0), decided_at
             LIMIT ?
             """,
             (limit,),
