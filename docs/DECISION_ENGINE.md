@@ -192,6 +192,8 @@ own tracked history, one row per mint, report-as-stored. On the 19 Oct 2026 data
 | `NORTHSTAR_U_W_SAFETY` … `NORTHSTAR_U_W_NARRATIVE` | 18/20/16/10/20/16 | category weights, must sum to 100 |
 | `NORTHSTAR_U_STRONG_MIN` | 68 | score needed for STRONG OPPORTUNITY |
 | `NORTHSTAR_U_WATCH_MIN` | 48 | below this it is not worth watching |
+| `NORTHSTAR_RUG_REJECT_MIN` / `_CALL_MAX` / `_OVERRIDE_MAX` | 0.6 / 0.5 / 0.3 | v2.6.0 trusted rug model: reject at these learned rug odds / most a call may have / at or below this, top-10, creator-holdings and cluster thresholds stop blocking |
+| `NORTHSTAR_U_RUG_WEIGHT` | 0.6 | v2.6.0 share of the score that is learned safety, 100 × (1 − rug odds) |
 | `NORTHSTAR_U_REJECT_DOUBLE_WARNING` | true | two or more serious warnings reject the coin instead of watching it as CAUTION (v2.5.8) |
 | `NORTHSTAR_LAUNCH_MAX_BUNDLE_PCT` / `..._EARLY_BUY_PCT` / `..._OPENING_PCT` | 10 / 25 / 35 | v2.5.9 `launch_buys` gate: % of supply bought by other wallets in the creation block / first 10 s / dev + early (risk threshold: FAIL rejects) |
 | `NORTHSTAR_MAX_SNIPER_HELD_PCT` | 15 | v2.5.9 `sniper_holdings` gate: % the launch snipers still hold |

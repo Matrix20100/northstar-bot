@@ -584,6 +584,9 @@ def tune(db, s, days: float = 14, min_samples: int = 20, now: Optional[float] = 
     except Exception:  # noqa: BLE001 - flag statistics are optional
         log.warning("flag outcome statistics failed", exc_info=True)
     model = B.train(db, s, now) if getattr(s, "brain_enabled", True) else None
+    if getattr(s, "rug_model_enabled", True):
+        from . import rugmodel as RM
+        RM.train(db, s, now)
     trusted = bool(model and model.trusted)
     rows = _rows(db, days, now, trusted)
     radar_rows = _radar_rows(db, days, now)

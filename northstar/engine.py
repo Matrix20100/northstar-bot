@@ -186,6 +186,11 @@ class Engine:
         self._brain_trusted = bool(self.brain and self.brain.trusted)
         if self.brain is not None:
             log.info("brain: %s", brain.describe(self.brain))
+        from . import rugmodel
+        self.rug_mod = rugmodel
+        self.rug = rugmodel.latest(db) if getattr(s, "rug_model_enabled", True) else None
+        if self.rug is not None:
+            log.info("%s", rugmodel.describe(self.rug))
         # values from .env/defaults, kept so /learning_reset can restore them
         self._tunable_defaults = {t.key: getattr(s, t.key) for t in learning.TUNABLES}
         self._learned_seen: dict = {}
@@ -406,6 +411,8 @@ class Engine:
         if self.s.brain_enabled:
             self.brain = self.brain_mod.latest(self.db)
             self._brain_trusted = bool(self.brain and self.brain.trusted)
+        if getattr(self.s, "rug_model_enabled", True):
+            self.rug = self.rug_mod.latest(self.db)
         trust_changed = self._brain_trusted != was_trusted
         if changes or trust_changed:
             log.info("learning: %s%s", "; ".join(self.learning.fmt_change(c) for c in changes),
@@ -723,6 +730,10 @@ class Engine:
             self._heat.add(out.report, now)
         except Exception:  # noqa: BLE001 - context is optional evidence
             log.debug("context failed for %s", mint, exc_info=True)
+        if getattr(self, "rug", None) is not None:
+            rm = self.rug_mod.score(self.rug, out.report)
+            if rm:
+                out.report["rug_model"] = rm
         self._refresh_unified(out)
         brain_p = self._apply_brain(out)
         await self._apply_ai_narrative(out)

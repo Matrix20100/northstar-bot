@@ -3,6 +3,59 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.6.0 — 2026-10-22 — a learned rug model drives the score; Pulse view
+
+Operator request: rework the 0-100 score so it rates coins correctly, let research really spot a
+rug, stop high top-10 alone from killing a coin like Blacktober, and make discovery work like
+Axiom Pulse.
+
+**What the 22 Oct database showed** (478 coins with at least 2 h of minute price paths):
+- The old score did not separate outcomes. Coins scoring 65+ were bad (rug or pump-then-rug) 43%
+  of the time. Called coins were bad 58% of the time; rejected coins 39%.
+- 136 coins were rejected only for top-10 concentration. They were bad 41% of the time, the same
+  as coins that passed every check.
+- Whether a coin RUGS is predictable. A logistic model on the research numbers, validated
+  walk-forward, scored AUC 0.92 overall (0.89 on the most recent coins, 0.83 on fully tracked
+  coins). Whether a coin RUNS was not predictable (AUC 0.49).
+
+**Changes:**
+- **Rug model (`rugmodel.py`, table `rug_models`).**
+  - Learns the odds that a coin falls to 0.3x of its research price. It trains from the same
+    tracked examples as the brain, every learning pass, in about 8 s.
+  - Used only when TRUSTED: 300+ examples, 30+ rugs, and walk-forward AUC of at least 0.75 both
+    overall and on recent coins. On the 22 Oct copy it trains TRUSTED: 5,000 coins, AUC 0.92,
+    recent 0.89.
+- **Reworked score.**
+  - With a trusted model, 60% of the 0-100 score is learned safety, 100 × (1 − rug odds); 40% is
+    the old opportunity score (`NORTHSTAR_U_RUG_WEIGHT`).
+  - Posts and the dashboard show "learned rug odds" and the opportunity score separately.
+  - The risk class follows the measured odds instead of the rule-of-thumb verdict.
+- **Decisions.**
+  - Rug odds of 60%+ reject the coin (`NORTHSTAR_RUG_REJECT_MIN`).
+  - A call needs rug odds of 50% or less (`NORTHSTAR_RUG_CALL_MAX`).
+  - At 30% or less (`NORTHSTAR_RUG_OVERRIDE_MAX`), the top-10, creator-holdings and
+    linked-cluster thresholds stop blocking. They are still shown as concerns.
+  - Proven traps, liquidity, and the launch / sniper / tiny-insider-trade filters are never
+    overruled.
+- **Out-of-fold results by rug odds** on 367 fully tracked coins:
+
+  | Rug odds | Bad | Clean 2x | Any 2x |
+  |---|---|---|---|
+  | under 0.2 | 9% | 11% | 13% |
+  | 0.2 - 0.4 | 26% | 10% | 17% |
+  | 0.4 - 0.6 | 33% | 15% | 26% |
+  | 0.6 and over | 54% | 8% | 30% |
+
+  Low odds cut rugs; they do not find runners.
+- **Pulse tab (dashboard).**
+  - Every coin researched in the last 3 hours, in Axiom-style columns: New pairs (on the curve),
+    Final stretch (close to migrating), Migrated, and **Passed all filters**.
+  - Each card shows market cap, liquidity, age, score, rug odds, the filters it failed (red) or
+    only warned on (amber), "N/M filters passed", and tracked wallets holding.
+  - Dust (no liquidity / no trades) is counted, not shown.
+  - A funnel line shows where coins fail most.
+- Tests: `tests/test_rug_model_v260.py` (13).
+
 ## 2.5.10 — 2026-10-22 — rugged calls are closed
 
 - **Rug close for calls (`monitor.py`).** Calls were tracked for 72 hours whatever happened. Now,

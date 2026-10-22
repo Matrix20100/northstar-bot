@@ -220,6 +220,14 @@ class Settings(BaseSettings):
     u_reject_double_warning: bool = True  # v2.5.8: two or more serious warnings -> REJECT, never watched
     u_min_completeness: float = 0.55  # below this the decision cannot be STRONG
     u_model_tilt: float = 12.0      # most the learning brain may move the score, either way
+    # v2.6.0 learned rug model (rugmodel.py): odds a coin falls to 0.3x, used once TRUSTED
+    rug_model_enabled: bool = True
+    rug_model_min_auc: float = 0.75     # walk-forward AUC (overall and recent) needed to be trusted
+    rug_model_min_samples: int = 300
+    u_rug_weight: float = 0.6           # share of the 0-100 score that is learned safety (100 x (1 - rug odds))
+    rug_reject_min: float = 0.6         # rug odds at or above this reject the coin (22 Oct: 55% bad above, 22% below)
+    rug_call_max: float = 0.5           # a call needs rug odds at or below this
+    rug_override_max: float = 0.3       # at or below this, top-10 / creator / cluster thresholds stop blocking
     # at most this many of the points a STRONG call needs may come from narrative. v2.4 shipped
     # 20 while narrative was worth at most 16, so the rule could never bind; 10 makes it real.
     u_narrative_cap: float = 10.0
