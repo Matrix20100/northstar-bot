@@ -1044,7 +1044,7 @@ def _decide(score: float, score_ex_nar: float, risk: str, confidence: str, compl
         ceiling, cls = WATCH, cls or RC_WARNINGS
         why.append(f"{len(suspicions)} unverified concerns, none proven")
 
-    # v2.5.9 (operator request: no obvious rugs on the watch list). Two or more serious warnings
+    # v2.5.8 (operator request: no obvious rugs on the watch list). Two or more serious warnings
     # measured like HIGH RISK (95% crashed): such a coin is rejected, not watched. A score under
     # the watch line is never watched either, whatever the warnings.
     if len(strong_warnings) >= 2 and getattr(s, "u_reject_double_warning", True):

@@ -187,7 +187,7 @@ def test_strong_volume_with_suspicious_wallets_is_not_a_call(s):
         {"key": "fresh_wallets", "level": "high", "text": "mostly brand-new wallets"}],
         "green": [], "unknown": []})
     u = U.evaluate(r, s)
-    assert u["decision"] == U.REJECT            # v2.5.9: two serious warnings are never watched
+    assert u["decision"] == U.REJECT            # v2.5.8: two serious warnings are never watched
     assert u["reason_class"] == "SERIOUS_WARNINGS"
     assert u["risk"] == U.RISK_HIGH
     assert len(u["warnings"]) >= 2
