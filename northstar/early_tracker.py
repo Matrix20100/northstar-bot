@@ -14,7 +14,8 @@ This tracker is independent of both. Every ``early_watch_refresh_seconds`` it:
 Honesty rules: a failed or undecodable read never writes zero or a made-up value - the last
 valid observation stays and the post says when it was last read. If Northstar's own latest
 research no longer qualifies the token, the post says so. Tracking stops at migration
-(curve ``complete``) or after ``max_tracking_hours``.
+(curve ``complete``), after ``max_tracking_hours``, or once the coin has rugged: it trades at or
+under ``early_watch_rug_close_x`` of the call price (v2.5.8: a rugged coin is never kept on watch).
 """
 from __future__ import annotations
 
@@ -89,7 +90,16 @@ class EarlyWatchTracker:
         return (f"Northstar's latest re-check{score_txt} returned **{cand['last_action']}** - this token no "
                 f"longer meets the early-watch criteria.{reason}")
 
-    def _embed(self, row: dict, *, stale: bool, migrated: bool, closed: bool) -> dict:
+    def _rugged(self, row: dict) -> bool:
+        """True once the verified current market cap is at or under ``early_watch_rug_close_x`` of
+        the call's market cap. Uses only real readings: a missing baseline never closes a watch."""
+        limit = self.s.early_watch_rug_close_x
+        entry, cur = row.get("entry_market_cap_sol"), row.get("current_market_cap_sol")
+        if not limit or not entry or not cur or entry <= 0:
+            return False
+        return cur / entry <= limit
+
+    def _embed(self, row: dict, *, stale: bool, migrated: bool, closed: bool, rugged: bool = False) -> dict:
         try:
             report = json.loads(row.get("report") or "{}")
         except (TypeError, ValueError):
@@ -101,7 +111,11 @@ class EarlyWatchTracker:
         row["current_sol_usd"] = self._sol_usd
         embed = AlertService._build_early_watch_embed(report, row, self.s)
         read_at = int(row.get("updated_at") or time.time())
-        if migrated:
+        if rugged:
+            x = (row.get("current_market_cap_sol") or 0) / (row.get("entry_market_cap_sol") or 1)
+            status = (f"🪦 Rugged: now {x:.2f}x of the call price (<t:{read_at}:R>) — removed from the watch, "
+                      "tracking ended")
+        elif migrated:
             status = f"🏁 Migrated <t:{read_at}:R> — tracking ended (last curve reading shown)"
         elif closed:
             status = f"⏹️ Tracking ended after {self.s.max_tracking_hours:g}h (last reading <t:{read_at}:R>)"
@@ -120,7 +134,7 @@ class EarlyWatchTracker:
     # ------------------------------------------------------------------ main loop
     async def run_once(self, now: Optional[float] = None) -> dict:
         now = now or time.time()
-        counts = {"open": 0, "read": 0, "edited": 0, "failed_reads": 0, "migrated": 0, "closed": 0}
+        counts = {"open": 0, "read": 0, "edited": 0, "failed_reads": 0, "migrated": 0, "closed": 0, "rugged": 0}
         placeholders = ",".join("?" for _ in OPEN_STATUSES)
         rows = self.db.fetchall(
             f"SELECT * FROM early_signals WHERE (status IN ({placeholders}) "
@@ -179,6 +193,9 @@ class EarlyWatchTracker:
             if state.get("complete"):
                 await self._finish(updated, "MIGRATED", counts)
                 continue
+            if self._rugged(updated):
+                await self._finish(updated, "CLOSED", counts, rugged=True)
+                continue
             last = self._last_edit_cap.get(mint)
             flags = (self._research_notice(mint),)
             moved = last is None or (last > 0 and abs(cap - last) / last >= MIN_CHANGE_FOR_EDIT)
@@ -225,19 +242,22 @@ class EarlyWatchTracker:
             log.info("early-watch plan events for %s: %s", row["mint"], posted)
         return bool(posted)
 
-    async def _finish(self, row: dict, status: str, counts: dict) -> None:
-        await self._edit(row, counts, stale=False, migrated=(status == "MIGRATED"), closed=(status == "CLOSED"))
+    async def _finish(self, row: dict, status: str, counts: dict, *, rugged: bool = False) -> None:
+        await self._edit(row, counts, stale=False, migrated=(status == "MIGRATED"),
+                         closed=(status == "CLOSED"), rugged=rugged)
         self.db.update_early_signal_status(row["mint"], status)
         counts["migrated" if status == "MIGRATED" else "closed"] += 1
-        log.info("early-watch tracking ended for %s (%s)", row["mint"], status)
+        if rugged:
+            counts["rugged"] += 1
+        log.info("early-watch tracking ended for %s (%s%s)", row["mint"], status, ", rugged" if rugged else "")
 
     async def _edit(self, row: dict, counts: dict, *, stale: bool, migrated: bool = False,
-                    closed: bool = False) -> None:
+                    closed: bool = False, rugged: bool = False) -> None:
         mint = row["mint"]
         if row.get("status") == "SILENT" or not row.get("message_id") or not row.get("channel_id"):
             return  # tracked for performance only; there is no message to edit
         try:
-            embed = self._embed(row, stale=stale, migrated=migrated, closed=closed)
+            embed = self._embed(row, stale=stale, migrated=migrated, closed=closed, rugged=rugged)
             await self.pub.edit(int(row["channel_id"]), int(row["message_id"]), embed)
         except PublishError as exc:
             log.warning("early-watch embed edit failed for %s (message %s): %s", mint, row.get("message_id"), exc)

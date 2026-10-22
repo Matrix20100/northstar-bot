@@ -3,6 +3,19 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.5.8 — 2026-10-22 — rugged early watches are closed
+
+The first v2.5.7 log showed early-watch posts at 0.11x to 0.15x of their call price still being
+tracked and edited every cycle. They would have stayed open for up to 72 hours, and the edits
+caused Discord rate-limit (429) warnings.
+
+- **Rug close (`early_tracker.py`).** Once a verified on-chain reading puts an early watch at or
+  under `NORTHSTAR_EARLY_WATCH_RUG_CLOSE_X` (0.3x, the same line the learning labels use for a
+  rug) of its call price, the post is edited once to "🪦 Rugged … removed from the watch,
+  tracking ended" and the watch is CLOSED. The stop-loss message still posts first. A failed or
+  missing read never closes a watch; 0 turns the rule off. The value is clamped to 0–0.9.
+- Tests: `tests/test_early_tracker.py::RugClose`.
+
 ## 2.5.7 — 2026-10-22 — the start of a coin must be organic
 
 Operator request: no obvious rugs on the watch list. The examples were coins whose chart started

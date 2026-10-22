@@ -49,7 +49,7 @@ Per-provider requests/minute (`*_RPM`) and daily budgets (`*_DAILY_BUDGET`). Res
 
 ## Monitoring
 
-`MILESTONES` (2,3,5,10), `LIQUIDITY_COLLAPSE_PCT` (50), `SEVERE_DRAWDOWN_PCT` (50), `MAX_TRACKING_HOURS` (72), `EMBED_EDIT_MIN_SECONDS` (300; warnings and closes edit immediately).
+`MILESTONES` (2,3,5,10), `LIQUIDITY_COLLAPSE_PCT` (50), `SEVERE_DRAWDOWN_PCT` (50), `MAX_TRACKING_HOURS` (72), `EARLY_WATCH_RUG_CLOSE_X` (0.3: an early watch at or under 0.3x of its call price is marked rugged and closed; 0 = off), `EMBED_EDIT_MIN_SECONDS` (300; warnings and closes edit immediately).
 
 
 ## Pre-migration Pump.fun research (new)
