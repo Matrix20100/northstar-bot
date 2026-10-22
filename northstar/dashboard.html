@@ -166,7 +166,8 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
 
   <section data-view="learning" class="hide">
     <div class="grid g2" style="margin-bottom:14px">
-      <div class="card"><h2>🧠 The brain <span id="brainSub"></span></h2><div id="brain"></div></div>
+      <div class="card"><h2>🧠 Runner brain <span id="brainSub"></span></h2><div id="brain"></div></div>
+      <div class="card"><h2>☠️ Rug brain <span>learns which coins fall to 0.3x</span></h2><div id="rugBrain"></div></div>
       <div class="card"><h2>What it has seen</h2><div id="learnStats"></div></div>
     </div>
     <div class="grid g2">
@@ -293,6 +294,14 @@ async function learning(){const d=await api('/api/learning');if(!d.ready){$('bra
    <span class="pill dim">accuracy on unseen coins ${b.auc!=null?b.auc.toFixed(2):'n/a'} (recent ${b.recent_auc!=null?b.recent_auc.toFixed(2):'n/a'})</span><span class="pill dim">${num(b.n)} coins · ${num(b.positives)} runners</span><span class="pill dim">trained ${ago(b.ts)}</span></div>
    <div class="sub" style="margin-bottom:8px">What it learned predicts a runner — <span class="up">green pushes odds up</span>, <span class="down">red pushes them down</span>. 0.50 accuracy = coin flip.</div>
    ${b.signals.map(s=>{const w=Math.abs(s.weight)/mx*50;return `<div class="sig"><span>${esc(s.name)}</span><div class="sigbar"><i style="${s.weight>=0?`left:50%;width:${w}%;background:var(--green)`:`left:${50-w}%;width:${w}%;background:var(--red)`}"></i></div><span class="num sub">${s.weight>0?'+':''}${s.weight.toFixed(2)}</span></div>`}).join('')}`}
+ const rb=d.rug_brain,mem=d.memory;
+ const memLine=mem?`<div class="sub" style="margin-top:10px">Training memory: ${num(mem.examples)} coins kept (${num(mem.rugs)} rugs, ${num(mem.runners)} runners) in ${mem.mb} MB${mem.since?' · since '+ago(mem.since):''}</div>`:'';
+ if(!rb){$('rugBrain').innerHTML='<div class="empty">Not trained yet. It needs 100 tracked coins including 15 rugs.</div>'+memLine}else{
+  const mx2=Math.max(...rb.signals.map(s=>Math.abs(s.weight)),.01);
+  $('rugBrain').innerHTML=`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">${rb.trusted?'<span class="pill good">TRUSTED — sets the rug odds in the score</span>':'<span class="pill warn">Learning — no say yet</span>'}
+   <span class="pill dim">accuracy on unseen coins ${rb.auc!=null?rb.auc.toFixed(2):'n/a'} (recent ${rb.recent_auc!=null?rb.recent_auc.toFixed(2):'n/a'})</span><span class="pill dim">${num(rb.n)} coins · ${num(rb.positives)} rugs</span><span class="pill dim">trained ${ago(rb.ts)}</span></div>
+   <div class="sub" style="margin-bottom:8px">What it learned predicts a rug — <span class="down">red raises the rug odds</span>, <span class="up">green lowers them</span>.</div>
+   ${rb.signals.map(s=>{const w=Math.abs(s.weight)/mx2*50;return `<div class="sig"><span>${esc(s.name)}</span><div class="sigbar"><i style="${s.weight<0?`left:${50-w}%;width:${w}%;background:var(--green)`:`left:50%;width:${w}%;background:var(--red)`}"></i></div><span class="num sub">${s.weight>0?'+':''}${s.weight.toFixed(2)}</span></div>`}).join('')}`+memLine}
  const sm=d.summary||{},sh=d.shadows||{},rd=d.radar||{},pct=v=>v==null?'—':(v*100>=0?'+':'')+(v*100).toFixed(1)+'%';
  $('learnStats').innerHTML=`<dl class="kv"><dt>Coins recorded</dt><dd class="num">${num(sh.total||0)} (${num(sh.called||0)} were called)</dd><dt>Checked against real price</dt><dd class="num">${num(sh.evaluated||0)} · ${num(sh.pending||0)} waiting</dd>
   <dt>Runners among them</dt><dd class="num">${num(d.runners)}</dd><dt>Median peak after a decision</dt><dd class="num">${sm.median_peak!=null?sm.median_peak+'x':'—'}</dd>
@@ -337,7 +346,7 @@ const val=v=>v&&typeof v==='object'&&'value' in v?v.value:v;
 async function openToken(mint,pre){$('drawer').classList.add('on');$('overlay').classList.add('on');if(!pre)$('drawer').innerHTML='<div class="empty"><span class="spin"></span> Loading research…</div>';
  try{const t=pre||await api('/api/token?mint='+encodeURIComponent(mint));const r=t.report||{},m=r.market||{},br=r.brain,gates=r.gates||[],sn=t.snapshot||{},pm=r.pre_migration||{};
   const gate=g=>`<div style="display:flex;gap:8px;font-size:12.5px;padding:3px 0"><span>${g.status==='PASS'?'✅':g.status==='FAIL'?'❌':'❔'}</span><span><b>${esc(g.name)}</b> <span class="sub">${esc(g.reason||'')}</span></span></div>`;
-  $('drawer').innerHTML=`<div style="display:flex;justify-content:space-between;align-items:start;gap:10px"><div><h2 style="margin:0">${esc(t.symbol?'$'+t.symbol:short(mint))}</h2><div class="sub">${esc(t.name||'')}</div><code class="sub" style="word-break:break-all">${esc(mint)}</code></div><div style="display:flex;gap:6px;flex-shrink:0"><button class="btn" id="reResearch">${t.manual?'Research again':'Research now'}</button><button class="btn" onclick="closeDrawer()">Close</button></div></div>
+  $('drawer').innerHTML=`<div style="display:flex;justify-content:space-between;align-items:start;gap:10px"><div><h2 style="margin:0">${esc(t.symbol?'$'+t.symbol:short(mint))}</h2><div class="sub">${esc(t.name||'')}</div><code class="sub" style="word-break:break-all">${esc(mint)}</code></div><div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn" id="reResearch">${t.manual?'Research again':'Research now'}</button><button class="btn" id="untrackBtn" data-state="${esc(t.state||'')}">${t.state==='IGNORED'?'Track again':'Untrack'}</button><button class="btn" onclick="closeDrawer()">Close</button></div></div>
   ${(()=>{const u=r.unified&&r.unified.version?r.unified:null;
     /* one verdict per screen: the unified engine's when it ran, the older fields only when it did not */
     return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:12px 0">${u?`<span class="pill ${(DC[u.decision]||['dim'])[0]}">${esc(u.decision)}</span>`:actPill(sn.action||t.state)}<span class="pill dim">score ${u?num(u.score,0)+'/100':num(sn.score??t.last_score,1)}</span><span class="pill dim">risk ${esc(u?u.risk:(sn.risk||t.last_risk||'—'))}</span><span class="pill dim">confidence ${esc(u?u.confidence:(sn.confidence||t.last_confidence||'—'))}</span></div>`})()}
@@ -378,6 +387,12 @@ function callCard(t,mint){const mn=t.manual;
   <label class="check"><input type="checkbox" id="callFree" checked> Also post a copy to the free channel after the usual delay</label>
   <div class="row"><button class="btn call" id="callBtn">Post call</button><button class="btn" id="callCancel" hidden>Cancel</button><span class="sub" id="callMsg">Research valid for 15 minutes.</span></div></div>`}
 function wireCall(t,mint){const rr=$('reResearch');if(rr)rr.onclick=()=>runResearch(mint);
+ const ub=$('untrackBtn');if(ub){let armed=false;ub.onclick=async()=>{const undo=ub.dataset.state==='IGNORED';
+  if(!undo&&!armed){armed=true;ub.textContent='Confirm: stop tracking';ub.className='btn danger';return}
+  ub.disabled=true;try{const d=await post(undo?'/api/retrack':'/api/untrack',{mint,reason:'untracked from the dashboard'});
+   if(d.ok){ub.dataset.state=undo?'':'IGNORED';ub.textContent=undo?'Untrack':'Track again';ub.className='btn';
+    ub.title=undo?'Back in the research queue':`No longer tracked${d.calls_closed?' · call closed':''}${d.early_watches_ended?' · early watch ended':''}`;refresh()}
+   else{ub.textContent=d.error||'Failed';}}catch(e){ub.textContent='No contact with the bot'}ub.disabled=false;armed=false}}
  const btn=$('callBtn');if(!btn)return;const ov=$('callOverride'),msg=$('callMsg'),cancel=$('callCancel');let armed=false;
  const sync=()=>{btn.disabled=!!ov&&!ov.checked};if(ov){ov.onchange=sync;sync()}
  cancel.onclick=()=>{armed=false;btn.textContent='Post call';btn.className='btn call';cancel.hidden=true;msg.textContent='Research valid for 15 minutes.'};

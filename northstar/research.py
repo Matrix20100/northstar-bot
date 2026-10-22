@@ -1898,13 +1898,15 @@ class Researcher:
 
         targets = list(
             dict.fromkeys(
-                early[:6]
-                + holders_w[:8]
+                # v2.6.1: holders first (they decide whether a coin can be dumped), then the
+                # launch buyers, then current buyers
+                holders_w[:int(getattr(s, "trace_top_holders", 15))]
+                + early[:6]
                 + [
                     trade.wallet
                     for trade in recent
                     if trade.side == "buy"
-                ][:6]
+                ][:4]
             )
         )
 

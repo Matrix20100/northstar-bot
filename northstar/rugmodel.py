@@ -63,6 +63,13 @@ def _path_low(path: list) -> Optional[tuple[float, float]]:
 
 
 def training_rows(db, days: float, now: float, rug_x: float = RUG_X, min_path_minutes: float = 120.0) -> list[dict]:
+    """v2.6.1: from the compact training store when it has examples (it keeps every rug long after
+    the raw tables are pruned); the raw tables otherwise."""
+    if rug_x == RUG_X:
+        from . import training_store as TS
+        stored = TS.examples(db, "rug")
+        if stored:
+            return stored
     rows, shadow_times = [], {}
     try:
         shadows = db.fetchall("SELECT id, mint, ts, vector, path FROM shadow_calls WHERE evaluated=1 "
@@ -130,7 +137,7 @@ def train(db, s, now: Optional[float] = None) -> Optional[B.Model]:
         db.execute("INSERT INTO rug_models(ts, n, positives, auc, recent_auc, trusted, model) VALUES (?,?,?,?,?,?,?)",
                    (now, final.n, final.positives, model_auc, recent, 1 if final.trusted else 0, final.to_json()))
         db.execute("DELETE FROM rug_models WHERE id NOT IN (SELECT id FROM rug_models ORDER BY ts DESC LIMIT 10)")
-        log.info("rug model: trained on %d coins (%d rugs) - walk-forward AUC %s, recent %s, %s", len(rows), pos,
+        log.info("rug brain: trained on %d coins (%d rugs) - walk-forward AUC %s, recent %s, %s", len(rows), pos,
                  B._fmt(model_auc), B._fmt(recent), "TRUSTED" if final.trusted else "not trusted yet")
         return final
     except Exception:  # noqa: BLE001 - learning must never break the bot

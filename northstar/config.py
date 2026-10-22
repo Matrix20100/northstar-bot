@@ -222,6 +222,8 @@ class Settings(BaseSettings):
     u_model_tilt: float = 12.0      # most the learning brain may move the score, either way
     # v2.6.0 learned rug model (rugmodel.py): odds a coin falls to 0.3x, used once TRUSTED
     rug_model_enabled: bool = True
+    training_max_examples: int = 30000   # v2.6.1 compact training memory: rugs and runners are kept first
+    tracking_retention_days: float = 21.0  # finished 24h decision tracking older than this is deleted (its example is in the store)
     rug_model_min_auc: float = 0.75     # walk-forward AUC (overall and recent) needed to be trusted
     rug_model_min_samples: int = 300
     u_rug_weight: float = 0.6           # share of the 0-100 score that is learned safety (100 x (1 - rug odds))
@@ -248,7 +250,14 @@ class Settings(BaseSettings):
 
     # ---------------------------------------------------------------- Research depth
     swap_sample_signatures: int = 150
-    funding_trace_wallets: int = 12
+    funding_trace_wallets: int = 22         # v2.6.1: was 12; holders first (trace_top_holders), then launch/current buyers
+    trace_top_holders: int = 15             # top holders whose age and funding are traced on every full analysis
+    # v2.6.1 `wallet_network` gate (risk threshold, never overruled by the rug brain). From the bot's own 24 h
+    # tracking: fresh wallets holding 15%+ crashed 90% (0% reached 2x); most checked wallets brand new 93%;
+    # connected wallets holding 8%+ 71%.
+    max_fresh_supply_pct: float = 15.0      # % of supply held by wallets under fresh_wallet_age_hours old
+    max_fresh_wallet_share: float = 80.0    # % of traced wallets that are brand new (needs 5+ traced)
+    max_linked_supply_pct: float = 8.0      # % of supply held by one group of wallets linked by funding
     funding_trace_hops: int = 2             # 2 = also trace who funded the funders (dev -> A -> holder)
     funding_trace_funders: int = 10         # max funders traced on the second hop
     wallet_age_lookups: int = 12

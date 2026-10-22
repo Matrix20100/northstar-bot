@@ -501,7 +501,16 @@ def auc(labels: list[int], probs: list[float]) -> Optional[float]:
 
 # ----------------------------------------------------------------------------- training
 def training_rows(db, days: float, now: float, win_x: float = WIN_X, loss_x: float = LOSS_X) -> list[dict]:
-    """Evaluated shadows (minute paths) plus 24h decision tracking for coins without a shadow path."""
+    """Evaluated shadows (minute paths) plus 24h decision tracking for coins without a shadow path.
+
+    v2.6.1: read from the compact training store (training_store.py), which keeps every runner and
+    rug long after the raw tables are pruned. The raw tables are read only when the store is empty
+    or the runner definition was changed from the default."""
+    if (win_x, loss_x) == (WIN_X, LOSS_X):
+        from . import training_store as TS
+        stored = TS.examples(db, "runner")
+        if stored:
+            return stored
     rows, shadow_times = [], {}
     for r in db.fetchall("SELECT id, mint, ts, vector, path FROM shadow_calls WHERE evaluated=1 AND vector IS NOT NULL "
                          "AND vector != '{}' AND ts > ? ORDER BY ts", (now - days * 86400,)):
@@ -633,17 +642,24 @@ def train(db, s, now: Optional[float] = None) -> Optional[Model]:
     final = Model.fit([r["v"] for r in rows], [r["y"] for r in rows], features=active)
     final.feature_change = change[:2] if change else None
     final.auc, final.recent_auc, final.ts = model_auc, recent, now
+    # v2.6.1: it must also rank the coins that had a full minute path (the ones close to a call)
+    # better than a coin flip; on 22 Oct its 0.62 came from easy rejects and was 0.52 there
+    path_rows = [r for r in rows if r.get("src") == "path" and r["id"] in oof]
+    path_auc = auc([r["y"] for r in path_rows], [oof[r["id"]] for r in path_rows]) if len(path_rows) >= 100 else None
+    final.path_auc = path_auc
     final.trusted = bool(
         len(rows) >= s.brain_min_samples and pos >= 15 and model_auc is not None and recent is not None
-        and model_auc >= s.brain_min_auc and recent >= s.brain_min_auc)   # v2.5.6: recent coins must clear the bar too
+        and model_auc >= s.brain_min_auc and recent >= s.brain_min_auc   # v2.5.6: recent coins must clear the bar too
+        and (path_auc is None or path_auc >= s.brain_min_auc))
     db.execute("INSERT INTO brain_models(ts, n, positives, auc, recent_auc, trusted, model) VALUES (?,?,?,?,?,?,?)",
                (now, final.n, final.positives, model_auc, recent, 1 if final.trusted else 0, final.to_json()))
     db.execute("DELETE FROM brain_models WHERE id NOT IN (SELECT id FROM brain_models ORDER BY ts DESC LIMIT 20)")
     for rid, p in oof.items():
         if rid > 0:                       # tracking rows (negative ids) have no shadow to update
             db.execute("UPDATE shadow_calls SET brain_oof=? WHERE id=?", (p, rid))
-    log.info("brain: trained on %d coins (%d winners) - walk-forward AUC %s, recent %s, %s",
-             len(rows), pos, _fmt(model_auc), _fmt(recent), "TRUSTED" if final.trusted else "not trusted yet")
+    log.info("runner brain: trained on %d coins (%d runners) - walk-forward AUC %s, recent %s, near-call coins %s, %s",
+             len(rows), pos, _fmt(model_auc), _fmt(recent), _fmt(path_auc),
+             "TRUSTED" if final.trusted else "not trusted yet")
     return final
 
 

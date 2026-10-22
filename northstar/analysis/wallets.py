@@ -1604,6 +1604,40 @@ def _rank(evidence: EvidenceStrength) -> int:
 # Findings and risk gates
 
 
+def wallet_network_gate(cr: "ClusterResult", s) -> GateResult:
+    """v2.6.1 `wallet_network`: who actually holds the coin. FAIL when brand-new wallets hold a big
+    share, when almost every traced wallet is brand new, or when one group of wallets linked by
+    shared funding holds a big share. UNKNOWN when the wallets could not be traced."""
+    max_fresh_supply = float(getattr(s, "max_fresh_supply_pct", 15.0) or 0)
+    max_fresh_share = float(getattr(s, "max_fresh_wallet_share", 80.0) or 0)
+    max_linked = float(getattr(s, "max_linked_supply_pct", 8.0) or 0)
+    if cr.status == DataStatus.UNAVAILABLE or not cr.wallets_aged:
+        return GateResult("wallet_network", GateStatus.UNKNOWN, "holder wallets could not be traced", critical=False)
+    fails = []
+    if max_fresh_supply and cr.fresh_supply_pct is not None and cr.fresh_supply_pct >= max_fresh_supply:
+        fails.append(f"brand-new wallets (<{s.fresh_wallet_age_hours:.0f}h) hold {cr.fresh_supply_pct:.1f}% of supply")
+    if (max_fresh_share and cr.fresh_wallet_share is not None and cr.wallets_aged >= 5
+            and cr.fresh_wallet_share >= max_fresh_share):
+        fails.append(f"{cr.fresh_wallet_share:.0f}% of {cr.wallets_aged} traced holder/buyer wallets are brand new")
+    if max_linked and cr.max_cluster_supply_pct is not None and cr.max_cluster_supply_pct >= max_linked:
+        biggest = max((c for c in cr.clusters or []), key=lambda c: c.get("held_pct_of_supply_top20_only") or 0,
+                      default={})
+        fails.append(f"{biggest.get('size', '?')} wallets linked by shared funding hold "
+                     f"{cr.max_cluster_supply_pct:.1f}% of supply")
+    parts = [f"{cr.wallets_aged} wallets traced"]
+    if cr.fresh_wallet_share is not None:
+        parts.append(f"{cr.fresh_wallet_share:.0f}% brand new")
+    if cr.fresh_supply_pct is not None:
+        parts.append(f"new wallets hold {cr.fresh_supply_pct:.1f}%")
+    if cr.max_cluster_supply_pct is not None:
+        parts.append(f"largest linked group {cr.max_cluster_supply_pct:.1f}%")
+    if cr.two_hop_links:
+        parts.append(f"{cr.two_hop_links} hidden 2-hop funding links")
+    if fails:
+        return GateResult("wallet_network", GateStatus.FAIL, "; ".join(fails), critical=False)
+    return GateResult("wallet_network", GateStatus.PASS, ", ".join(parts), critical=False)
+
+
 def wallet_findings(
     ts: TradeStats,
     cr: ClusterResult,
@@ -1811,6 +1845,8 @@ def wallet_findings(
                 critical=False,
             )
         )
+
+    gates.append(wallet_network_gate(cr, s))
 
     # Fresh-wallet concentration.
     if (
