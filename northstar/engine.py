@@ -531,6 +531,10 @@ class Engine:
         """
         if not getattr(self.s, "unified_enabled", True) or not isinstance(out.report.get("unified"), dict):
             return
+        if getattr(self, "rug", None) is not None:
+            rm = self.rug_mod.score(self.rug, out.report)    # the rug brain's odds (v2.6.0)
+            if rm:
+                out.report["rug_model"] = rm
         try:
             from .analysis import unified as U
             before = out.report["unified"].get("decision")
@@ -684,7 +688,7 @@ class Engine:
 
     async def _process(self, mint: str) -> None:
         cand = self.db.get_candidate(mint)
-        if not cand or cand["state"] in ("PUBLISHED", "WARNING", "CLOSED", "QUALIFIED", "STALE"):
+        if not cand or cand["state"] in ("PUBLISHED", "WARNING", "CLOSED", "QUALIFIED", "STALE", "IGNORED"):
             return
         prev_state = cand["state"]
         self.db.set_state(mint, "RESEARCHING")
@@ -730,10 +734,6 @@ class Engine:
             self._heat.add(out.report, now)
         except Exception:  # noqa: BLE001 - context is optional evidence
             log.debug("context failed for %s", mint, exc_info=True)
-        if getattr(self, "rug", None) is not None:
-            rm = self.rug_mod.score(self.rug, out.report)
-            if rm:
-                out.report["rug_model"] = rm
         self._refresh_unified(out)
         brain_p = self._apply_brain(out)
         await self._apply_ai_narrative(out)
@@ -810,6 +810,21 @@ class Engine:
 
     # ---------------------------------------------------------------- manual (dashboard)
     MANUAL_TTL = 900      # a manual call must rest on research from the last 15 minutes
+
+    async def untrack(self, mint: str, reason: str = "", by: str = "dashboard") -> dict:
+        """Stop following a coin by hand (db.untrack); undone by `retrack`."""
+        from .analysis.identity import is_valid_mint_format
+
+        mint = (mint or "").strip()
+        if not is_valid_mint_format(mint):
+            return {"ok": False, "error": "That is not a Solana mint address."}
+        res = self.db.untrack(mint, reason, by)
+        log.info("untracked %s by %s%s: %s", mint, by, f" ({reason})" if reason else "", res)
+        return {"ok": True, **res}
+
+    async def retrack(self, mint: str) -> dict:
+        ok = self.db.retrack((mint or "").strip())
+        return {"ok": ok, "error": None if ok else "That coin was not untracked."}
 
     async def manual_research(self, mint: str) -> dict:
         """Research one token on request, the same way the bot would, and never post it.

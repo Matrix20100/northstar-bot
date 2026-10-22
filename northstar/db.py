@@ -692,6 +692,48 @@ class Database:
                 "WHERE state = 'DISCOVERED' AND research_count = 0 AND discovered_at < ?",
                 (time.time(), cutoff)).rowcount
 
+    # ------------------------------------------------------------- manual untrack (v2.6.1)
+
+    def untrack(self, mint: str, reason: str = "", by: str = "operator") -> dict:
+        """Stop following a coin by hand: it leaves the watch list and the research queue, its open
+        call and early-watch posts stop updating, and no feed, radar or surge brings it back
+        (state IGNORED is never revived). Its learning data (24 h price tracking) is kept so the
+        brains can still learn how it ended. Undo with `retrack`."""
+        now = time.time()
+        out = {"mint": mint, "candidate": False, "calls_closed": 0, "early_watches_ended": 0, "early_calls_closed": 0}
+        note = f"untracked by {by}" + (f": {reason}" if reason else "")
+        with self._lock:
+            c = self._conn
+            row = c.execute("SELECT reasons FROM candidates WHERE mint = ?", (mint,)).fetchone()
+            if row is not None:
+                try:
+                    reasons = json.loads(row["reasons"] or "[]")
+                except (TypeError, ValueError):
+                    reasons = []
+                c.execute("UPDATE candidates SET state = 'IGNORED', next_research_at = NULL, updated_at = ?, "
+                          "reasons = ? WHERE mint = ?", (now, json.dumps([note] + list(reasons)[:19]), mint))
+                out["candidate"] = True
+            out["calls_closed"] = c.execute(
+                "UPDATE alerts SET state = 'CLOSED', closed_at = ? WHERE mint = ? AND state != 'CLOSED'",
+                (now, mint)).rowcount
+            out["early_watches_ended"] = c.execute(
+                "UPDATE early_signals SET status = 'UNTRACKED', updated_at = ? WHERE mint = ? "
+                "AND status IN ('SENT', 'DRY_RUN', 'SILENT')", (now, mint)).rowcount
+            try:
+                out["early_calls_closed"] = c.execute(
+                    "UPDATE early_calls SET status = 'CLOSED', closed_at = ? WHERE mint = ? AND status != 'CLOSED'",
+                    (now, mint)).rowcount
+            except sqlite3.OperationalError:
+                pass                                   # early-call table not created yet
+        return out
+
+    def retrack(self, mint: str) -> bool:
+        """Undo `untrack`: the coin is researched again on the next pass."""
+        now = time.time()
+        with self._lock:
+            return self._conn.execute("UPDATE candidates SET state = 'DISCOVERED', next_research_at = ?, updated_at = ? "
+                                      "WHERE mint = ? AND state = 'IGNORED'", (now, now, mint)).rowcount > 0
+
     def expire_unscheduled_launches(self, max_age_minutes: float, now: Optional[float] = None) -> int:
         """Launch-feed-only coins with no research scheduled leave the list after `max_age_minutes`
         (v2.5.9). They were never "watched": they wait for the curve radar, which still scans STALE

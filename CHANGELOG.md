@@ -3,6 +3,55 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.6.1 — 2026-10-22 — two brains with a compact memory, manual untrack, holder-network gate
+
+Operator request: one brain that learns rugs and bad coins, one that learns coins that ran; a
+compact database that still remembers the training data; a way to untrack a coin by hand (the
+Trump $1 coin was still tracked); and read the holders, their wallets and shared funding when
+judging risk.
+
+- **Two brains.**
+  - **Rug brain** (`rugmodel.py`, from v2.6.0): odds of falling to 0.3x. It sets the rug odds in
+    the score.
+  - **Runner brain** (`brain.py`): odds of a clean runner (2x before 0.6x, no rug after).
+  - The dashboard's Learning tab shows both, each with its own accuracy and signals.
+  - **The runner brain must now also beat the trust bar on near-call coins** (coins with a full
+    minute price path). On the 22 Oct data its 0.71 overall came from easy rejects; on
+    near-call coins it scored 0.55. It is no longer trusted and has no say in calls until it
+    really ranks those coins.
+- **Compact training memory (`training_store.py`, table `training_examples`).**
+  - Every finished example (minute path or 24 h tracking) is stored once with its labels: rug,
+    runner, peak and low. The brain's numbers are packed as float32 in a versioned feature
+    order, about 280 bytes a coin instead of about 1.5 KB of JSON.
+  - Every rug and every runner is kept up to `NORTHSTAR_TRAINING_MAX_EXAMPLES` (30,000). Only
+    plain coins are thinned when it is full.
+  - Both brains train from it, so they keep learning from coins long gone from the raw tables.
+  - On the 22 Oct copy: 5,017 examples (1,118 rugs, 222 runners) in 1.4 MB. After a month of
+    raw pruning the rug brain still trained TRUSTED at AUC 0.92 (recent 0.90).
+- **decision_tracking no longer grows forever** (about 3 MB a day before):
+  - harvested numbers on finished rows are cleared after 2 days;
+  - finished rows older than `NORTHSTAR_TRACKING_RETENTION_DAYS` (21) are deleted;
+  - called coins keep their tracking.
+
+  On the 22 Oct copy, one pass took it from 9,902 rows / 15.1 MB of numbers to 2,860 rows /
+  4.4 MB.
+- **Manual untrack.**
+  - Use `/untrack <mint> [reason]` or `/retrack <mint>` in Discord (admin), or the
+    **Untrack / Track again** button on a coin in the dashboard.
+  - An untracked coin (state IGNORED) leaves the watch list and the research queue. Its open
+    call and early-watch posts stop updating, and no feed, radar, surge or migration brings it
+    back.
+  - Its price is still recorded so the brains learn how it ended.
+- **Holder-network gate `wallet_network`** (risk threshold; the rug brain cannot overrule it).
+  - Fails when any of these is true:
+    - brand-new wallets hold 15%+ of supply;
+    - 80%+ of 5 or more traced holder/buyer wallets are brand new;
+    - one group of wallets linked by shared funding holds 8%+.
+  - From the bot's own 24 h tracking, those coins crashed 90%, 93% and 71% of the time.
+  - Wallet tracing now covers the top 15 holders first, then launch and current buyers: 22
+    wallets instead of 12, with second-hop funders as before.
+- Tests: `tests/test_v261_memory_untrack_wallets.py` (16).
+
 ## 2.6.0 — 2026-10-22 — a learned rug model drives the score; Pulse view
 
 Operator request: rework the 0-100 score so it rates coins correctly, let research really spot a

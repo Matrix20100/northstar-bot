@@ -381,6 +381,14 @@ def compact_snapshots(db, older_than_hours: float, now: Optional[float] = None, 
 
 
 # --------------------------------------------------------------------------- one call for the engine
+def _training_compact(db, s: Any, now: float) -> dict:
+    """Harvest finished examples into the compact training store, then bound it and the raw
+    tables it replaces (training_store.py). The harvest runs first so nothing is lost."""
+    from . import training_store as TS
+    TS.harvest(db, now)
+    return TS.compact(db, s, now)
+
+
 def maintain(db, s: Any, now: Optional[float] = None) -> dict:
     """Retention pass: migration (once), age-based pruning, compaction. Never raises."""
     now = now or time.time()
@@ -396,6 +404,7 @@ def maintain(db, s: Any, now: Optional[float] = None) -> dict:
         ("launches_expired", lambda: db.expire_unscheduled_launches(
             getattr(s, "discovered_launch_max_age_minutes", 30.0), now)),
         ("creators_forgotten", lambda: db.prune_creator_stats(now=now) if hasattr(db, "prune_creator_stats") else 0),
+        ("training_memory", lambda: _training_compact(db, s, now)),
         ("snapshots_compacted", lambda: sum(
             compact_snapshots(db, getattr(s, "snapshot_compact_hours", 24.0), now) for _ in range(5))),
         ("repeated_snapshots_removed", lambda: thin_repeated_snapshots(

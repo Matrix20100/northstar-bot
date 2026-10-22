@@ -120,7 +120,8 @@ SECURITY_GATES = {"mint_authority", "freeze_authority", "token_extensions", "min
 # warns and caps the decision instead of rejecting outright.
 THRESHOLD_GATES = {"holder_concentration", "creator_holdings", "creator_dumping", "launch_bundle",
                    "liquidity", "price_fresh", "bundled_supply", "source_consistency", "launch_shape",
-                   "launch_buys", "sniper_holdings", "insider_micro_trades", "creator_history"}
+                   "launch_buys", "sniper_holdings", "insider_micro_trades", "creator_history",
+                   "wallet_network"}
 
 # One fact, one entry. The gate, the verdict flag AND the scoring check that describe the same
 # thing share a canonical key: once a hazard is vetoed (at any severity) its scoring check is

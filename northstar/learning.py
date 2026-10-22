@@ -580,6 +580,10 @@ def tune(db, s, days: float = 14, min_samples: int = 20, now: Optional[float] = 
     now = now or time.time()
     try:
         B.store_tracking_vectors(db)
+        from . import training_store as TS
+        got = TS.harvest(db, now)
+        if got["paths"] or got["tracking"]:
+            log.info("training memory: +%d price paths, +%d tracked decisions", got["paths"], got["tracking"])
         flag_outcomes(db, now)
     except Exception:  # noqa: BLE001 - flag statistics are optional
         log.warning("flag outcome statistics failed", exc_info=True)

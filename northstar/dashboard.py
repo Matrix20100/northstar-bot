@@ -223,6 +223,7 @@ def view_pulse(c, now: float, hours: float = 3.0) -> dict:
     rows = [dict(r) for r in c.execute(
         "SELECT s.mint, s.ts, s.action, s.score, s.report FROM research_snapshots s "
         "JOIN (SELECT mint, MAX(id) AS id FROM research_snapshots WHERE ts > ? GROUP BY mint) m ON s.id = m.id "
+        "WHERE s.mint NOT IN (SELECT mint FROM candidates WHERE state = 'IGNORED') "
         "ORDER BY s.ts DESC LIMIT 300", (now - hours * 3600,))]
     every = [x for x in (_pulse_card(r) for r in rows) if x]
     cards = [x for x in every if not x["prefilter"]]   # dust (no liquidity, no trades) is counted, not shown
@@ -338,7 +339,14 @@ def view_learning(c, s, now: float) -> dict:
             rows = [{"key": k, "label": FLAG_LABELS.get(k, k.replace("_", " ")), **v} for k, v in stats.items() if v["n"] >= 5]
             rows.sort(key=lambda r: -(r["crash"] / r["n"]))
             flags = {"base": base, "rows": rows[:25]}
-    return {"ready": True, "brain": brain, "flags": flags, "brain_history": history, "tunables": tunables, "log": log_rows,
+    from . import rugmodel as RM
+    from . import training_store as TS
+    rm = RM.latest(db) if _table_ok(c, "rug_models") else None
+    rug_brain = None if rm is None else {
+        "trusted": rm.trusted, "auc": rm.auc, "recent_auc": rm.recent_auc, "n": rm.n, "positives": rm.positives,
+        "ts": rm.ts, "signals": [{"name": n, "weight": round(w, 3)} for n, w in rm.importance(14)]}
+    memory = TS.stats(db) if _table_ok(c, "training_examples") else None
+    return {"ready": True, "brain": brain, "rug_brain": rug_brain, "memory": memory, "flags": flags, "brain_history": history, "tunables": tunables, "log": log_rows,
             "shadows": stats, "runners": runners.get("n", 0), "radar": radar,
             "win_x": getattr(s, "brain_win_x", 2.0) if s else 2.0, "loss_x": getattr(s, "brain_loss_x", 0.6) if s else 0.6,
             "summary": {k: info.get(k) for k in ("evaluated", "pending", "standard_trades", "standard_avg",
@@ -601,7 +609,37 @@ class DashboardServer:
                     return self._send(202 if started else 409, {"started": started, **owner.runner.state()})
                 if u.path in ("/api/research", "/api/call"):
                     return self._manual(u.path, self._body())
+                if u.path in ("/api/untrack", "/api/retrack"):
+                    return self._untrack(u.path, self._body())
                 return self._send(404, {"error": "not found"})
+
+            def _untrack(self, path: str, body: dict):
+                """Untrack / retrack a coin: through the running bot, or straight in the database."""
+                mint = str(body.get("mint") or "").strip()[:64]
+                reason = str(body.get("reason") or "")[:200]
+                eng, loop = LIVE.get("engine"), LIVE.get("loop")
+                try:
+                    if eng is not None and loop is not None:
+                        coro = eng.untrack(mint, reason, "dashboard") if path == "/api/untrack" else eng.retrack(mint)
+                        res = asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=20)
+                    else:
+                        from .analysis.identity import is_valid_mint_format
+                        if not is_valid_mint_format(mint):
+                            return self._send(422, {"ok": False, "error": "That is not a Solana mint address."})
+                        from .db import Database
+                        db = Database(owner.db_path)
+                        db.open()
+                        try:
+                            if path == "/api/untrack":
+                                res = {"ok": True, **db.untrack(mint, reason, "dashboard")}
+                            else:
+                                ok = db.retrack(mint)
+                                res = {"ok": ok, "error": None if ok else "That coin was not untracked."}
+                        finally:
+                            db.close()
+                except Exception as e:  # noqa: BLE001
+                    return self._send(500, {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"})
+                return self._send(200 if res.get("ok") else 422, res)
 
             def _manual(self, path: str, body: dict):
                 """Hand a manual research or call to the running bot and wait for its answer."""

@@ -401,6 +401,39 @@ def install_commands(bot: NorthstarCommands):
         msg += "\nThe engine switches back to your .env values within a minute. Learning keeps running."
         await _reply(interaction, embed=_embed('🧠 LEARNING RESET', msg))
 
+    @bot.tree.command(name='untrack', description='Admin: stop tracking a coin (watch list, research, call and early-watch updates)')
+    @app_commands.describe(token='Solana mint address', reason='Why (optional, kept with the coin)')
+    async def untrack(interaction: discord.Interaction, token: str, reason: str = ''):
+        if not bot.admin_only(interaction): return await _reply(interaction, content='Administrator permission required.')
+        await _ack(interaction)
+        from ..analysis.identity import is_valid_mint_format
+        token = token.strip()
+        if not is_valid_mint_format(token):
+            return await _reply(interaction, content='That is not a Solana mint address.')
+        db = await bot.adb()
+        try:
+            res = db.untrack(token, reason[:200], f'discord:{interaction.user}')
+        finally:
+            await _close(db)
+        if not (res['candidate'] or res['calls_closed'] or res['early_watches_ended'] or res['early_calls_closed']):
+            return await _reply(interaction, content='Northstar was not tracking that coin.')
+        parts = ['No longer researched, watched or brought back by the radar.']
+        if res['calls_closed']: parts.append(f"Call closed ({res['calls_closed']}).")
+        if res['early_watches_ended'] or res['early_calls_closed']: parts.append('Early-watch updates stopped.')
+        parts.append('Its price is still recorded for learning. Undo with /retrack.')
+        await _reply(interaction, embed=_embed('🛑 UNTRACKED', f"`{token}`\n" + ' '.join(parts)))
+
+    @bot.tree.command(name='retrack', description='Admin: start tracking a coin you untracked again')
+    async def retrack(interaction: discord.Interaction, token: str):
+        if not bot.admin_only(interaction): return await _reply(interaction, content='Administrator permission required.')
+        await _ack(interaction)
+        db = await bot.adb()
+        try:
+            ok = db.retrack(token.strip())
+        finally:
+            await _close(db)
+        await _reply(interaction, content=('Back in the research queue.' if ok else 'That coin was not untracked.'))
+
     @bot.tree.command(name='northstar_scan', description='Admin: show scan queue (does not force a new provider scan)')
     async def northstar_scan(interaction: discord.Interaction):
         if not bot.admin_only(interaction): return await _reply(interaction, content='Administrator permission required.')

@@ -59,6 +59,17 @@ that the file shrinks on its own every hour, without a temporary copy and withou
   - On the 22 Oct database this takes the dashboard's "watched" list from 1,208 to 71:
     14 on the watch list, 46 queued, about 11 new launches waiting.
 
+## Training memory (v2.6.1)
+
+`training_examples` keeps one compact row per finished learning example: the brain's numbers as
+packed float32 and the labels (rug, runner, peak, low). Both brains train from it.
+- Rugs and runners are kept first.
+- Plain coins are thinned past `NORTHSTAR_TRAINING_MAX_EXAMPLES`.
+- Once an example is stored, the raw JSON numbers on its finished `decision_tracking` row are
+  cleared after 2 days.
+- Finished rows older than `NORTHSTAR_TRACKING_RETENTION_DAYS` are deleted. Called coins keep
+  theirs.
+
 ## Before deploying: back up
 
 1. Stop the server on Wispbyte. If it's running, recent writes may still sit in the `-wal` file.
