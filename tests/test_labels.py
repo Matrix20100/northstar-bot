@@ -195,3 +195,41 @@ def test_old_database_is_upgraded_in_place(tmp_path):
         assert L.load_flag_stats(db)["whale_holder"] == {"n": 40, "crash": 30, "run2x": 5}
     finally:
         db.close()
+
+
+# =============================================================================================
+# v2.5.6: what the brain learns — a pump-then-rug is a loss
+# =============================================================================================
+def test_a_pump_then_rug_is_not_a_win_for_the_brain():
+    assert B.outcome(BIG_PUMP_THEN_RUG) == 1, "the shared label still says 2x came first"
+    assert B.low_after_win(BIG_PUMP_THEN_RUG) == 0.1
+    assert B.clean_outcome(BIG_PUMP_THEN_RUG) == 0, "but the brain learns it as a loss"
+    assert B.clean_outcome(RUNNER_PATH) == 1, "a runner that held up is still a win"
+    assert B.clean_outcome(RUG_BEFORE_PUMP) == 0 and B.clean_outcome(INCOMPLETE_PATH) is None
+
+
+def test_training_rows_count_pump_then_rugs_as_losses(db):
+    L.init_schema(db)
+    now = time.time()
+    t = now - 30 * 3600
+    _shadow(db, addr("held"), t, RUNNER_PATH)
+    _shadow(db, addr("dumped"), t + 60, BIG_PUMP_THEN_RUG)
+    rows = {r["id"]: r["y"] for r in B.training_rows(db, 7, now) if r["src"] == "path"}
+    assert sorted(rows.values()) == [0, 1]
+
+
+def test_learning_messages_are_off_by_default():
+    from northstar.config import Settings
+    assert Settings(_env_file=None).learning_announce is False
+
+
+def test_the_brain_must_also_beat_the_bar_on_the_most_recent_coins(db, monkeypatch):
+    from northstar.config import Settings
+    from test_brain import seed
+    seed(db, n=240)
+    s = Settings(_env_file=None, brain_min_samples=50, brain_min_auc=0.58)
+    monkeypatch.setattr(B, "search_features", lambda *a, **k: None)
+    for recent, trusted in ((0.56, False), (0.58, True)):
+        monkeypatch.setattr(B, "walk_forward", lambda rows, active, r=recent: (0.70, r, {}))
+        m = B.train(db, s, time.time())
+        assert m is not None and m.trusted is trusted, (recent, m and m.trusted)
