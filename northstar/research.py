@@ -1500,6 +1500,19 @@ class Researcher:
                 confidence=Confidence.LOW,
             )
 
+        # v3.0.0: a coin the curve radar just saw in the runner band (real volume, young) gets the
+        # full rug filters too, so the runner-call engine (runner.py) can judge it; the early-watch
+        # rules below (chase limit, activity thresholds) no longer decide whether it can be called
+        if not qualified and getattr(self.s, "runner_calls_enabled", True):
+            from . import runner as RN
+            m = RN.radar_metrics(self.db, mint, now)
+            if m and float(getattr(self.s, "runner_min_mc", 15_000)) <= float(m.get("market_cap") or 0) \
+                    <= float(getattr(self.s, "runner_max_mc", 90_000)):
+                report["runner_candidate"] = True
+                if getattr(self.s, "launch_check_enabled", True):
+                    report["launch"] = (await self._curve_launch(mint, bonding_curve_key, cand)).to_dict()
+                await self._curve_rug_filters(mint, bonding_curve_key, creator, mint_acc, trades, report)
+
         if qualified and getattr(self.s, "launch_check_enabled", True):
             # v2.5.7: an early watch also needs an organic start on the curve (analysis/launch.py)
             lp = await self._curve_launch(mint, bonding_curve_key, cand)

@@ -390,7 +390,7 @@ function callCard(t,mint){const mn=t.manual;
   ${v.length?`<div class="vetobox"><b>Hard veto.</b> Northstar would not call this:<br>${v.map(x=>'· '+esc(x)).join('<br>')}<label class="check" style="margin-top:8px"><input type="checkbox" id="callOverride"> Post it anyway. The post will say it overrode this.</label></div>`:''}
   <label class="sub" for="callNote">Your note (shown in the post, optional)</label>
   <textarea id="callNote" maxlength="500" placeholder="Why you are calling it"></textarea>
-  <label class="check"><input type="checkbox" id="callFree" checked> Also post a copy to the free channel after the usual delay</label>
+  <label class="check"><input type="checkbox" id="callFree"> Also post a copy to the free channel (normally it only gets 2x+ wins)</label>
   <div class="row"><button class="btn call" id="callBtn">Post call</button><button class="btn" id="callCancel" hidden>Cancel</button><span class="sub" id="callMsg">Research valid for 15 minutes.</span></div></div>`}
 function wireCall(t,mint){const rr=$('reResearch');if(rr)rr.onclick=()=>runResearch(mint);
  const ub=$('untrackBtn');if(ub){let armed=false;ub.onclick=async()=>{const undo=ub.dataset.state==='IGNORED';

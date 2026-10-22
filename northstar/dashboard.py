@@ -657,7 +657,7 @@ class DashboardServer:
                     coro, wait = eng.manual_research(mint), 150
                 else:
                     coro, wait = eng.manual_call(mint, note=str(body.get("note") or "")[:500],
-                                                 free_copy=bool(body.get("free_copy", True)),
+                                                 free_copy=bool(body.get("free_copy", False)),
                                                  override=bool(body.get("override"))), 90
                 try:
                     res = asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=wait)

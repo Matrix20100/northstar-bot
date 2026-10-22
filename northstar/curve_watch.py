@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS curve_watch (
     sells_m5 INTEGER,
     chg_m5 REAL,
     chg_h1 REAL,
+    attention REAL,
     peak_mc REAL,
     peak_at REAL,
     low_mc REAL,
@@ -66,7 +67,7 @@ def open_mints(db, now: float, watch_hours: float) -> list[str]:
         (now - watch_hours * 3600,))]
 
 
-def observe(db, pairs_by_mint: dict, now: float, s) -> dict:
+def observe(db, pairs_by_mint: dict, now: float, s, attention=None) -> dict:
     """Fold one radar pass into the table. `pairs_by_mint`: mint -> list of PairInfo. Never raises."""
     lo = float(getattr(s, "curve_watch_band_lo", 10_000.0))
     hi = float(getattr(s, "curve_watch_band_hi", 80_000.0))
@@ -93,13 +94,19 @@ def observe(db, pairs_by_mint: dict, now: float, s) -> dict:
                     continue                                  # already scored once
                 t5 = (main.txns or {}).get("m5") or {}
                 age = (now - main.pair_created_at) / 60 if main.pair_created_at else None
+                att = None
+                if attention is not None:
+                    try:
+                        att = attention.quick(mint, main.base_name, main.base_symbol)
+                    except Exception:  # noqa: BLE001
+                        att = None
                 db.execute(
                     "INSERT INTO curve_watch(mint, symbol, entered_at, age_min, entry_mc, entry_liq, vol_m5, buys_m5, "
-                    "sells_m5, chg_m5, chg_h1, peak_mc, peak_at, low_mc, low_before_peak, last_mc, last_ts) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "sells_m5, chg_m5, chg_h1, attention, peak_mc, peak_at, low_mc, low_before_peak, last_mc, last_ts) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (mint, main.base_symbol, now, round(age, 1) if age is not None else None, mc, main.liquidity_usd,
                      (main.vol or {}).get("m5"), t5.get("buys"), t5.get("sells"),
-                     (main.price_change or {}).get("m5"), (main.price_change or {}).get("h1"),
+                     (main.price_change or {}).get("m5"), (main.price_change or {}).get("h1"), att,
                      mc, now, mc, mc, mc, now))
                 out["entered"] += 1
                 continue
@@ -150,6 +157,9 @@ RULES: dict[str, tuple[str, Callable[[dict], bool]]] = {
                               lambda r: 24_000 <= r["entry_mc"] <= 50_000 and _n(r["buys_m5"]) >= 12
                               and _n(r["buys_m5"]) > _n(r["sells_m5"])),
     "heavy volume $20K+ in 5 min": ("5-min volume of $20K or more", lambda r: _n(r["vol_m5"]) >= 20_000),
+    "nexas + attention": ("nexas clone, and an attention score of 30+ (KOLs, waves, trending, news)",
+                          lambda r: _n(r["age_min"], 999) <= 30 and 14_000 <= r["entry_mc"] <= 60_000
+                          and _n(r["vol_m5"]) >= 7_500 and _n(r.get("attention")) >= 30),
 }
 
 

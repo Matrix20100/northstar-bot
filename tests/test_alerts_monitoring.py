@@ -42,10 +42,13 @@ async def test_publish_and_duplicate_alert_suppressed(settings, db):
     assert len(pub.sent) == 1
     e = pub.sent[0][1]
     text = json.dumps(e)
-    assert f"solscan.io/token/{MINT}" in text and f"mint:{MINT}" in e["footer"]["text"]
-    assert "not a trade recommendation" in e["footer"]["text"]
-    risk_field = next(f for f in e["fields"] if f["name"].startswith("Risk"))
-    assert "not rug-proof" in risk_field["value"].lower()
+    # v3.0.0 compact post: key numbers, image, More info + Axiom + DexScreener buttons
+    assert f"mint:{MINT}" in e["footer"]["text"] and "not a trade recommendation" in e["footer"]["text"]
+    assert e["description"].startswith("**Market Cap**:") and f"`{MINT}`" in e["description"]
+    assert "not rug-proof" in e["description"]
+    assert [b["label"] for b in e["_buttons"]] == ["More info", "Axiom", "DexScreener"]
+    assert e["_buttons"][0]["custom_id"] == f"ns:more:{MINT}"
+    assert "fields" not in e
     assert embed_size(e) < 6000
     assert db.get_candidate(MINT)["state"] == "PUBLISHED"
 
@@ -178,8 +181,9 @@ async def test_milestones_and_performance_math(settings, db):
     assert abs(a["max_drawdown_pct"] - 40.0) < 1e-6
     assert len([e for _, e in pub.sent if "hit" in e["title"]]) == 3, "one message per milestone"
     edited = pub.edits[-1][1]
-    perf = next(f for f in edited["fields"] if f["name"] == "Since callout")["value"]
-    assert "-40.0%" in perf and "0.60x" in perf
+    mc_line = next(x for x in edited["description"].split("\n") if x.startswith("**Market Cap**"))
+    assert "0.60x" in mc_line
+    assert "3.20x" in next(x for x in edited["description"].split("\n") if x.startswith("**Peak**"))
 
 
 async def test_missing_price_keeps_last_valid_never_zero(settings, db):

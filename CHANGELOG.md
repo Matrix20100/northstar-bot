@@ -3,6 +3,55 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 3.0.0 — 2026-10-22 — runner calls, attention score, compact calls, free = proven wins
+
+Operator report: "Nothing is even being called out." Two causes, both in the code:
+
+- the early-call path needed the AI judge, and no AI key is set, so it could never call;
+- the "already +400% since launch" rule rejected nearly every curve coin above about $25K, while
+  the curve radar only looks at $24K-$50K. The two rules cancelled each other out.
+
+What changed:
+
+- **Runner calls (`runner.py`), no AI key needed.** A pump.fun coin is called when all of these hold:
+  - momentum: $15K-$90K market cap, 45 min old or less, $7.5K+ 5-minute volume, buys at least
+    matching sells (the curve radar's DexScreener numbers, seconds old);
+  - safety: mint and freeze authority revoked, no restricting extension, holder concentration,
+    dev holding and launch buys all RAN and PASSED. Any FAIL gate (snipers, insider tiny
+    trades, wallet network, ...) blocks. So do a bad launch chart, RUG LIKELY / HIGH RISK,
+    recycled socials, and serious rug-check red flags. UNKNOWN is not a pass;
+  - runner score 60+ out of 100: momentum 45, safety 30, attention 25.
+
+  At most 6 calls an hour. Every candidate's score and blockers are stored with its research.
+  The weights are a first setting: the curve watch records what each coin did, so
+  `python main.py curve` checks them against real outcomes.
+- **Attention (`attention.py`).** Every coin gets a 0-100 attention score with plain reasons.
+  Sources:
+  - public KOL Telegram channels (`NORTHSTAR_KOL_TELEGRAM_CHANNELS`, read from their public
+    t.me/s/ page): which mints and $TICKERs they post;
+  - crypto news RSS (CoinDesk, Cointelegraph, Decrypt);
+  - pump.fun launch waves;
+  - CoinGecko / GeckoTerminal trending;
+  - Google News, Google Trends, Wikipedia;
+  - your tracked wallets holding it;
+  - DexScreener promotion.
+
+  It counts in the call score, and the curve watch stores it per coin, with a new rule
+  "nexas + attention".
+- **Compact Discord calls.** Only the key numbers: market cap, liquidity, 5m volume, age, holders,
+  launch, rug odds, attention, tracked wallets, score, plan, peak, address. Plus the coin image and
+  buttons **More info** / Axiom / DexScreener. More info shows the full research, only to the
+  person who clicked (handled by the slash-command bot, so it keeps working after a restart).
+- **The free channel gets proven wins only.** A call is posted there once it reaches 2x
+  (`NORTHSTAR_FREE_PROOF_MULTIPLE`, `NORTHSTAR_EARLY_CALL_FREE_AT`). Delayed free copies of
+  fresh calls are gone. A manual call goes to free only when "also post to free" is ticked.
+- **Early watches never post to free.** `NORTHSTAR_EARLY_WATCH_CHANNEL` defaults to `off`
+  (`free` now means off; `vip` still posts there). Coins that are not posted are UNTRACKED,
+  not followed for hours.
+- The old AI early-call path is still there with `NORTHSTAR_RUNNER_CALLS_ENABLED=false`.
+- Tests: `tests/test_runner_calls.py`, the More info button in `tests/test_commands.py`, and
+  updated routing, free-copy and embed tests.
+
 ## 2.6.2 — 2026-10-22 — measure the early band (where call bots post)
 
 Operator request: reverse-engineer the "Nexas Alerts" calls and make coin finding better.

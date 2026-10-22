@@ -100,7 +100,7 @@ def init_schema(db) -> None:
 class CurveRadar:
     def __init__(self, s, db, dex):
         self.s, self.db, self.dex = s, db, dex
-        self._last: dict[str, float] = {}
+        self._last: dict[str, tuple] = {}     # mint -> (last looked at, 5-min volume then)
         init_schema(db)
 
     async def run_once(self, now: Optional[float] = None) -> list[str]:
@@ -131,7 +131,7 @@ class CurveRadar:
             by_mint: dict[str, list] = {}
             for p in pairs:
                 by_mint.setdefault(p.base_mint, []).append(p)
-            res = CW.observe(self.db, by_mint, now, self.s)
+            res = CW.observe(self.db, by_mint, now, self.s, getattr(self, "attention", None))
             if res.get("entered") or res.get("closed"):
                 log.info("curve watch: %s", res)
         best: dict[str, object] = {}
@@ -140,27 +140,42 @@ class CurveRadar:
                 continue
             best[p.base_mint] = p
         out = []
-        lo, hi = self.s.early_call_min_mc * 0.8, self.s.early_call_max_mc
+        runner = getattr(self.s, "runner_calls_enabled", True)
+        if runner:
+            # v3.0.0: the runner band (where call bots post), with real 5-minute volume
+            lo, hi = float(self.s.runner_min_mc), float(self.s.runner_max_mc)
+            min_vol = float(self.s.runner_min_vol_m5) * 0.7
+        else:
+            lo, hi, min_vol = self.s.early_call_min_mc * 0.8, self.s.early_call_max_mc, 0.0
         for mint, p in best.items():
             if (p.dex_id or "").lower() not in ("pumpfun", "pump.fun", "pump"):
                 continue                                        # only coins still on the curve
             mc = p.market_cap or p.fdv
             t5 = (p.txns or {}).get("m5") or {}
             buys, sells = t5.get("buys") or 0, t5.get("sells") or 0
-            if not mc or not (lo <= mc <= hi) or buys < self.s.curve_radar_min_buys_m5 or buys <= sells:
+            vol = float((p.vol or {}).get("m5") or 0)
+            if not mc or not (lo <= mc <= hi) or buys < self.s.curve_radar_min_buys_m5 or buys < sells:
                 continue
-            if now - self._last.get(mint, 0) < 600:
+            if vol < min_vol or (not runner and buys <= sells):
                 continue
-            self._last[mint] = now
+            # a coin is re-looked at most every 10 min, unless its volume has doubled since
+            last = self._last.get(mint)
+            if last and now - last[0] < 600 and vol < 2 * last[1]:
+                continue
+            self._last[mint] = (now, vol)
             out.append(mint)
+            age = (now - p.pair_created_at) / 60 if p.pair_created_at else None
             self.db.upsert_discovery(mint, "curve_radar", 9.0, p.base_name, p.base_symbol,
-                                     {"market_cap": mc, "buys_m5": buys, "sells_m5": sells})
+                                     {"market_cap": mc, "buys_m5": buys, "sells_m5": sells, "vol_m5": vol,
+                                      "chg_m5": (p.price_change or {}).get("m5"), "liq": p.liquidity_usd,
+                                      "age_min": round(age, 1) if age is not None else None,
+                                      "image_url": p.image_url, "seen_at": now})
             # launches are no longer queued on a timer, so this is what puts one in the queue
             self.db.execute("UPDATE candidates SET next_research_at=? WHERE mint=?", (now, mint))
         if out:
             log.info("curve radar: %d coin(s) entering the early band: %s", len(out), ", ".join(out[:5]))
         if len(self._last) > 20000:
-            self._last = {k: v for k, v in self._last.items() if v > now - 3600}
+            self._last = {k: v for k, v in self._last.items() if v[0] > now - 3600}
         return out
 
 
@@ -168,6 +183,7 @@ class CurveRadar:
 class EarlyCaller:
     def __init__(self, s, db, publisher, events=None, judge=None):
         self.s, self.db, self.pub, self.events, self.judge = s, db, publisher, events, judge
+        self.attention = None            # set by the engine (attention.py)
         init_schema(db)
         self._no_key_logged = False
 
@@ -229,8 +245,47 @@ class EarlyCaller:
                         f"{pm.get('buy_sol_5m', 0):.1f} SOL bought",
                 "ticker_crowding": (r.get("context") or {}).get("ticker_crowding_6h")}
 
-    async def consider(self, out, now: Optional[float] = None) -> Optional[dict]:
-        """Gate -> AI -> post. Returns the call row when posted."""
+    async def consider_runner(self, out, now: Optional[float] = None, sources: Optional[list] = None) -> Optional[dict]:
+        """v3.0.0 runner call: momentum + every safety check passed + runner score. No AI needed."""
+        from . import runner as RN
+
+        now = now or time.time()
+        r = out.report
+        if r.get("lifecycle") != "PRE_MIGRATION_BONDING_CURVE":
+            return None
+        if self.db.fetchone("SELECT 1 FROM early_calls WHERE mint=?", (out.mint,)):
+            return None
+        m = RN.radar_metrics(self.db, out.mint, now)
+        ident = r.get("identity") or {}
+        att = (self.attention.score(out.mint, ident.get("name"), ident.get("symbol"), ident.get("description"), r,
+                                    sources) if getattr(self, "attention", None) else {"score": 0, "reasons": []})
+        r["attention"] = att
+        sc = RN.score(r, m or {}, att) if m else {"score": 0.0}
+        why = RN.blockers(r, m, self.s, now)
+        why += [f"serious rug-check red flag: {x}" for x in serious_red_flags(r)[:2]]
+        need = float(getattr(self.s, "runner_min_score", 60))
+        if sc["score"] < need:
+            why.append(f"runner score {sc['score']:.0f} < {need:.0f}")
+        cap = int(getattr(self.s, "runner_max_per_hour", 6) or 0)
+        if not why and cap:
+            n = (self.db.fetchone("SELECT COUNT(*) AS n FROM early_calls WHERE created_at > ?", (now - 3600,)) or {})
+            if n.get("n", 0) >= cap:
+                why.append(f"hourly cap of {cap} runner calls reached")
+        r["runner"] = {**sc, "metrics": m, "blockers": why[:8], "called": not why}
+        if why:
+            if r.get("runner_candidate"):
+                log.info("runner %s ($%s): score %.0f - not called: %s", out.mint, ident.get("symbol"),
+                         sc.get("score", 0), "; ".join(why[:3]))
+            return None
+        return await self.publish(out, {"score": round(sc["score"]), "verdict": "CALL",
+                                        "narrative": "; ".join(att.get("reasons") or [])[:200] or None}, now,
+                                  entry_usd=float(m["market_cap"]))
+
+    async def consider(self, out, now: Optional[float] = None, sources: Optional[list] = None) -> Optional[dict]:
+        """Gate -> AI -> post. Returns the call row when posted. v3.0.0: runner calls (no AI) unless
+        NORTHSTAR_RUNNER_CALLS_ENABLED=false."""
+        if getattr(self.s, "runner_calls_enabled", True):
+            return await self.consider_runner(out, now, sources)
         now = now or time.time()
         ok, why = self.gate(out)
         if not ok:
@@ -254,13 +309,15 @@ class EarlyCaller:
             return None
         return await self.publish(out, ai, now)
 
-    async def publish(self, out, ai: dict, now: float) -> Optional[dict]:
+    async def publish(self, out, ai: dict, now: float, entry_usd: Optional[float] = None) -> Optional[dict]:
         pm = out.report.get("pre_migration") or {}
-        entry = float(pm["market_cap_usd_current"])
+        entry = float(entry_usd or pm["market_cap_usd_current"])
         plan = TP.build_plan(entry, self.s, "early") if self.s.trade_plan_enabled else None
         call = {"entry_mcap": entry, "current_mcap": entry, "peak_mcap": entry, "peak_at": now, "sent_at": now,
                 "phase": "CURVE", "last_update_at": now}
-        embed = early_call_embed(out.report, call, TP.plan_lines(plan, money) if plan else None)
+        from .discord_bot.embeds import runner_call_embed
+        embed = (runner_call_embed(out.report, call) if out.report.get("runner")
+                 else early_call_embed(out.report, call, TP.plan_lines(plan, money) if plan else None))
         target = self.s.discord_channel_id
         try:
             channel_id, message_id = await self.pub.publish(embed, target)
@@ -274,7 +331,8 @@ class EarlyCaller:
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (out.mint, now, channel_id, message_id, status, "CURVE", entry, entry, entry, now, entry,
              json.dumps(plan.__dict__) if plan else None, ai.get("score"), json.dumps(out.report, default=str), now, now))
-        log.info("⚡ EARLY NARRATIVE CALL %s ($%s) at %s — %s (AI %d/100)", out.mint,
+        log.info("⚡ %s %s ($%s) at %s — %s (score %d/100)",
+                 "RUNNER CALL" if out.report.get("runner") else "EARLY NARRATIVE CALL", out.mint,
                  (out.report.get("identity") or {}).get("symbol"), money(entry), ai.get("narrative"), ai.get("score", 0))
         return self.db.fetchone("SELECT * FROM early_calls WHERE mint=?", (out.mint,))
 
@@ -406,8 +464,10 @@ class EarlyCallTracker:
                                                                  or "phase" in fields):
                 call = {**row, **fields, "sent_at": r["created_at"], "status_line": status_line}
                 try:
-                    await self.pub.edit(r["channel_id"], r["message_id"], early_call_embed(
-                        report, call, TP.plan_lines(plan, money) if plan else None))
+                    from .discord_bot.embeds import runner_call_embed
+                    await self.pub.edit(r["channel_id"], r["message_id"], runner_call_embed(report, call)
+                                        if report.get("runner") else early_call_embed(
+                                            report, call, TP.plan_lines(plan, money) if plan else None))
                     fields["last_edit_at"] = now
                     counts["edited"] += 1
                 except PublishError as e:

@@ -51,9 +51,8 @@ async def test_call_uses_market_cap_at_post_time(settings, db):
     aid = await AlertService(settings, db, pub, p.dex).publish(out)
     assert abs(db.get_alert(aid)["entry_mcap"] - researched_mc * 1.17) < 1
     e = pub.sent[0][1]
-    assert next(f for f in e["fields"] if f["name"] == "Called at market cap")["value"] == money(researched_mc * 1.17)
-    chart = next(f for f in e["fields"] if f["name"] == "Chart & flow evidence")["value"]
-    assert "Moved +17% while Northstar ran its checks" in chart
+    assert e["description"].split("\n")[0] == f"**Market Cap**: {money(researched_mc * 1.17)}"
+    assert db.fetchone("SELECT report FROM research_snapshots WHERE id=?", (out.snapshot_id,)) is not None
 fmt = money
 
 
@@ -131,7 +130,7 @@ async def test_monitor_posts_tp_then_exit_once(settings, db):
     settings.embed_edit_min_seconds = 0
     aid, pub, p, out = await published(settings, db)
     first = pub.sent[0][1]
-    assert any(f["name"] == "📋 Trade plan" for f in first["fields"]), "callout carries the plan"
+    assert "**Plan**:" in first["description"], "callout carries the plan"
     entry_mc = out.pair.market_cap
     mon = Monitor(settings, db, pub, p.dex, None)
     p.dex.pairs = [make_pair(price_usd=out.pair.price_usd * 1.6, market_cap=entry_mc * 1.6)]
@@ -146,7 +145,7 @@ async def test_monitor_posts_tp_then_exit_once(settings, db):
     a = db.get_alert(aid)
     assert {"PLAN:TP1", "PLAN:TRAIL"} <= set(json.loads(a["warnings"]))
     assert a["state"] != "WARNING", "plan events are not risk warnings"
-    status = next(f for f in pub.edits[-1][1]["fields"] if f["name"] == "📋 Trade plan")["value"]
+    status = next(x for x in pub.edits[-1][1]["description"].split("\n") if x.startswith("**Plan status**"))
     assert "trailing stop — exited" in status
 
 
@@ -168,7 +167,7 @@ async def test_monitor_liquidity_collapse_is_an_exit(settings, db):
 async def test_plan_can_be_disabled(settings, db):
     settings.trade_plan_enabled = False
     aid, pub, p, out = await published(settings, db)
-    assert not any(f["name"] == "📋 Trade plan" for f in pub.sent[0][1]["fields"])
+    assert "**Plan**:" not in pub.sent[0][1]["description"]
     p.dex.pairs = [make_pair(price_usd=out.pair.price_usd * 1.6, market_cap=out.pair.market_cap * 1.6)]
     await Monitor(settings, db, pub, p.dex, None).run_once()
     assert not any("TAKE PROFIT" in e["title"] for _, e in pub.sent)
@@ -211,26 +210,27 @@ def test_momentum_check():
                                                   volume_acceleration=0.1, buy_sell_ratio=0.5).blockers)
 
 
-async def test_free_copy_skipped_after_vip_exit(settings, db):
+async def test_v3_no_delayed_free_copy_of_a_fresh_call(settings, db):
     from northstar.alerts import AlertService
     settings.discord_free_channel_id = 555
     settings.free_callout_delay_minutes = 0
     aid, pub, p, out = await published(settings, db)
-    svc = AlertService(settings, db, pub, p.dex)
-    db.update_alert(aid, warnings=json.dumps(["PLAN:STOP"]))
-    await svc.publish_due_free_posts()
-    assert db.fetchone("SELECT status FROM free_channel_posts WHERE alert_id=?", (aid,))["status"] == "SKIPPED"
-    assert not any(ch == 555 for ch, _ in pub.sent)
-
-
-async def test_free_copy_sent_when_plan_still_open(settings, db):
-    from northstar.alerts import AlertService
-    settings.discord_free_channel_id = 555
-    settings.free_callout_delay_minutes = 0
-    aid, pub, p, out = await published(settings, db)
-    db.update_alert(aid, warnings=json.dumps(["PLAN:TP1"]))
     await AlertService(settings, db, pub, p.dex).publish_due_free_posts()
-    assert any(ch == 555 for ch, _ in pub.sent)
+    assert not db.fetchone("SELECT 1 FROM free_channel_posts WHERE alert_id=?", (aid,))
+    assert not any(ch == 555 for ch, _ in pub.sent), "the free channel never gets a fresh call"
+
+
+async def test_v3_free_channel_gets_the_call_once_it_is_proven(settings, db):
+    settings.discord_free_channel_id = 555
+    aid, pub, p, out = await published(settings, db)
+    mon = Monitor(settings, db, pub, p.dex, None)
+    p.dex.pairs = [make_pair(price_usd=out.pair.price_usd * 1.6, market_cap=out.pair.market_cap * 1.6)]
+    await mon.run_once()
+    assert not any(ch == 555 for ch, _ in pub.sent), "1.5x is not a proven win yet"
+    p.dex.pairs = [make_pair(price_usd=out.pair.price_usd * 2.3, market_cap=out.pair.market_cap * 2.3)]
+    await mon.run_once()
+    free = [e for ch, e in pub.sent if ch == 555]
+    assert len(free) == 1 and "2" in free[0]["title"]
 
 
 def test_shipped_runner_plan_is_valid():

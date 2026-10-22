@@ -27,7 +27,30 @@ MAX_ATTEMPTS = 3
 
 
 
+def v3_call_embed(report: dict, plan: Optional[list] = None) -> dict:
+    """v3.0.0: every VIP call is the compact post (key numbers, image, More info button)."""
+    from .discord_bot.embeds import compact_call_embed
+
+    def val(x):
+        return x.get("value") if isinstance(x, dict) else x
+
+    ct = report.get("call_type") or "STANDARD"
+    kind = {"RUG_SCALP": "scalp", "MANUAL": "manual"}.get(ct, "standard")
+    entry = val((report.get("market") or {}).get("market_cap"))
+    now = time.time()
+    call = {"entry_mcap": entry, "current_mcap": entry, "peak_mcap": entry, "sent_at": now, "phase": "POOL",
+            "status_line": " · ".join(str(x) for x in (plan or [])[:3])[:300] or None}
+    return compact_call_embed(report, call, kind=kind)
+
+
 def wants_free_copy(call_type: str, report: dict) -> bool:
+    """v3.0.0: no automatic copies. The free channel only gets proof posts once a call reaches
+    `free_proof_multiple` (monitor.py / early_calls.py). The one exception is a manual call whose
+    caller ticked "also post to the free channel" for that call."""
+    return call_type == "MANUAL" and (report.get("manual") or {}).get("free_copy") is True
+
+
+def _legacy_wants_free_copy(call_type: str, report: dict) -> bool:
     """Standard calls get a delayed free-channel copy; scalps never do; manual calls if asked."""
     if call_type == "STANDARD":
         return True
@@ -195,7 +218,7 @@ class AlertService:
 
         delivered = await self._send(
             alert_id,
-            callout_embed(out.report, plan=self._callout_plan(out.report, plan_vals)),
+            v3_call_embed(out.report, self._callout_plan(out.report, plan_vals)),
         )
 
         # The VIP channel receives the qualified call first.
@@ -445,10 +468,10 @@ class AlertService:
 
         target = self._early_watch_channel()
         if target == "SILENT":
-            # Not posted anywhere, but still tracked so /performance can show whether
-            # early watches would have worked before they go back into a channel.
-            self.db.update_early_signal_status(out.mint, "SILENT")
-            log.info("early watch for %s recorded silently (NORTHSTAR_EARLY_WATCH_CHANNEL=%s)",
+            # v3.0.0: early watches are off by default (runner calls replace them). Nothing is
+            # posted and nothing is tracked: the curve watch already measures these coins.
+            self.db.update_early_signal_status(out.mint, "UNTRACKED")
+            log.info("early watch for %s not posted (NORTHSTAR_EARLY_WATCH_CHANNEL=%s)",
                      out.mint, self.s.early_watch_channel)
             return None
 
@@ -533,12 +556,10 @@ class AlertService:
         go to the free channel only and never to VIP. With no free channel configured they are
         tracked silently instead of falling back to VIP.
         """
-        mode = getattr(self.s, "early_watch_channel", "free")
+        mode = getattr(self.s, "early_watch_channel", "off")
         if mode == "vip":
             return None
-        if mode == "free" and self.s.discord_free_channel_id:
-            return int(self.s.discord_free_channel_id)
-        return "SILENT"
+        return "SILENT"               # v3.0.0: never the free channel (it only gets proven wins)
 
     def _callout_plan(self, report: dict, values: Optional[dict] = None) -> Optional[list[str]]:
         if not getattr(self.s, "trade_plan_enabled", False):
@@ -853,7 +874,7 @@ class AlertService:
                     values = None
                 delivered = await self._send(
                     alert["id"],
-                    callout_embed(report, plan=self._callout_plan(report, values)),
+                    v3_call_embed(report, self._callout_plan(report, values)),
                 )
                 if delivered and wants_free_copy(report["call_type"], report) and self.s.discord_free_channel_id:
                     self.db.schedule_free_channel_post(

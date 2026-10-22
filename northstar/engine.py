@@ -171,6 +171,11 @@ class Engine:
         from .radar import SurgeRadar
         self.radar = (SurgeRadar(s, db, providers.dex, getattr(providers, "coingecko", None))
                       if (s.radar_enabled and providers.dex) else None)
+        from .attention import Attention
+        self.attention = Attention(s, self.events, self.radar)
+        self.early.attention = self.attention
+        if self.curve_radar is not None:
+            self.curve_radar.attention = self.attention
         self._inflight: set[str] = set()
         self._manual: dict[str, tuple] = {}      # mint -> (outcome, researched_at) from the dashboard
         self._manual_busy: set[str] = set()
@@ -239,7 +244,7 @@ class Engine:
         if self.radar:
             tasks.append(asyncio.create_task(self._loop("surge-radar", self.s.radar_interval_seconds, self._radar)))
         if self.s.early_call_enabled:
-            tasks.append(asyncio.create_task(self._loop("event-feeds", 60, self.events.refresh)))
+            tasks.append(asyncio.create_task(self._loop("event-feeds", 60, self._refresh_attention)))
             tasks.append(asyncio.create_task(self._loop("early-call-tracker", self.s.early_watch_refresh_seconds,
                                                         self._track_early_calls)))
             if self.curve_radar is not None:
@@ -744,9 +749,20 @@ class Engine:
         early_called = None
         if out.report.get("lifecycle") == "PRE_MIGRATION_BONDING_CURVE" and self.s.early_call_enabled:
             try:
-                early_called = await self.early.consider(out)
+                srcs = json.loads((cand or {}).get("sources") or "[]") if cand else []
+                early_called = await self.early.consider(out, sources=srcs)
             except Exception:  # noqa: BLE001 - an early-call problem must never stop research
                 log.warning("early-call check failed for %s", mint, exc_info=True)
+            if out.report.get("runner") and out.snapshot_id:
+                try:      # keep the runner score, attention and blockers with the stored research
+                    self.db.update_research_final(out.snapshot_id, out.action.value, out.score, out.risk.value,
+                                                  out.confidence.value, out.report)
+                except Exception:  # noqa: BLE001
+                    log.debug("could not store the runner result for %s", mint, exc_info=True)
+            if early_called:
+                self.stats["runner_calls"] = self.stats.get("runner_calls", 0) + 1
+                self.db.set_state(mint, "PUBLISHED", next_research_at=None, **common)
+                return
         verdict = None
         if out.action == Action.REJECT and out.pair is not None:
             from .scalp import check as scalp_check
@@ -892,7 +908,7 @@ class Engine:
                 "manual": {"researched_at": now, "callable": out.pair is not None and not out.not_ready,
                            "expires_in": self.MANUAL_TTL}}
 
-    async def manual_call(self, mint: str, note: str = "", free_copy: bool = True,
+    async def manual_call(self, mint: str, note: str = "", free_copy: bool = False,
                           override: bool = False) -> dict:
         """Post a call the owner decided on, through the same publisher as every other call."""
         entry = self._manual.get((mint or "").strip())
@@ -928,6 +944,10 @@ class Engine:
         return {"ok": True, "alert_id": alert_id, "dry_run": bool(self.s.dry_run),
                 "free_copy": bool(free_copy and self.s.discord_free_channel_id),
                 "free_delay_minutes": self.s.free_callout_delay_minutes}
+
+    async def _refresh_attention(self) -> None:
+        await self.events.refresh()
+        await self.attention.refresh()
 
     async def _curve_radar(self) -> None:
         for mint in await self.curve_radar.run_once():
