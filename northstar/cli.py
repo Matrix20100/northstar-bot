@@ -292,7 +292,12 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 db.close()
             if args.apply and args.vacuum:
-                r = RT.vacuum(path)
+                from pathlib import Path
+                try:
+                    r = RT.vacuum(path, str(Path(s.data_dir) / "northstar.lock"))
+                except RuntimeError as e:
+                    print(f"vacuum skipped: {e}")
+                    return 1
                 print(f"vacuum: {r['before_bytes'] / 1e6:,.1f} MB -> {r['after_bytes'] / 1e6:,.1f} MB")
                 print(RT.format_sizes(RT.table_sizes(path), RT.file_size(path)))
             return 0

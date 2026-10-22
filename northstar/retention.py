@@ -31,8 +31,6 @@ COMPACT_FLAG = '"compacted": 1'
 # keys a compacted prefilter report keeps (everything any reader of an old prefilter row uses)
 PREFILTER_KEEP = ("mint", "ts", "sources", "missing", "identity", "decision", "risk", "final_action",
                   "final", "reasons", "lifecycle", "funnel")
-MARKET_KEEP = ("price_usd", "liquidity_usd", "market_cap", "fdv", "volume", "txns", "price_change",
-               "pair_created_at")
 
 
 # --------------------------------------------------------------------------- measurement
@@ -59,33 +57,80 @@ def file_size(path: str) -> int:
 
 
 # --------------------------------------------------------------------------- one-time migration
-def collapse_discovery_duplicates(db, force: bool = False) -> int:
+def collapse_discovery_duplicates(db, force: bool = False, max_rows: int = 2000) -> int:
     """Merge exact repeats (same mint, feed and payload) into one row with seen/last_ts.
 
-    One-time (meta flag). Readers take the first launch event (ORDER BY ts ASC) or the latest
-    profile (ORDER BY COALESCE(last_ts, ts) DESC); both are unchanged by the merge.
-    Returns rows removed.
+    One-time (meta flag set only after the last chunk). Readers take the first launch event
+    (ORDER BY ts ASC) or the latest profile (ORDER BY COALESCE(last_ts, ts) DESC); both are
+    unchanged by the merge.
+
+    Works in short transactions of whole coins holding about `max_rows` rows each (one coin can
+    exceed it): on the 21 Oct copy a single transaction held the database for 5.3 s and grew the
+    WAL file by 146 MB. Each transaction merges complete coins, so a crash or restart mid-way
+    double-counts nothing and the next run carries on. Returns rows removed.
     """
     if not force and db.fetchone("SELECT 1 FROM meta WHERE key=?", (DEDUP_FLAG,)):
         return 0
+    sizes = db.fetchall("SELECT mint, COUNT(*) n FROM discovery_events WHERE mint IN (SELECT mint FROM "
+                        "discovery_events GROUP BY mint, source, payload HAVING COUNT(*) > 1) GROUP BY mint")
+    chunks, cur, rows = [], [], 0
+    for r in sizes:
+        if cur and rows + r["n"] > max_rows:
+            chunks.append(cur)
+            cur, rows = [], 0
+        cur.append(r["mint"])
+        rows += r["n"]
+    if cur:
+        chunks.append(cur)
+    removed = 0
+    for part in chunks:
+        marks = ",".join("?" * len(part))
 
-    def tx(c: sqlite3.Connection) -> int:
-        c.execute("DROP TABLE IF EXISTS temp.disc_dup")
-        c.execute("CREATE TEMP TABLE disc_dup AS SELECT MIN(id) keep, SUM(seen) n, "
-                  "MAX(COALESCE(last_ts, ts)) last FROM discovery_events "
-                  "GROUP BY mint, source, payload HAVING COUNT(*) > 1")
-        c.execute("CREATE INDEX temp.ix_disc_dup ON disc_dup(keep)")
-        c.execute("UPDATE discovery_events SET seen = (SELECT n FROM disc_dup WHERE keep = discovery_events.id), "
-                  "last_ts = (SELECT last FROM disc_dup WHERE keep = discovery_events.id) "
-                  "WHERE id IN (SELECT keep FROM disc_dup)")
-        removed = c.execute("DELETE FROM discovery_events WHERE id NOT IN "
-                            "(SELECT MIN(id) FROM discovery_events GROUP BY mint, source, payload)").rowcount
-        c.execute("DROP TABLE temp.disc_dup")
-        c.execute("INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                  (DEDUP_FLAG, str(int(time.time()))))
-        return removed
+        def tx(c: sqlite3.Connection, part=part, marks=marks) -> int:
+            c.execute("DROP TABLE IF EXISTS temp.disc_dup")
+            c.execute(f"CREATE TEMP TABLE disc_dup AS SELECT MIN(id) keep, SUM(seen) n, "
+                      f"MAX(COALESCE(last_ts, ts)) last FROM discovery_events WHERE mint IN ({marks}) "
+                      f"GROUP BY mint, source, payload HAVING COUNT(*) > 1", part)
+            c.execute("UPDATE discovery_events SET "
+                      "seen = (SELECT n FROM disc_dup WHERE keep = discovery_events.id), "
+                      "last_ts = (SELECT last FROM disc_dup WHERE keep = discovery_events.id) "
+                      "WHERE id IN (SELECT keep FROM disc_dup)")
+            n = c.execute(f"DELETE FROM discovery_events WHERE mint IN ({marks}) AND id NOT IN "
+                          f"(SELECT MIN(id) FROM discovery_events WHERE mint IN ({marks}) "
+                          f"GROUP BY mint, source, payload)", part + part).rowcount
+            c.execute("DROP TABLE temp.disc_dup")
+            return n
 
-    return db._tx(tx)
+        removed += db._tx(tx)
+        checkpoint(db, "TRUNCATE")            # keep the WAL file small between chunks
+    db.execute("INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+               (DEDUP_FLAG, str(int(time.time()))))
+    return removed
+
+
+def checkpoint(db, mode: str = "PASSIVE") -> None:
+    """Copy the WAL back into the database file; TRUNCATE also gives the WAL's disk space back.
+    Never raises: a busy reader just means the next checkpoint does it."""
+    try:
+        db.execute(f"PRAGMA wal_checkpoint({mode})")
+    except sqlite3.Error:
+        pass
+
+
+def prune_curve(db, hours: float, now: Optional[float] = None, chunk: int = 5000) -> int:
+    """Delete bonding-curve events older than `hours`, in short transactions."""
+    if not hours or hours <= 0:
+        return 0
+    cutoff = (now or time.time()) - hours * 3600
+    removed = 0
+    while True:
+        n = db._tx(lambda c: c.execute(
+            "DELETE FROM curve_snapshots WHERE id IN (SELECT id FROM curve_snapshots WHERE ts < ? LIMIT ?)",
+            (cutoff, chunk)).rowcount)
+        removed += n
+        if n < chunk:
+            return removed
+        checkpoint(db, "TRUNCATE")
 
 
 # --------------------------------------------------------------------------- compaction
@@ -104,8 +149,9 @@ def compact_prefilter_report(r: dict) -> Optional[dict]:
     if not reasons or not str(reasons[0]).startswith("prefilter:") or r.get("compacted"):
         return None
     out = {k: r[k] for k in PREFILTER_KEEP if k in r}
-    m = r.get("market") or {}
-    out["market"] = {k: _slim_value(m[k]) for k in MARKET_KEEP if k in m}
+    # every market key stays (brain.vector reads e.g. fetched_at and boosts_active); only the
+    # provider metadata around each value (status/source/note) is dropped
+    out["market"] = _slim_value(r.get("market") or {})
     pool = r.get("pool") or {}
     out["pool"] = {k: pool[k] for k in ("address", "dex") if k in pool}
     out["compacted"] = 1
@@ -148,6 +194,7 @@ def maintain(db, s: Any, now: Optional[float] = None) -> dict:
     out: dict = {}
     for name, fn in (
         ("discovery_duplicates_merged", lambda: collapse_discovery_duplicates(db)),
+        ("curve_events_removed", lambda: prune_curve(db, getattr(s, "curve_retention_hours", 6.0), now)),
         ("pruned", lambda: db.prune_old_data(getattr(s, "discovery_retention_days", 4.0),
                                              getattr(s, "snapshot_retention_days", 7.0), now,
                                              curve_retention_hours=getattr(s, "curve_retention_hours", 6.0))),
@@ -159,6 +206,8 @@ def maintain(db, s: Any, now: Optional[float] = None) -> dict:
         except Exception as e:  # noqa: BLE001 - housekeeping must never break the bot
             log.warning("retention step %s failed: %s", name, e, exc_info=True)
             out[name] = f"failed: {type(e).__name__}"
+    if any(v for k, v in out.items() if isinstance(v, int)):
+        checkpoint(db, "TRUNCATE")            # give the WAL's disk space back after a big pass
     return out
 
 
@@ -190,9 +239,34 @@ def estimate(db, s: Any, now: Optional[float] = None) -> dict:
     return out
 
 
-def vacuum(path: str) -> dict:
-    """Rebuild the file to return freed pages to the disk. Run with the bot STOPPED."""
+def vacuum(path: str, lock_path: Optional[str] = None) -> dict:
+    """Rebuild the file to return freed pages to the disk. Refuses while the bot is running.
+
+    VACUUM needs an exclusive lock for its whole run (the bot's writes would fail after their
+    30 s busy timeout) and free disk space of about the database size (temporary copy). If it
+    fails part-way SQLite leaves the original file intact.
+    """
+    if lock_path:
+        from .engine import InstanceLock
+        lk = InstanceLock(__import__("pathlib").Path(lock_path))
+        try:
+            lk.acquire()
+        except RuntimeError as e:
+            raise RuntimeError(f"stop the bot first: {e}") from None
+    try:
+        return _vacuum(path)
+    finally:
+        if lock_path:
+            lk.release()
+
+
+def _vacuum(path: str) -> dict:
+    import shutil
     before = file_size(path)
+    free = shutil.disk_usage(os.path.dirname(os.path.abspath(path)) or ".").free
+    if free < before * 1.1:
+        raise RuntimeError(f"not enough free disk for VACUUM: {free / 1e6:,.0f} MB free, "
+                           f"needs about {before * 1.1 / 1e6:,.0f} MB")
     con = sqlite3.connect(path, isolation_level=None, timeout=30)
     try:
         con.execute("PRAGMA wal_checkpoint(TRUNCATE)")

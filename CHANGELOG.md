@@ -21,6 +21,14 @@ Measured on a copy of the 21 Oct 17:22 database (394 MB). The production databas
 - **Outcome tracking is polled round-robin** (`NORTHSTAR_TRACKING_POLL_LIMIT=600`). It used to
   take the 600 oldest open rows every pass. With about 2,600 open rows, decisions from the
   latest ~12 hours had 0 price checks, which missed the hours when most coins run or rug.
+- Safety review fixes: the one-time merge and the curve cleanup run in short transactions
+  (~2,000 rows each) with a WAL truncate between them. On the copy, other writers waited at most
+  0.18 s and the WAL peaked at 24 MB, against 5.3 s and 146 MB in one transaction. A crash
+  mid-way loses nothing and nothing is counted twice. Compacted reports keep every market key,
+  only without provider metadata, so the brain's feature vectors are unchanged.
+  `--vacuum` refuses while the bot holds its lock or when free disk is too small. Negative
+  retention hours mean off, and the poll limit is clamped to 1–3000; SQLite would have read a
+  negative LIMIT as "every row".
 - `python main.py db` shows space per table and what the retention pass would remove.
   `--apply` runs the pass; `--vacuum` also shrinks the file and needs the bot stopped.
 - On the copy: 394 MB → 179 MB after the retention pass and VACUUM. Alerts, price history,

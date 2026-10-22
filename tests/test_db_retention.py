@@ -112,8 +112,9 @@ def test_compaction_keeps_reasons_and_decision_and_skips_everything_else(db):
     for sid in (a, c):
         r = json.loads(after[sid])
         assert r["compacted"] == 1 and r["reasons"] == PREFILTER["reasons"] and r["decision"] == PREFILTER["decision"]
-        assert r["market"]["price_usd"] == {"value": 0.0002} and "raw_provider_blob" not in r["market"]
-        assert r["pool"] == {"address": "P"} and len(after[sid]) < len(before[sid]) / 2
+        assert r["market"]["price_usd"] == {"value": 0.0002} and r["market"]["volume"] == {"m5": {"value": 10.0}}
+        assert set(r["market"]) == set(PREFILTER["market"]), "every market key stays; only metadata goes"
+        assert r["pool"] == {"address": "P"} and len(after[sid]) < len(before[sid])
     for sid in (b, latest, analysed):
         assert after[sid] == before[sid]
     assert RT.compact_snapshots(db, 24, now) == 0 and RT.compact_snapshots(db, 0, now) == 0
@@ -132,7 +133,7 @@ def test_estimate_and_maintain_agree_and_are_idempotent(db):
     assert est["discovery_duplicate_rows"] == 4 and est["curve_events_older_than_retention"] == 1
     assert est["prefilter_reports_to_compact"] == 1
     res = RT.maintain(db, s, now)
-    assert res["discovery_duplicates_merged"] == 4 and res["pruned"]["curve_snapshots"] == 1
+    assert res["discovery_duplicates_merged"] == 4 and res["curve_events_removed"] == 1
     assert res["snapshots_compacted"] == 1
     again = RT.maintain(db, s, now)
     assert again["discovery_duplicates_merged"] == 0 and again["snapshots_compacted"] == 0
@@ -176,3 +177,121 @@ def test_tracking_is_polled_round_robin_not_oldest_first(db):
     polled = {r["snapshot_id"]: r for r in db.fetchall("SELECT * FROM decision_tracking")}
     assert polled[1]["last_polled_at"] == now and polled[3]["last_polled_at"] is None
     assert polled[1]["samples"] == 1 and polled[1]["max_price"] == 1.5
+
+
+# ------------------------------------------------------------------ review fixes (v2.5.4 safety check)
+def test_compaction_never_changes_what_the_brain_reads():
+    from northstar import brain as B
+    r = json.loads(json.dumps(PREFILTER))
+    r["market"].update({"fetched_at": {"value": 1_700_000_000.0, "status": "OBSERVED"},
+                        "boosts_active": {"value": 3, "status": "OBSERVED"},
+                        "pair_created_at": {"value": 1_699_990_000.0, "status": "OBSERVED"},
+                        "market_cap": {"value": 90_000.0, "status": "OBSERVED", "note": "provider field"},
+                        "txns": {"h1": {"buys": 40, "sells": 10}}, "price_change": {"h1": 12.0}})
+    slim = RT.compact_prefilter_report(r)
+    assert B.vector(slim) == B.vector(r)
+    assert set(slim["market"]) == set(r["market"])
+
+
+def test_collapse_in_chunks_matches_one_pass_and_survives_a_crash(db, monkeypatch):
+    t = time.time() - 3600
+    for k in range(5):
+        for i in range(4):
+            _raw(db, addr(f"m{k}"), "dexscreener_boost", t + i, {"amount": k})
+    calls = {"n": 0}
+    real = db._tx
+
+    def flaky(fn):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise RuntimeError("simulated crash")
+        return real(fn)
+
+    monkeypatch.setattr(db, "_tx", flaky)
+    try:
+        RT.collapse_discovery_duplicates(db, max_rows=4)
+    except RuntimeError:
+        pass
+    assert not db.fetchone("SELECT 1 FROM meta WHERE key=?", (RT.DEDUP_FLAG,)), "not flagged until complete"
+    monkeypatch.setattr(db, "_tx", real)
+    RT.collapse_discovery_duplicates(db, max_rows=8)
+    rows = db.fetchall("SELECT mint, seen, last_ts FROM discovery_events ORDER BY mint")
+    assert len(rows) == 5 and all(r["seen"] == 4 and r["last_ts"] == t + 3 for r in rows)
+
+
+def test_curve_prune_runs_in_chunks(db):
+    now = time.time()
+    for i in range(7):
+        db.execute("INSERT INTO curve_snapshots(mint, ts, signature, payload) VALUES (?,?,?,'{}')",
+                   ("m", now - 10 * 3600 - i, f"s{i}"))
+    db.execute("INSERT INTO curve_snapshots(mint, ts, signature, payload) VALUES ('m', ?, 'new', '{}')", (now,))
+    assert RT.prune_curve(db, 6, now, chunk=2) == 7
+    assert db.fetchone("SELECT COUNT(*) n FROM curve_snapshots")["n"] == 1
+    assert RT.prune_curve(db, 0, now) == 0
+
+
+def test_retention_settings_defaults_bounds_and_example_file():
+    import pytest
+    from pydantic import ValidationError
+    d = Settings(_env_file=None)
+    assert (d.curve_retention_hours, d.snapshot_compact_hours, d.tracking_poll_limit) == (6.0, 24.0, 600)
+    odd = Settings(_env_file=None, curve_retention_hours=-1, snapshot_compact_hours=-5, tracking_poll_limit=-3)
+    assert (odd.curve_retention_hours, odd.snapshot_compact_hours, odd.tracking_poll_limit) == (0.0, 0.0, 600)
+    assert Settings(_env_file=None, tracking_poll_limit=10 ** 6).tracking_poll_limit == 3000
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, curve_retention_hours="six")
+    from pathlib import Path
+    ex = Settings(_env_file=str(Path(__file__).resolve().parents[1] / ".env.example"))
+    assert (ex.curve_retention_hours, ex.snapshot_compact_hours, ex.tracking_poll_limit) == (6.0, 24.0, 600)
+    assert (ex.discovery_retention_days, ex.snapshot_retention_days) == (4.0, 7.0)
+
+
+def test_env_variables_reach_the_retention_settings(monkeypatch):
+    monkeypatch.setenv("NORTHSTAR_CURVE_RETENTION_HOURS", "12")
+    monkeypatch.setenv("NORTHSTAR_SNAPSHOT_COMPACT_HOURS", "0")
+    monkeypatch.setenv("NORTHSTAR_TRACKING_POLL_LIMIT", "900")
+    s = Settings(_env_file=None)
+    assert (s.curve_retention_hours, s.snapshot_compact_hours, s.tracking_poll_limit) == (12.0, 0.0, 900)
+
+
+def test_vacuum_refuses_while_the_bot_holds_its_lock(tmp_path):
+    import pytest
+    from northstar.db import Database
+    from northstar.engine import InstanceLock
+    d = Database(tmp_path / "v.db")
+    d.open()
+    d.close()
+    lk = InstanceLock(tmp_path / "northstar.lock")
+    lk.acquire()
+    try:
+        with pytest.raises(RuntimeError, match="stop the bot"):
+            RT.vacuum(str(tmp_path / "v.db"), str(tmp_path / "northstar.lock"))
+    finally:
+        lk.release()
+    assert RT.vacuum(str(tmp_path / "v.db"), str(tmp_path / "northstar.lock"))["after_bytes"] > 0
+
+
+def test_every_open_row_is_polled_and_new_rows_are_not_starved(db):
+    now = time.time()
+    for sid in range(1, 8):
+        _track(db, sid, now - 7200 + sid)
+
+    class Dex:
+        calls = 0
+
+        async def tokens_batch(self, mints):
+            Dex.calls += 1
+            return [make_pair(base_mint=m, price_usd=1.1) for m in mints]
+
+    tr = OutcomeTracker(db, Dex())
+    tr.poll_limit = 3
+    for k in range(3):
+        asyncio.run(tr.run_once(now + k))
+    samples = {r["snapshot_id"]: r["samples"] for r in db.fetchall("SELECT snapshot_id, samples FROM decision_tracking")}
+    assert min(samples.values()) >= 1 and max(samples.values()) - min(samples.values()) <= 1
+    _track(db, 99, now + 10)                                    # a brand-new decision
+    assert db.active_tracking(3)[0]["snapshot_id"] == 99
+    tr.poll_limit = -1                                          # a bad value never means "all rows"
+    assert len(db.active_tracking(600)) == 8
+    asyncio.run(tr.run_once(now + 20))
+    assert Dex.calls == 4

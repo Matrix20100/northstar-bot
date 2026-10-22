@@ -31,7 +31,8 @@ class OutcomeTracker:
     async def run_once(self, now: Optional[float] = None) -> int:
         now = now or time.time()
         due = self.db.due_outcomes(now)
-        tracking = self.db.active_tracking(int(getattr(self, "poll_limit", 600) or 600))
+        limit = int(getattr(self, "poll_limit", 600) or 600)
+        tracking = self.db.active_tracking(limit if 0 < limit <= 3000 else 600)
         snap_pool: dict[int, str] = {}
         ids = {r["snapshot_id"] for r in due} | {t["snapshot_id"] for t in tracking}
         for sid in ids:

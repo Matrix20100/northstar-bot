@@ -337,6 +337,20 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = True
 
+    @field_validator("curve_retention_hours", "snapshot_compact_hours")
+    @classmethod
+    def _retention_hours(cls, v: float) -> float:
+        # a negative age means "off", never "delete everything"
+        return max(0.0, float(v))
+
+    @field_validator("tracking_poll_limit")
+    @classmethod
+    def _poll_limit(cls, v: int) -> int:
+        # SQLite treats a negative LIMIT as "no limit": one pass would then price-check every open
+        # row at once. 0/negative -> the default; capped so one pass stays within ~100 requests.
+        v = int(v)
+        return 600 if v <= 0 else min(v, 3000)
+
     @field_validator("max_allowed_risk")
     @classmethod
     def _risk(cls, v: str) -> str:
