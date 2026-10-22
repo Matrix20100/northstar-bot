@@ -3,6 +3,33 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 3.4.0 — 2026-10-23 — blocked coins: a few rechecks for high scorers, then dropped
+
+Operator request: "High scoring coins should be tracked a few times again and if they don't pass
+delete from tracking."
+
+After a runner check that does not call, every coin now gets one of two outcomes:
+
+- **Recheck:** the runner score is at least the floor (45) and every blocker can still change
+  (holder concentration, dev holding, snipers still holding, insider tiny trades, volume, buys vs
+  sells, a check that could not run). It is researched again in 3 minutes, up to 3 times
+  (`NORTHSTAR_RUNNER_MAX_RECHECKS`, `NORTHSTAR_RUNNER_RECHECK_SECONDS`). If it still does not
+  pass, it is dropped.
+- **Drop now:** the score is under the floor, or a blocker can never clear. That covers a bundled
+  or sniped launch, a 6x+ first-minute jump, a staircase or already-dumped chart, mint or freeze
+  authority, a restricting token extension, recycled socials, past the 45-minute age limit, or a
+  completed curve.
+
+Dropped coins:
+- get state DROPPED and leave the research queue. Neither the radar nor any feed brings them
+  back. "Retrack" in the panel undoes it;
+- are still measured by the curve watch for 4 hours, so the learners see what they did.
+
+Also fixed: the curve radar could queue coins it was only measuring (the curve watch's open
+coins), including untracked ones. It now only queues coins it may research.
+
+The 5-minute runner summary now reads "N in the band, M called, R to recheck, D dropped".
+
 ## 3.3.2 — 2026-10-23 — paper sanity rails, and what each safety rule blocks
 
 From the live log:

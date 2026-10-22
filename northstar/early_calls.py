@@ -110,10 +110,11 @@ class CurveRadar:
             return []
         rows = self.db.fetchall(
             "SELECT mint FROM candidates WHERE discovered_at > ? AND sources LIKE '%pumpportal_new%' "
-            "AND state NOT IN ('PUBLISHED','WARNING','CLOSED','QUALIFIED','IGNORED') "
+            "AND state NOT IN ('PUBLISHED','WARNING','CLOSED','QUALIFIED','IGNORED','DROPPED') "
             "AND mint NOT IN (SELECT mint FROM early_calls) ORDER BY discovered_at DESC LIMIT ?",
             (now - self.s.curve_radar_hours * 3600, self.s.curve_radar_max_tokens))
         mints = [r["mint"] for r in rows]
+        researchable = set(mints)   # v3.4.0: curve-watch-only coins are measured, never re-queued
         from . import curve_watch as CW
         watching = getattr(self.s, "curve_watch_enabled", True)
         if watching:
@@ -149,6 +150,8 @@ class CurveRadar:
         else:
             lo, hi, min_vol = self.s.early_call_min_mc * 0.8, self.s.early_call_max_mc, 0.0
         for mint, p in best.items():
+            if mint not in researchable:
+                continue                                        # dropped / untracked / called: measure only
             if (p.dex_id or "").lower() not in ("pumpfun", "pump.fun", "pump"):
                 continue                                        # only coins still on the curve
             mc = p.market_cap or p.fdv
@@ -189,9 +192,64 @@ class EarlyCaller:
         init_schema(db)
         self._no_key_logged = False
 
+    # ------------------------------------------------------------------ v3.4.0 follow-up
+    PERMANENT_GATES = {"mint_authority", "freeze_authority", "token_extensions", "launch_buys"}
+
+    def permanent_blockers(self, report: dict, m: Optional[dict]) -> list[str]:
+        """Blockers that can never clear on this coin: rechecking it would only spend RPC calls."""
+        out = []
+        for g in report.get("gates") or []:
+            if isinstance(g, dict) and g.get("status") == "FAIL" and g.get("name") in self.PERMANENT_GATES:
+                out.append(f"{g['name'].replace('_', ' ')}: {g.get('reason') or 'failed'}")
+        lp = report.get("launch") or {}
+        if lp.get("verdict") in ("INSTANT_JUMP", "STAIRCASE", "DUMPED"):
+            out.append(f"launch chart: {(lp.get('reasons') or [lp['verdict']])[0]}")
+        pm = report.get("pre_migration") or {}
+        if (pm.get("socials") or {}).get("recycled"):
+            out.append("recycled socials")
+        if pm.get("curve_complete"):
+            out.append("curve complete (migrating)")
+        age = (m or {}).get("age_min")
+        if age is not None and age > float(getattr(self.s, "runner_max_age_min", 45)):
+            out.append(f"{age:.0f} min old")
+        return out
+
+    def follow_up(self, mint: str, report: dict, now: Optional[float] = None) -> Optional[tuple[str, str]]:
+        """After a runner check that did not call: ("RECHECK", why) or ("DROP", why); None when the
+        coin was called or never reached the check. A coin scoring at least `runner_min_score` whose
+        blockers can still clear is checked again up to `runner_max_rechecks` times; everything else
+        is dropped from tracking (the curve watch keeps measuring it for the learners)."""
+        now = now or time.time()
+        run = report.get("runner") or {}
+        if not run.get("metrics") or run.get("called"):
+            return None
+        self.db.execute("CREATE TABLE IF NOT EXISTS runner_followups (mint TEXT PRIMARY KEY, checks INTEGER NOT NULL, "
+                        "first_at REAL NOT NULL, last_at REAL NOT NULL, best_score REAL, last_block TEXT)")
+        score = float(run.get("score") or 0)
+        first = (run.get("blockers") or ["not called"])[0]
+        row = self.db.fetchone("SELECT checks, best_score FROM runner_followups WHERE mint = ?", (mint,))
+        checks = (row["checks"] if row else 0) + 1
+        self.db.execute("INSERT INTO runner_followups(mint, checks, first_at, last_at, best_score, last_block) "
+                        "VALUES (?,?,?,?,?,?) ON CONFLICT(mint) DO UPDATE SET checks = excluded.checks, "
+                        "last_at = excluded.last_at, best_score = MAX(COALESCE(best_score, 0), excluded.best_score), "
+                        "last_block = excluded.last_block", (mint, checks, now, now, score, first[:120]))
+        need = float(getattr(self.s, "runner_min_score", 45))
+        permanent = self.permanent_blockers(report, run.get("metrics"))
+        limit = int(getattr(self.s, "runner_max_rechecks", 3))
+        if score < need:
+            res = "DROP", f"runner score {score:.0f} under {need:.0f}"
+        elif permanent:
+            res = "DROP", f"can never pass: {permanent[0]}"
+        elif checks > limit:
+            res = "DROP", f"still not passing after {limit} recheck(s): {first}"
+        else:
+            res = "RECHECK", f"score {score:.0f}; recheck {checks} of {limit}: {first}"
+        self.runner_stats["rechecks" if res[0] == "RECHECK" else "dropped"] += 1
+        return res
+
     @staticmethod
     def _fresh_stats() -> dict:
-        return {"candidates": 0, "called": 0, "blockers": {}, "best": (0.0, "")}
+        return {"candidates": 0, "called": 0, "blockers": {}, "best": (0.0, ""), "rechecks": 0, "dropped": 0}
 
     def runner_summary(self, reset: bool = True) -> Optional[str]:
         """One line for the log: how many coins the runner check saw, and what stopped them."""
@@ -201,7 +259,8 @@ class EarlyCaller:
         if not st["candidates"]:
             return None
         top = sorted(st["blockers"].items(), key=lambda kv: -kv[1])[:5]
-        return (f"runner check: {st['candidates']} coin(s) in the band, {st['called']} called; best score "
+        return (f"runner check: {st['candidates']} coin(s) in the band, {st['called']} called, "
+                f"{st.get('rechecks', 0)} to recheck, {st.get('dropped', 0)} dropped; best score "
                 f"{st['best'][0]:.0f} (${st['best'][1]}); top blockers: "
                 + ("; ".join(f"{k} x{n}" for k, n in top) or "none"))
 
