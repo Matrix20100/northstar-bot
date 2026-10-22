@@ -22,6 +22,7 @@ import logging
 import time
 from typing import Optional
 
+from . import curve_watch as CW
 from . import trade_plan as TP
 from .analysis.pda import pump_bonding_curve_address
 from .discord_bot.embeds import early_call_embed, early_free_embed, money, plan_event_embed
@@ -290,6 +291,9 @@ class EarlyCaller:
                 why.append(f"hourly cap of {cap} runner calls reached")
         r["runner"] = {**sc, "metrics": m, "blockers": why[:8], "called": not why}
         if m:                                    # a coin the radar saw in the band: count it
+            # v3.3.0: the curve learner learns the score floor from coins that were safe enough
+            safety = [b for b in why if not b.startswith(("runner score", "hourly cap"))]
+            CW.record_runner(self.db, out.mint, sc.get("score", 0.0), not safety, now)
             st = self.runner_stats
             st["candidates"] += 1
             st["called"] += 0 if why else 1

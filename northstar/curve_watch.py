@@ -57,6 +57,24 @@ CREATE INDEX IF NOT EXISTS idx_curve_watch_open ON curve_watch(done, entered_at)
 def init_schema(db) -> None:
     with db._lock:
         db._conn.executescript(SCHEMA)
+        # v3.3.0: the runner check's verdict at the time (what the curve learner learns from), and a
+        # flag for rows whose outcome was never really observed (left out of every count)
+        cols = {r[1] for r in db._conn.execute("PRAGMA table_info(curve_watch)").fetchall()}
+        for col, decl in (("runner_score", "REAL"), ("runner_safe", "INTEGER"), ("runner_at", "REAL"),
+                          ("excluded", "INTEGER NOT NULL DEFAULT 0")):
+            if col not in cols:
+                db._conn.execute(f"ALTER TABLE curve_watch ADD COLUMN {col} {decl}")
+
+
+def record_runner(db, mint: str, score: float, safe: bool, now: float) -> None:
+    """Store the runner check's verdict on the coin's curve-watch row: the first check, or the first
+    one where every safety check passed (the moment it could have been called). Never raises."""
+    try:
+        db.execute("UPDATE curve_watch SET runner_score = ?, runner_safe = ?, runner_at = ? WHERE mint = ? AND "
+                   "(runner_at IS NULL OR (COALESCE(runner_safe, 0) = 0 AND ? = 1))",
+                   (round(float(score), 1), 1 if safe else 0, now, mint, 1 if safe else 0))
+    except Exception:  # noqa: BLE001 - measurement only
+        log.debug("curve watch runner record failed for %s", mint, exc_info=True)
 
 
 def open_mints(db, now: float, watch_hours: float) -> list[str]:
@@ -187,7 +205,9 @@ def _rates(rows: list[dict]) -> dict:
 
 def evaluate(db, days: float = 7.0, now: Optional[float] = None) -> dict:
     now = now or time.time()
-    rows = db.fetchall("SELECT * FROM curve_watch WHERE done = 1 AND entered_at > ?", (now - days * 86400,))
+    cols = {r["name"] for r in db.fetchall("PRAGMA table_info(curve_watch)")}
+    keep = "AND COALESCE(excluded, 0) = 0 " if "excluded" in cols else ""
+    rows = db.fetchall(f"SELECT * FROM curve_watch WHERE done = 1 {keep}AND entered_at > ?", (now - days * 86400,))
     pending = db.fetchone("SELECT COUNT(*) AS n FROM curve_watch WHERE done = 0")["n"]
     out = {"days": days, "scored": len(rows), "pending": pending, "rules": {}}
     for name, (desc, rule) in RULES.items():

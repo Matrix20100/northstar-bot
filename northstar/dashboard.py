@@ -393,7 +393,17 @@ def view_learning(c, s, now: float) -> dict:
         "trusted": rm.trusted, "auc": rm.auc, "recent_auc": rm.recent_auc, "n": rm.n, "positives": rm.positives,
         "ts": rm.ts, "signals": [{"name": n, "weight": round(w, 3)} for n, w in rm.importance(14)]}
     memory = TS.stats(db) if _table_ok(c, "training_examples") else None
-    return {"ready": True, "brain": brain, "rug_brain": rug_brain, "memory": memory, "flags": flags, "brain_history": history, "tunables": tunables, "log": log_rows,
+    curve = None
+    if _table_ok(c, "curve_watch"):
+        from . import curve_learn as CL
+        try:
+            last = db.fetchone("SELECT value FROM meta WHERE key = ?", (CL.META_KEY,))
+            curve = {**CL.table(db, s, float(getattr(s, "curve_learn_days", 7.0)), now),
+                     "floor": getattr(s, "runner_min_score", None),
+                     "last_change": json.loads(last["value"]) if last else None}
+        except Exception:  # noqa: BLE001 - optional card
+            curve = None
+    return {"ready": True, "brain": brain, "rug_brain": rug_brain, "memory": memory, "curve": curve, "flags": flags, "brain_history": history, "tunables": tunables, "log": log_rows,
             "shadows": stats, "runners": runners.get("n", 0), "radar": radar,
             "win_x": getattr(s, "brain_win_x", 2.0) if s else 2.0, "loss_x": getattr(s, "brain_loss_x", 0.6) if s else 0.6,
             "summary": {k: info.get(k) for k in ("evaluated", "pending", "standard_trades", "standard_avg",
