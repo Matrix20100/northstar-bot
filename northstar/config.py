@@ -200,6 +200,7 @@ class Settings(BaseSettings):
     u_w_narrative: float = 16       # attention, catalysts, AI narrative read
     u_strong_min: float = 68.0      # STRONG OPPORTUNITY needs at least this
     u_watch_min: float = 48.0       # below this it is not worth watching
+    u_reject_double_warning: bool = True  # v2.5.8: two or more serious warnings -> REJECT, never watched
     u_min_completeness: float = 0.55  # below this the decision cannot be STRONG
     u_model_tilt: float = 12.0      # most the learning brain may move the score, either way
     # at most this many of the points a STRONG call needs may come from narrative. v2.4 shipped
@@ -343,6 +344,7 @@ class Settings(BaseSettings):
     liquidity_collapse_pct: float = 50.0
     severe_drawdown_pct: float = 50.0
     max_tracking_hours: float = 72.0
+    early_watch_rug_close_x: float = 0.3   # end an early watch once it trades at or under this x of the call price (0 = off)
     embed_edit_min_seconds: int = 300
 
     # ---------------------------------------------------------------- Storage / logs
@@ -373,6 +375,12 @@ class Settings(BaseSettings):
     def _retention_hours(cls, v: float) -> float:
         # a negative age means "off", never "delete everything"
         return max(0.0, float(v))
+
+    @field_validator("early_watch_rug_close_x")
+    @classmethod
+    def _rug_close(cls, v: float) -> float:
+        # 0 (or negative) = off; never at or above the call price, which would close every watch
+        return min(0.9, max(0.0, float(v)))
 
     @field_validator("tracking_poll_limit")
     @classmethod

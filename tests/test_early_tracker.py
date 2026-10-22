@@ -386,3 +386,50 @@ class TradePlanMessages(Base):
         self.rpc.cap = 160.0
         asyncio.run(self.tr.run_once())
         self.assertEqual(self.pub.posts, [])
+
+
+class RugClose(Base):
+    """v2.5.8: a rugged early watch is closed, not edited for 72 hours."""
+
+    def test_rug_closes_watch_once_with_stop_posted_first(self):
+        self.rpc.cap = 20.0                      # 0.20x of the 100 SOL call
+        c = self.run_once()
+        self.assertEqual((c["closed"], c["rugged"]), (1, 1))
+        self.assertEqual(self.row()["status"], "CLOSED")
+        self.assertIn("Rugged", text(self.pub.edits[-1][2]))
+        self.assertIn("0.20x", text(self.pub.edits[-1][2]))
+        self.assertTrue(any(e["title"].startswith("🛑 EXIT — STOP LOSS") for _, e in self.pub.posts))
+        self.assertEqual(self.run_once()["open"], 0)
+        self.assertEqual(len(self.pub.edits), 1)  # no more edits after closing
+
+    def test_pump_then_rug_closes_too(self):
+        self.rpc.cap = 300.0
+        self.run_once()
+        self.rpc.cap = 25.0
+        c = self.run_once()
+        self.assertEqual(c["rugged"], 1)
+        self.assertAlmostEqual(self.row()["peak_multiple"], 3.0, places=3)
+
+    def test_dip_above_threshold_stays_open(self):
+        self.rpc.cap = 35.0                      # 0.35x: hurt, not rugged by the 0.3x line
+        c = self.run_once()
+        self.assertEqual((c["closed"], c["rugged"]), (0, 0))
+        self.assertEqual(self.row()["status"], "SENT")
+
+    def test_failed_read_never_closes(self):
+        self.rpc.mode = "error"
+        for _ in range(4):
+            c = self.run_once()
+            self.assertEqual(c["rugged"], 0)
+        self.assertEqual(self.row()["status"], "SENT")
+
+    def test_disabled_with_zero(self):
+        self.s.early_watch_rug_close_x = 0.0
+        self.rpc.cap = 5.0
+        self.assertEqual(self.run_once()["rugged"], 0)
+        self.assertEqual(self.row()["status"], "SENT")
+
+    def test_setting_is_clamped(self):
+        from northstar.config import Settings as S
+        self.assertEqual(S(_env_file=None, early_watch_rug_close_x=5).early_watch_rug_close_x, 0.9)
+        self.assertEqual(S(_env_file=None, early_watch_rug_close_x=-1).early_watch_rug_close_x, 0.0)
