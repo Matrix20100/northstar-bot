@@ -356,12 +356,12 @@ def test_empty_summary_is_readable(db):
 # v2.5.5: call profiles, recorded next to the live decision as separate policies
 # =============================================================================================
 def test_policies_parse_and_each_gets_its_own_row(db, s):
-    assert SH.parse_policies(SH.DEFAULT_RULES) == [["holder_gate_warn", "lp_unverified_warn"],
-                                                   ["deep_liquidity"], ["deep_liquidity", "pool_age_1h"]]
+    assert SH.parse_policies(SH.DEFAULT_RULES) == [["holder_gate_warn", "lp_unverified_warn"], ["pool_age_5m"],
+                                                   ["liquidity_50k", "pool_age_5m"], ["deep_liquidity"]]
     assert SH.parse_policies("deep_liquidity; ;deep_liquidity,bogus") == [["deep_liquidity"]]
     multi = s.model_copy(update={"shadow_test_rules": SH.DEFAULT_RULES})
     assert SH.record(db, outcome(report(), multi), multi)
-    assert len({r["policy"] for r in rows(db)}) == 3
+    assert len({r["policy"] for r in rows(db)}) == 4
     assert SH.record(db, outcome(report(), multi), multi) is None, "same snapshot: no second set of rows"
 
 
@@ -389,3 +389,56 @@ def test_a_deep_old_call_passes_the_profile_and_profiles_never_lift_a_coin(s):
     weak = holder_fail()
     weak["unified"] = U.evaluate(weak, s)
     assert SH.propose(weak, s, ["deep_liquidity"], {})["decision"] == U.REJECT
+
+
+def test_profile_fit_is_recorded_for_every_decision_without_changing_non_calls(s):
+    r = holder_fail()                                         # a rejection
+    r["market"]["liquidity_usd"] = {"value": 20_000}
+    r["security"]["pool_age_hours"] = 0.02                    # about a minute old
+    r["unified"] = U.evaluate(r, s)
+    p = SH.propose(r, s, ["liquidity_50k", "pool_age_5m"], {})
+    assert p["decision"] == r["unified"]["decision"] == U.REJECT
+    assert p["shadow_profile"] == {"fits": False, "misses": ["liquidity_50k", "pool_age_5m"]}
+    assert p["shadow_rules_fired"] == []                      # nothing was downgraded
+    r["security"].pop("pool_age_hours")
+    assert [k for k, _ in SH.profile_misses(r, ["pool_age_5m"])] == ["pool_age_5m"], "unknown age is not old enough"
+    deep = report()
+    deep["market"]["liquidity_usd"] = {"value": 80_000}
+    deep["security"]["pool_age_hours"] = 0.5
+    assert SH.profile_misses(deep, ["liquidity_50k", "pool_age_5m"]) == []
+
+
+def test_pump_then_rug_is_not_a_clean_runner(db, s):
+    pump_dump = [[0, 1.0, 0.95, 1.0], [10, 2.3, 1.5, 2.1], [30, 1.2, 0.2, 0.25], [200, 0.3, 0.1, 0.2]]
+    assert SH.after_2x_low(pump_dump) == 0.1 and SH.after_2x_low(RUG) is None
+    t = time.time() - 30 * 3600
+    for i, (path, mint) in enumerate(((RUNNER, addr("clean")), (pump_dump, addr("dump")), (RUG, addr("rug")))):
+        out = outcome(report(), s, snap=40 + i, mint=mint)
+        SH.record(db, out, s, shadow_call_id=_shadow_call(db, out.mint, t, path), now=t)
+    SH.evaluate_due(db)
+    sm = SH.summary(db, days=7)
+    allc = sm["live_calls"]
+    assert (allc["n"], allc[B.RUNNER], allc["clean_runner"], allc["pump_then_rug"], allc[B.RUG]) == (3, 2, 1, 1, 1)
+    assert "pump-then-rug" in SH.format_summary(sm) and sm["calls_per_day"]["live"] > 0
+
+
+def test_profile_report_compares_admitted_and_excluded_coins(db, s):
+    multi = s.model_copy(update={"shadow_test_rules": "liquidity_50k"})
+    t = time.time() - 30 * 3600
+    for i, (liq, path) in enumerate(((80_000, RUNNER), (20_000, RUG), (25_000, RUG))):
+        r = report()
+        r["market"]["liquidity_usd"] = {"value": liq}
+        out = outcome(r, multi, snap=60 + i, mint=addr(f"p{i}"))
+        SH.record(db, out, multi, shadow_call_id=_shadow_call(db, out.mint, t, path), now=t)
+    SH.evaluate_due(db)
+    sm = SH.summary(db, days=7)
+    assert (sm["profile_fits"]["n"], sm["profile_fits"][B.RUNNER]) == (1, 1)
+    assert (sm["profile_excludes"]["n"], sm["profile_excludes"][B.RUG]) == (2, 2)
+    assert "excluded by the profile" in SH.format_summary(sm)
+
+
+def test_old_shadow_table_gains_the_new_column(db):
+    db.execute("CREATE TABLE shadow_tests (id INTEGER PRIMARY KEY, ts REAL, mint TEXT, snapshot_id INTEGER, "
+               "policy TEXT, outcome_label TEXT)")
+    SH.init_schema(db)
+    assert "after_2x_low" in {r["name"] for r in db.fetchall("PRAGMA table_info(shadow_tests)")}

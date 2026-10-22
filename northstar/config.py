@@ -91,6 +91,7 @@ class Settings(BaseSettings):
     # v2.5.5 (operator rule): a rejected coin is re-checked only when it has good numbers, a good
     # narrative and no high holder concentration (tracking_policy.py), and at most this many times
     rejected_max_rechecks: int = 6
+    second_chance_min_liquidity_usd: float = 35_000.0  # "strong liquidity" for a re-check (rug rate fell above ~$33K on 21 Oct paths)
     insufficient_max_rechecks: int = 8      # missing data is retried, but not forever
     reject_tracking_sample_pct: float = 10.0  # % of other rejections still price-tracked 24 h (learning)
     candidate_retention_days: float = 7.0   # finished, unfollowed coins are forgotten after this; 0 = keep
@@ -253,7 +254,7 @@ class Settings(BaseSettings):
     # to every live decision, with outcomes, for `python main.py shadow`. Record-only: it never
     # changes a live decision, a callout or a setting.
     shadow_test_enabled: bool = True
-    shadow_test_rules: str = "lp_unverified_warn,holder_gate_warn;deep_liquidity;deep_liquidity,pool_age_1h"  # ";" = separate policies
+    shadow_test_rules: str = "lp_unverified_warn,holder_gate_warn;pool_age_5m;liquidity_50k,pool_age_5m;deep_liquidity"  # ";" = separate policies
     shadow_test_overrides: str = ""         # JSON of unified-engine (u_*) settings to try, e.g. {"u_watch_min": 45}
     shadow_test_dedupe_minutes: float = 30.0
     shadow_test_deep_research: bool = True  # finish analysing coins whose only failed gates the LP rule

@@ -162,3 +162,28 @@ def test_finished_unfollowed_coins_are_forgotten_and_followed_ones_kept(db):
     left = {r["mint"] for r in db.fetchall("SELECT mint FROM candidates")}
     assert left == {keep_alert, keep_open, keep_recheck, recent}
     assert db.prune_candidates(0, now) == 0
+
+
+# ------------------------------------------------------------------ v2.5.5 review: what "strong numbers" means
+@pytest.mark.parametrize("spoil, expect", [
+    (lambda r: r.update(gates=gates(lp_lock="UNKNOWN")), "safety not established"),
+    (lambda r: r["market"].update(liquidity_usd={"value": 25_000}), "liquidity under $35,000"),
+    (lambda r: r["market_structure"].update(buy_sell_ratio_h1=0.9), "buyers not ahead"),
+    (lambda r: r["market_structure"].update(volume_acceleration=0.7), "volume"),
+    (lambda r: r["market_structure"].update(fading=True), "fading"),
+])
+def test_a_second_chance_needs_strong_activity_and_established_safety(s, spoil, expect):
+    r = blocked_good_coin()
+    spoil(r)
+    ok, why = TP.second_chance(decided(r, s), s)
+    assert not ok and expect in why, why
+
+
+def test_the_learning_brain_cannot_buy_a_second_chance(s):
+    """A coin just under the watch line stays out even if the brain's tilt lifts it over."""
+    r = decided(blocked_good_coin(), s)
+    u = r["unified"]
+    lifted = dict(u, score=s.u_watch_min + 5, model={"tilt": 10.0, "trusted": True})
+    r2 = dict(r, unified=lifted)
+    ok, why = TP.second_chance(r2, s)
+    assert not ok and "watch line" in why

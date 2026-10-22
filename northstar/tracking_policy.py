@@ -42,18 +42,37 @@ def second_chance(report: dict, s: Any) -> tuple[bool, str]:
     vetoes = [v for v in u.get("vetoes") or [] if isinstance(v, dict)]
     if any(v.get("severity") == "CONFIRMED_CRITICAL" for v in vetoes):
         return False, "proven safety failure: not followed"
+    # missing critical safety evidence is unknown, never proof of safety
+    safety = u.get("safety") or {}
+    if safety.get("status") == "FAIL":
+        first = (list(safety.get("hard_vetoes") or []) + list(safety.get("blocking") or []) or ["a check"])[0]
+        return False, f"failed: {first}"
+    if any(v.get("severity") == "UNRESOLVED" for v in vetoes) or safety.get("status") not in ("PASS", "WARN"):
+        return False, "safety not established: not followed"
 
-    # good numbers: a watchable score, enough liquidity, not dumping
+    # good numbers: a watchable score WITHOUT the learning brain's tilt (the brain is not
+    # validated evidence), strong liquidity, money still coming in, not dumping
     score = _num(u.get("score"))
+    tilt = _num((u.get("model") or {}).get("tilt")) or 0.0
+    score = None if score is None else score - tilt
     watch_min = _num(getattr(s, "u_watch_min", None)) or 48.0
     liq = _num((report.get("market") or {}).get("liquidity_usd"))
-    floor = _num(getattr(s, "min_liquidity_usd", None)) or 0.0
+    floor = max(_num(getattr(s, "min_liquidity_usd", None)) or 0.0,
+                _num(getattr(s, "second_chance_min_liquidity_usd", None)) or 0.0)
+    ms = report.get("market_structure") or {}
     if score is None or score < watch_min:
         return False, f"score {score if score is not None else 0:.0f} below the {watch_min:.0f} watch line"
     if liq is None or liq < floor:
-        return False, "liquidity below the minimum"
-    if (report.get("market_structure") or {}).get("collapsed"):
-        return False, "price collapsing"
+        return False, f"liquidity under ${floor:,.0f}"
+    if ms.get("collapsed") or ms.get("fading"):
+        return False, "price collapsing or volume fading"
+    bs = _num(ms.get("buy_sell_ratio_h1"))
+    need_bs = max(1.0, _num(getattr(s, "min_buy_sell_ratio_h1", None)) or 1.0)
+    if bs is None or bs < need_bs:
+        return False, f"buyers not ahead of sellers (1h buy/sell {bs if bs is not None else 0:.2f}, need {need_bs:.2f})"
+    acc = _num(ms.get("volume_acceleration"))
+    if acc is None or acc < 1.0:
+        return False, "volume not keeping up with its 6h pace"
 
     # good narrative: real evidence, and the narrative category scored well
     nar = report.get("narrative") or {}

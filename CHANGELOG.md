@@ -40,15 +40,27 @@ changed. Live callouts are not changed.**
   - `NORTHSTAR_DB_VACUUM_ON_START` (off by default) shrinks the file at startup once 20% of it
     is free space. It needs free disk about the size of the remaining data, so on a host with a
     tight disk limit, shrink a downloaded copy instead (docs/DATABASE.md).
-- **Shadow testing of two safer call profiles**, with no live change:
-  - `deep_liquidity`: a call needs $100K+ of liquidity;
-  - `deep_liquidity,pool_age_1h`: it also needs a pool that survived its first hour.
+- **Shadow testing of call profiles chosen from the stored price paths** (no live change):
+  - `pool_age_5m`;
+  - `liquidity_50k,pool_age_5m`;
+  - `deep_liquidity` ($100K, the safe extreme).
 
-  Each is recorded next to every live decision as its own policy, beside the existing audit
-  relaxations. `python main.py shadow` reports all of them. Why these profiles: on 439 coins
-  tracked a full 24 h in the backup (liquidity $20K+, no proven trap), fresh graduates with
-  $20–50K liquidity ran 2x first 11.6% of the time and rugged first 60%; $100K+ liquidity was
-  3.8% and 20%.
+  They're recorded next to every live decision with the audit's relaxations. The
+  $100K-and-1-hour profile is no longer a default: on 17 coins it had no 2x at all. A profile
+  only ever turns a STRONG call into WATCH, but whether a coin fits it is recorded for every
+  analysed coin. See docs/DECISION_ENGINE.md, "Upside vs rug".
+- **The shadow report separates clean runners from pump-then-rugs** (0.3x after the 2x on the
+  ordered path). It shows calls per day and compares the coins each profile admits with the ones
+  it excludes.
+- **A re-check needs objectively strong numbers.**
+  - Liquidity of `NORTHSTAR_SECOND_CHANCE_MIN_LIQUIDITY_USD` ($35K) or more.
+  - Buyers ahead of sellers over 1 h, and volume keeping its 6-hour pace (not fading).
+  - Score at or above the watch line *without* the learning brain's tilt.
+  - Safety established: an unresolved critical check never earns a re-check, alongside the
+    narrative and holder conditions above.
+- **The learning brain cannot drive calls while unvalidated.** An untrusted brain (walk-forward
+  accuracy under `NORTHSTAR_BRAIN_MIN_AUC`, 0.58) adds no tilt, and the brain never clears a veto.
+  This was already the behaviour; tests now cover it alongside the re-check rule.
 
 ## 2.5.4 — 2026-10-22 — database size and fair outcome tracking
 

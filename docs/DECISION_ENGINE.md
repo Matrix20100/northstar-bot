@@ -331,3 +331,52 @@ restart — research falls back to `decision.decide()` and the brain to its old 
 Reports written while it was on keep their extra `report.unified` key, which older code ignores.
 To roll back the code instead, run the previous version's folder against the same `data/`
 directory; nothing in the database needs changing.
+
+
+## Upside vs rug: what the stored price paths show (v2.5.5)
+
+Source: 318 coins with a complete, ordered 4-hour price path (learning shadows) in the 21 Oct
+backup, liquidity $10K+, no proven trap. One path per coin. Outcomes:
+- **clean runner:** 2x before 0.6x, and never 0.3x afterwards within the path;
+- **pump-then-rug:** 2x first, then 0.3x;
+- **rug:** 0.3x before 1.3x;
+- **flat:** everything else.
+
+| Group | n | clean runner | any 2x | rug | rug + pump-then-rug |
+|---|---|---|---|---|---|
+| all of them | 318 | 10.4% | 28.0% | 23.6% | 41.2% |
+| pool at least 5 min old | 218 | 11.5% | 24.3% | 20.6% | 33.5% |
+| liquidity $50K+ and pool at least 5 min | 46 | 8.7% | 19.6% | 10.9% | 21.7% |
+| liquidity $100K+ | 22 | 9.1% | 9.1% | 4.5% | 4.5% |
+| liquidity $100K+ and pool at least 1 h | 17 | 0% | 0% | 0% | 0% |
+
+**Pump-then-rug is common.** 56 of the 89 coins that reached 2x first fell to 0.3x within 4 hours.
+
+**What separated outcomes, inside the same set:**
+- **Pool age.** Pools under 5 minutes old were the worst group: 58.5% rug or pump-then-rug.
+- **Liquidity.** The top third ($33K+) rugged less, 17% against 27%.
+- **Volume against market cap.** Very high 1-hour volume relative to market cap rugged more,
+  33% against 13%.
+
+**What did not separate them:**
+- top-10 holders and the largest single holder;
+- the unified score and the narrative category;
+- the learning brain, which scores 0.49 on unseen coins.
+
+**Missing data.** Cluster, insider and creator shares were 0 for every coin in this set. Those
+detectors gave no usable signal here, so their absence is not evidence of safety.
+
+**Bias.** These are 4 days of v2.4-era decisions. Shadows exist only for coins that reached
+research, and the samples above 40 coins are small. Treat these as reasons to shadow-test, not
+as a strategy. The shadow policies compare:
+- `pool_age_5m`;
+- `liquidity_50k,pool_age_5m`;
+- `deep_liquidity` ($100K, kept as the safe extreme);
+- the audit's relaxations.
+
+`python main.py shadow` reports, per policy:
+- calls per day;
+- runners split into clean, pump-then-rug and order unknown;
+- rugs;
+- outcomes of every analysed coin the profile admits against the ones it excludes, a much larger
+  sample than the calls alone.
