@@ -243,7 +243,7 @@ class Settings(BaseSettings):
     learning_interval_hours: float = 6.0
     learning_min_samples: int = 20
     learning_days: float = 14.0
-    learning_announce: bool = True          # post each change to the warning channel (VIP by default)
+    learning_announce: bool = False         # post learning changes to Discord (off: they go to the log only)
     # Learning brain: a model trained on Northstar's own history (see northstar/brain.py)
     brain_enabled: bool = True
     brain_days: float = 21.0                # history window the brain learns from

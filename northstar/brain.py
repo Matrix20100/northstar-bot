@@ -334,6 +334,27 @@ def outcome(path: list, win_x: float = WIN_X, loss_x: float = LOSS_X) -> Optiona
     return binary(label_path(path, win_x, loss_x))
 
 
+def low_after_win(path: list, win_x: float = WIN_X) -> Optional[float]:
+    """Lowest multiple after the first candle that reached win_x (None if it never did)."""
+    t = next((p[0] for p in path or [] if p[1] >= win_x), None)
+    if t is None:
+        return None
+    after = [p[2] for p in path if p[0] > t]
+    return min(after) if after else None
+
+
+def clean_outcome(path: list, win_x: float = WIN_X, loss_x: float = LOSS_X, rug_x: float = RUG_X) -> Optional[int]:
+    """What the brain learns from a price path (v2.5.6): a runner only counts as a win if it did
+    NOT collapse to rug_x after its 2x within the path. A pump-then-rug is a loss: members who
+    followed the call mostly gave the gain back. Unknown order / short history stay None."""
+    y = outcome(path, win_x, loss_x)
+    if y == 1:
+        low = low_after_win(path, win_x)
+        if low is not None and low <= rug_x:
+            return 0
+    return y
+
+
 # ----------------------------------------------------------------------------- model
 def _solve(a: list[list[float]], b: list[float]) -> list[float]:
     """Gaussian elimination with partial pivoting (small dense systems)."""
@@ -488,7 +509,7 @@ def training_rows(db, days: float, now: float, win_x: float = WIN_X, loss_x: flo
             v, path = json.loads(r["vector"]), json.loads(r["path"])
         except (TypeError, ValueError):
             continue
-        y = outcome(path, win_x, loss_x)
+        y = clean_outcome(path, win_x, loss_x)       # v2.5.6: a pump-then-rug is not a win
         if y is None:
             continue
         rows.append({"id": r["id"], "ts": r["ts"], "v": v, "y": y, "src": "path"})
@@ -614,7 +635,7 @@ def train(db, s, now: Optional[float] = None) -> Optional[Model]:
     final.auc, final.recent_auc, final.ts = model_auc, recent, now
     final.trusted = bool(
         len(rows) >= s.brain_min_samples and pos >= 15 and model_auc is not None and recent is not None
-        and model_auc >= s.brain_min_auc and recent >= s.brain_min_auc - 0.03)
+        and model_auc >= s.brain_min_auc and recent >= s.brain_min_auc)   # v2.5.6: recent coins must clear the bar too
     db.execute("INSERT INTO brain_models(ts, n, positives, auc, recent_auc, trusted, model) VALUES (?,?,?,?,?,?,?)",
                (now, final.n, final.positives, model_auc, recent, 1 if final.trusted else 0, final.to_json()))
     db.execute("DELETE FROM brain_models WHERE id NOT IN (SELECT id FROM brain_models ORDER BY ts DESC LIMIT 20)")

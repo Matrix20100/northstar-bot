@@ -3,6 +3,25 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.5.6 — 2026-10-22 — the brain learns clean runners; no learning posts
+
+Operator request: better learning, and no "learned something" posts in Discord.
+
+- **A pump-then-rug is a loss for the brain.** A coin that hit 2x before 0.6x but then fell to
+  0.3x of the entry price within its 4-hour price path used to be trained as a winner. On the
+  22 Oct database that was 128 of the 245 path "winners". The brain now learns only the runs
+  that held up (`brain.clean_outcome`). The shared label, the audit and the shadow report are
+  unchanged; they show pump-then-rugs separately.
+- **The brain must prove itself on the newest coins too.** It is trusted only when walk-forward
+  AUC is at least `NORTHSTAR_BRAIN_MIN_AUC` (0.58) overall *and* on the most recent coins. The
+  recent bar used to be 0.03 lower.
+- **Result on the 22 Oct database.** Retrained on the same coins, the old labels scored 0.50
+  (coin flip) and the new ones 0.69 overall, 0.66 recent. So the brain would be trusted again
+  and get its bounded say in calls: at most ±12 score points. It can never clear a safety
+  check or create a call on its own.
+- **No learning messages in Discord by default** (`NORTHSTAR_LEARNING_ANNOUNCE=false`). Changes
+  and trust changes go to the log (`learning: ...`); set it to `true` to post them again.
+
 ## 2.5.5 — 2026-10-22 — follow fewer coins; test safer call profiles
 
 Operator decisions (22 Oct): stop following coins that fail, unless they have good numbers, a good

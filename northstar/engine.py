@@ -401,6 +401,9 @@ class Engine:
             self.brain = self.brain_mod.latest(self.db)
             self._brain_trusted = bool(self.brain and self.brain.trusted)
         trust_changed = self._brain_trusted != was_trusted
+        if changes or trust_changed:
+            log.info("learning: %s%s", "; ".join(self.learning.fmt_change(c) for c in changes),
+                     (" | brain is now " + ("TRUSTED" if self._brain_trusted else "not trusted")) if trust_changed else "")
         if not (changes or trust_changed) or not self.s.learning_announce:
             return
         info = self.learning.summary(self.db, self.s, self.s.learning_days)
