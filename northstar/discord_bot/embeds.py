@@ -165,6 +165,29 @@ def thesis_text(report: dict) -> str:
     return _clip("\n".join(lines), 1024)
 
 
+def launch_wallets_text(report: dict) -> Optional[str]:
+    """v2.5.9: tracked wallets holding, the launch buys, and the creator's track record."""
+    from ..analysis.holdings import summary as tracked_summary
+
+    lines = []
+    tw = tracked_summary(report.get("tracked_wallets"))
+    if tw:
+        lines.append(f"👀 Tracked wallets holding: **{tw}**")
+    elif (report.get("tracked_wallets") or {}).get("status") == "OBSERVED":
+        lines.append(f"👀 None of your {report['tracked_wallets'].get('checked', 0)} tracked wallets hold it")
+    lb = report.get("launch_buys") or {}
+    if lb.get("verdict") in ("ORGANIC", "BUNDLED", "SNIPED"):
+        held = (f"; snipers still hold {lb['sniper_held_pct']:.1f}%" if isinstance(lb.get("sniper_held_pct"), (int, float))
+                else "")
+        lines.append(f"🚀 Launch: first {lb.get('early_wallets', 0)} buyers took {lb.get('early_buy_pct', 0):.1f}%, "
+                     f"bundle {lb.get('bundle_pct', 0):.1f}%, dev {lb.get('dev_buy_pct', 0):.1f}%{held}")
+    ch = report.get("creator") or {}
+    if ch.get("status") == "OBSERVED" and ch.get("prior_launches") is not None:
+        lines.append(f"🧑‍💻 Creator: {ch['prior_launches']} other launch(es)"
+                     + (f", {ch['prior_migrated']} migrated" if ch.get("prior_migrated") is not None else ""))
+    return "\n".join(lines) if lines else None
+
+
 def callout_embed(report: dict, detected_at: Optional[float] = None, plan: Optional[list[str]] = None) -> dict:
     """Minimal tracked callout: token image, entry/current market cap, return and coin links."""
     mint = report["mint"]
@@ -248,6 +271,8 @@ def callout_embed(report: dict, detected_at: Optional[float] = None, plan: Optio
         body = [
             {"name": "🧵 Thesis", "value": thesis_text(report), "inline": False},
             {"name": "👥 Top holders", "value": holders_text(report), "inline": False},
+            *([{"name": "🔎 Launch & wallets", "value": _clip(launch_wallets_text(report), 1024), "inline": False}]
+              if launch_wallets_text(report) else []),
             *([{"name": "Demand evidence", "value": _clip(_bullets(why_lines, 2)), "inline": False}]
               if why_lines else []),
             {"name": "Chart & flow evidence", "value": _clip(_bullets(chart_lines, 6)), "inline": False},
@@ -368,6 +393,9 @@ def early_watch_embed(report: dict) -> dict:
         f"**Links:** [Chart](https://dexscreener.com/solana/{mint}) · "
         f"[Pump.fun](https://pump.fun/coin/{mint}) · [Solscan](https://solscan.io/token/{mint})",
     ]
+    extra = launch_wallets_text(report)
+    if extra:
+        lines.insert(len(lines) - 1, extra)   # above the links line
     embed = {"title": f"🛰️ EARLY WATCH — {name} (${symbol})",
              "url": f"https://dexscreener.com/solana/{mint}",
              "description": _clip("\n".join(lines), 4000), "color": COLOR_WARNING,

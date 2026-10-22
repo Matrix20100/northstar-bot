@@ -393,6 +393,9 @@ def maintain(db, s: Any, now: Optional[float] = None) -> dict:
                                              curve_retention_hours=getattr(s, "curve_retention_hours", 6.0))),
         ("discovered_expired", lambda: db.expire_discovered(getattr(s, "discovered_max_age_hours", 6.0), now)),
         ("candidates_forgotten", lambda: db.prune_candidates(getattr(s, "candidate_retention_days", 7.0), now)),
+        ("launches_expired", lambda: db.expire_unscheduled_launches(
+            getattr(s, "discovered_launch_max_age_minutes", 30.0), now)),
+        ("creators_forgotten", lambda: db.prune_creator_stats(now=now) if hasattr(db, "prune_creator_stats") else 0),
         ("snapshots_compacted", lambda: sum(
             compact_snapshots(db, getattr(s, "snapshot_compact_hours", 24.0), now) for _ in range(5))),
         ("repeated_snapshots_removed", lambda: thin_repeated_snapshots(

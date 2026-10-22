@@ -214,6 +214,12 @@ class Engine:
                          "the curve radar brings back the ones that start trading", dropped)
         if recovered:
             log.info("restart recovery: re-queued %d candidates interrupted mid-research", recovered)
+        try:
+            n = self.db.backfill_creator_stats()
+            if n:
+                log.info("creator history: %d creator wallets counted from the stored launch feed", n)
+        except Exception:  # noqa: BLE001 - statistics must never stop the bot
+            log.warning("creator history backfill failed", exc_info=True)
         await self.pub.start()
         await self.alerts.resume_pending()
         tasks = [asyncio.create_task(self._loop("discovery", self.s.discovery_interval_seconds, self._discover)),

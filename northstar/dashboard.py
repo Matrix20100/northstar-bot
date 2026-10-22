@@ -115,8 +115,9 @@ def view_status(c, s, now: float) -> dict:
 def view_watching(c, now: float) -> dict:
     queue = [dict(r) for r in c.execute(
         "SELECT mint, symbol, name, state, priority, sources, last_score, last_action, next_research_at, "
-        "last_research_at FROM candidates WHERE state IN ('DISCOVERED','WATCHLIST','QUALIFIED') "
-        "ORDER BY priority DESC, COALESCE(next_research_at, 0) LIMIT 80")]
+        "last_research_at FROM candidates WHERE state IN ('WATCHLIST','QUALIFIED') "
+        "OR (state = 'DISCOVERED' AND next_research_at IS NOT NULL) "
+        "ORDER BY (state = 'DISCOVERED'), priority DESC, COALESCE(next_research_at, 0) LIMIT 80")]
     for q in queue:
         try:
             q["sources"] = json.loads(q.get("sources") or "[]")
@@ -138,8 +139,16 @@ def view_watching(c, now: float) -> dict:
         "current_market_cap_sol FROM early_signals ORDER BY created_at DESC LIMIT 30")]
     eng = LIVE.get("engine")
     trending = list((getattr(getattr(eng, "radar", None), "trending", None) or {}).values())[:30] if eng else []
-    watch_total = c.execute("SELECT COUNT(*) FROM candidates WHERE state IN ('DISCOVERED','WATCHLIST','QUALIFIED')").fetchone()[0]
-    return {"queue": queue, "queue_total": watch_total, "surges": surges, "early": early, "trending": trending}
+    # v2.5.9: only coins Northstar actually follows count as "watched". Launches the feed reported
+    # but nobody scheduled are counted apart (they wait for the curve radar and expire quickly).
+    row = c.execute(
+        "SELECT SUM(state IN ('WATCHLIST','QUALIFIED')) AS watched, "
+        "SUM(state = 'DISCOVERED' AND next_research_at IS NOT NULL) AS queued, "
+        "SUM(state = 'DISCOVERED' AND next_research_at IS NULL) AS waiting "
+        "FROM candidates WHERE state IN ('DISCOVERED','WATCHLIST','QUALIFIED')").fetchone()
+    watched, queued, waiting = (int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)) if row else (0, 0, 0)
+    return {"queue": queue, "queue_total": watched + queued, "watched": watched, "queued": queued,
+            "waiting_launches": waiting, "surges": surges, "early": early, "trending": trending}
 
 
 def view_calls(c) -> dict:

@@ -233,7 +233,7 @@ function drawFunnel(f){const el=$('funnel');if(!el)return;if(!f||f.error){el.inn
  const top=((f.top_reasons||{}).REJECT||[]).slice(0,4);
  if(top.length)h+=`<div class="sub" style="margin-top:8px;font-size:12px">Top reject reasons</div>`+top.map(t=>`<div class="reason">${num(t.count)} × ${esc(t.example)}</div>`).join('');
  el.innerHTML=h}
-async function watching(){const d=await api('/api/watching');$('queueSub').textContent=`${num(d.queue_total)} coins being watched · top 80 shown`;
+async function watching(){const d=await api('/api/watching');$('queueSub').textContent=`${num(d.watched)} on the watch list · ${num(d.queued)} queued for research · ${num(d.waiting_launches)} new launches waiting for real buying (not watched)`;
  $('queue').innerHTML=d.queue.length?d.queue.map(r=>`<tr class="click" data-mint="${esc(r.mint)}"><td>${coin(r.mint,r.symbol,r.name)}</td><td>${actPill(r.state)}</td><td class="num">${num(r.priority,1)}</td>
   <td class="sub">${esc((r.sources||[]).slice(-3).join(', '))}</td><td class="num">${num(r.last_score,1)}</td><td class="sub num">${ago(r.next_research_at)}</td></tr>`).join(''):'<tr><td colspan=6 class="empty">Queue empty</td></tr>';
  $('surges').innerHTML=d.surges.length?d.surges.map(s=>{const m=s.metrics||{};return `<tr class="click" data-mint="${esc(s.mint)}"><td>${coin(s.mint,s.symbol)}${s.fired?' <span class="pill good">SURGE</span>':' <span class="pill dim">near miss</span>'}</td><td class="num">${num(m.spike,1)}x</td><td class="num">${usd(m.vol_m5)}</td><td class="num">${num(m.buys)}/${num(m.sells)}</td><td class="sub num">${ago(s.ts)}</td></tr>`}).join(''):'<tr><td colspan=5 class="empty">No surges in the last 6 hours</td></tr>';

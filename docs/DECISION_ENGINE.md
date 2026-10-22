@@ -193,6 +193,10 @@ own tracked history, one row per mint, report-as-stored. On the 19 Oct 2026 data
 | `NORTHSTAR_U_STRONG_MIN` | 68 | score needed for STRONG OPPORTUNITY |
 | `NORTHSTAR_U_WATCH_MIN` | 48 | below this it is not worth watching |
 | `NORTHSTAR_U_REJECT_DOUBLE_WARNING` | true | two or more serious warnings reject the coin instead of watching it as CAUTION (v2.5.8) |
+| `NORTHSTAR_LAUNCH_MAX_BUNDLE_PCT` / `..._EARLY_BUY_PCT` / `..._OPENING_PCT` | 10 / 25 / 35 | v2.5.9 `launch_buys` gate: % of supply bought by other wallets in the creation block / first 10 s / dev + early (risk threshold: FAIL rejects) |
+| `NORTHSTAR_MAX_SNIPER_HELD_PCT` | 15 | v2.5.9 `sniper_holdings` gate: % the launch snipers still hold |
+| `NORTHSTAR_MICRO_INSIDER_MIN_TRADES` | 3 | v2.5.9 `insider_micro_trades` gate: tiny (< `MICRO_TRADE_SOL`) trades by top-10 holders / snipers / clusters |
+| `NORTHSTAR_CREATOR_HISTORY_BLOCKS` | false | v2.5.9 creator launches / migrations become the `creator_history` gate (recorded only when off) |
 | `NORTHSTAR_U_MIN_COMPLETENESS` | 0.55 | evidence needed before a call is possible |
 | `NORTHSTAR_U_MODEL_TILT` | 12 | most the learning brain may move the score |
 | `NORTHSTAR_U_NARRATIVE_CAP` | 10 (v2.4: 20) | at most this many of the points a STRONG call needs may come from narrative |

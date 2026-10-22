@@ -11,6 +11,7 @@ import json
 import logging
 import struct
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -20,7 +21,7 @@ from .analysis.pump_trades import b58encode
 from .analysis.pda import (metaplex_metadata_address, parse_metaplex_metadata,
                            pump_bonding_curve_address)
 from .providers.solana_rpc import QUOTE_MINTS, WSOL_MINT
-from .analysis.creator import analyze_creator
+from .analysis.creator import analyze_creator, creator_gate
 from .analysis.decision import Decision, decide
 from .analysis.identity import is_valid_mint_format, parse_mint_account, select_pool
 from .analysis.market import analyze_market
@@ -118,6 +119,10 @@ class Researcher:
         self._metas: Optional[list[dict]] = None
         self._metas_at = 0.0
         self._descriptions: dict[str, str] = {}   # token metadata descriptions, for the AI judge
+        self._recent_sample: dict[str, list] = {}  # verified recent trades per mint (micro-trade check)
+        self._tracked: list = []                   # operator's tracked wallets (v2.5.9)
+        self._tracked_key = None
+        self._launch_cache: dict = {}              # mint -> launch-buys result (the launch never changes)
 
     async def trending_metas(self) -> Optional[list[dict]]:
         if self.p.dex is None:
@@ -541,6 +546,12 @@ class Researcher:
         report["trades"] = ts.to_dict()
         report["clusters"] = cr.to_dict()
 
+        # 8b. v2.5.9 rug filters: who bought at the very start, do they still hold, and are
+        # insiders making tiny trades in the live trades?
+        token_2022 = bool(getattr(mint_acc, "is_token_2022", False))
+        gates += await self._launch_buys(mint, creator, supply_ui, token_2022, report)
+        gates += self._micro_trades(mint, report)
+
         # 9. Creator history.
         ch = await analyze_creator(
             mint,
@@ -554,6 +565,10 @@ class Researcher:
 
         flags += ch.flags
         report["creator"] = ch.to_dict()
+        gates += self._creator_check(ch, report)
+
+        # 9b. The operator's tracked wallets (smart money / KOLs): who holds this coin now?
+        await self._tracked_holdings(mint, supply_ui, token_2022, report)
 
         # 10. Market structure.
         ms = analyze_market(pair, history, s)
@@ -1496,6 +1511,14 @@ class Researcher:
                                    risk=RiskLevel.INCOMPLETE, confidence=Confidence.MEDIUM)
 
         if qualified:
+            # v2.5.9: an early watch must also pass the rug filters (first buys, snipers still
+            # holding, creator history, tiny insider trades)
+            fails = await self._curve_rug_filters(mint, bonding_curve_key, creator, mint_acc, trades, report)
+            if fails:
+                return self._final(mint, Action.REJECT, report, fails, score=score,
+                                   risk=RiskLevel.INCOMPLETE, confidence=Confidence.MEDIUM)
+
+        if qualified:
             return self._final(
                 mint,
                 Action.WATCHLIST,
@@ -1792,6 +1815,7 @@ class Researcher:
             recent, seen = [], 0
 
         verified = [t for t in recent if t.verification in W.VERIFIED_LABELS]
+        self._recent_sample[mint] = verified
         if len(verified) >= s.min_verified_swaps:
             ts = W.compute_trade_stats(
                 verified,
@@ -1972,6 +1996,136 @@ class Researcher:
         report["launch"] = lp.to_dict()
         status, reason = LA.gate(lp)
         return [GateResult("launch_shape", GateStatus[status], reason, critical=status == "FAIL")]
+
+    # ------------------------------------------------------------------ v2.5.9 rug filters
+
+    async def _launch_buys(self, mint: str, creator: Optional[str], supply_ui, token_2022: bool, report: dict,
+                           curve: Optional[str] = None) -> list:
+        """`launch_buys` and `sniper_holdings` gates from the coin's first pump.fun trades. Only for
+        pump.fun coins (their curve is a PDA of the mint). Never raises."""
+        from .analysis import holdings as HO
+        from .analysis import launch_trades as LT
+        from .analysis.pda import pump_bonding_curve_address
+
+        s = self.s
+        if not getattr(s, "launch_trades_enabled", True):
+            return []
+        curve = curve or (pump_bonding_curve_address(mint) if mint.endswith("pump") else None)
+        if not curve:
+            return []
+        creator = creator or self.db.launch_creator(mint)
+        cached = self._launch_cache.get(mint)
+        if cached is not None:
+            lb = LT.LaunchBuys(**{**cached, "snipers": list(cached["snipers"]), "reasons": list(cached["reasons"])})
+        else:
+            lb = await LT.analyze(self.p.rpc, mint, curve, creator, s)
+            if lb.status == "OBSERVED":          # a finished launch is read once (RPC budget)
+                if len(self._launch_cache) >= 3000:
+                    self._launch_cache.pop(next(iter(self._launch_cache)))
+                self._launch_cache[mint] = {**lb.to_dict(), "snipers": list(lb.snipers)}
+        gates = []
+        status, reason = LT.gate(lb)
+        gates.append(GateResult("launch_buys", GateStatus[status], reason, critical=False))
+        if lb.snipers:
+            wallets = [HO.TrackedWallet(w) for w in lb.snipers[:100]]
+            h = await HO.wallet_holdings(self.p.rpc, mint, wallets, supply_ui or LT.PUMP_SUPPLY, token_2022)
+            if h.status == "OBSERVED":
+                lb.sniper_held_pct, lb.sniper_holding = h.held_pct, len(h.holding)
+            limit = float(getattr(s, "max_sniper_held_pct", 15.0) or 0)
+            if h.status != "OBSERVED" or lb.sniper_held_pct is None:
+                gates.append(GateResult("sniper_holdings", GateStatus.UNKNOWN,
+                                        f"launch buyers' current holdings unreadable: {h.note}", critical=False))
+            elif limit and lb.sniper_held_pct >= limit:
+                gates.append(GateResult("sniper_holdings", GateStatus.FAIL,
+                                        f"{lb.sniper_holding} launch sniper/bundler wallet(s) still hold "
+                                        f"{lb.sniper_held_pct:.1f}% of supply", critical=False))
+            else:
+                gates.append(GateResult("sniper_holdings", GateStatus.PASS,
+                                        f"launch snipers/bundlers hold {lb.sniper_held_pct:.1f}% now "
+                                        f"({lb.sniper_holding} of {len(wallets)} still in)", critical=False))
+        report["launch_buys"] = lb.to_dict()
+        return gates
+
+    def _micro_trades(self, mint: str, report: dict, trades: Optional[list] = None) -> list:
+        """`insider_micro_trades` gate: tiny trades by top-10 holders, launch buyers or clustered
+        wallets (read from the report sections written before it)."""
+        from .analysis import micro_trades as MT
+
+        s = self.s
+        trades = trades if trades is not None else self._recent_sample.pop(mint, None)
+        insiders: set = set()
+        for h in ((report.get("holders") or {}).get("holders") or [])[:10]:
+            if isinstance(h, dict) and h.get("owner") and not h.get("excluded"):
+                insiders.add(h["owner"])
+        insiders.update((report.get("launch_buys") or {}).get("snipers") or [])
+        for c in ((report.get("clusters") or {}).get("clusters") or []):
+            for m in (c.get("members") or []) if isinstance(c, dict) else []:
+                insiders.add(m if isinstance(m, str) else None)
+        insiders.discard(None)
+        m = MT.measure(trades or [], insiders, float(getattr(s, "micro_trade_sol", 0.01)))
+        report["micro_trades"] = m
+        status, reason = MT.gate(m, int(getattr(s, "micro_insider_min_trades", 3)))
+        return [GateResult("insider_micro_trades", GateStatus[status], reason, critical=False)]
+
+    async def _curve_rug_filters(self, mint: str, curve_key, creator: Optional[str], mint_acc, trades: list,
+                                 report: dict) -> list[str]:
+        """The v2.5.9 rug filters for a coin still on its curve; returns the failed checks."""
+        from types import SimpleNamespace
+
+        from .analysis import launch_trades as LT
+
+        token_2022 = bool(getattr(mint_acc, "is_token_2022", False))
+        gates = await self._launch_buys(mint, creator, LT.PUMP_SUPPLY, token_2022, report,
+                                        curve=str(curve_key) if curve_key else None)
+        recent = [SimpleNamespace(wallet=r.get("wallet"), sol_amount=r.get("sol_amount"), side=r.get("tx_type"))
+                  for r in trades or [] if isinstance(r, dict) and r.get("wallet")]
+        gates += self._micro_trades(mint, report, trades=recent)
+        ch = await analyze_creator(mint, creator, "pump.fun launch event", None, None, None, self.db)
+        report["creator"] = ch.to_dict()
+        gates += self._creator_check(ch, report)
+        await self._tracked_holdings(mint, LT.PUMP_SUPPLY, token_2022, report)
+        report.setdefault("gates", [])
+        report["gates"] = list(report["gates"]) + [g.to_dict() for g in gates]
+        return [f"{g.name.replace('_', ' ')}: {g.reason}" for g in gates if g.status == GateStatus.FAIL]
+
+    def _creator_check(self, ch, report: dict) -> list:
+        """The creator-history check. Recorded on every report; it is a blocking gate only with
+        `creator_history_blocks` (off by default: on the 22 Oct data it did not separate rugs)."""
+        status, reason = creator_gate(ch, self.s)
+        blocks = bool(getattr(self.s, "creator_history_blocks", False))
+        report.setdefault("creator", {})["check"] = {"status": status, "reason": reason, "blocking": blocks}
+        if not blocks:
+            return []
+        return [GateResult("creator_history", GateStatus[status], reason, critical=False)]
+
+    def _tracked_wallets(self) -> list:
+        from .analysis import holdings as HO
+
+        s = self.s
+        if not getattr(s, "tracked_wallets_enabled", True):
+            return []
+        path = Path(getattr(s, "tracked_wallets_file", "") or "")
+        try:
+            key = (str(path), path.stat().st_mtime) if path.is_file() else None
+        except OSError:
+            key = None
+        if key != self._tracked_key:
+            self._tracked = HO.load_tracked_wallets(path) if key else []
+            self._tracked_key = key
+            if self._tracked:
+                log.info("tracked wallets: %d loaded from %s", len(self._tracked), path)
+        return self._tracked
+
+    async def _tracked_holdings(self, mint: str, supply_ui, token_2022: bool, report: dict) -> None:
+        from .analysis import holdings as HO
+
+        wallets = self._tracked_wallets()
+        if not wallets:
+            return
+        h = await HO.wallet_holdings(self.p.rpc, mint, wallets, supply_ui, token_2022)
+        report["tracked_wallets"] = h.to_dict()
+        if h.holding:
+            log.info("tracked wallets in %s: %s", mint, HO.summary(report["tracked_wallets"]))
 
     async def _narrative(self, mint: str, pair: PairInfo):
         metas = await self.trending_metas()

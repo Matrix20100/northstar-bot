@@ -74,6 +74,18 @@ class Discovery:
             counts[source] = counts.get(source, 0) + new
         return counts
 
+    def _creator_stats(self, kind: str, mint: str, payload: dict, is_new: bool, first_migration: bool) -> None:
+        """Count launches and graduations per creator wallet (v2.5.9). Never raises."""
+        try:
+            if kind == "new_token" and is_new and payload.get("traderPublicKey"):
+                self.db.record_creator_launch(str(payload["traderPublicKey"]))
+            elif first_migration:
+                creator = self.db.launch_creator(mint)
+                if creator:
+                    self.db.record_creator_migration(creator)
+        except Exception:  # noqa: BLE001 - statistics must never stop discovery
+            log.debug("creator stats update failed for %s", mint, exc_info=True)
+
     async def on_pumpportal(self, kind: str, msg: dict) -> None:
         mint = str(msg.get("mint") or "")
         if not is_valid_mint_format(mint):
@@ -103,7 +115,9 @@ class Discovery:
             "traderPublicKey", "name", "symbol", "pool", "signature", "marketCapSol", "solAmount",
             "tokenAmount", "bondingCurveKey", "vSolInBondingCurve", "vTokensInBondingCurve", "txType"
         ) if msg.get(k) is not None}
+        first_migration = kind == "migration" and not self.db.has_discovery_source(mint, "pumpportal_migration")
         is_new = self.ingest(mint, source, payload=payload, name=msg.get("name"), symbol=msg.get("symbol"))
+        self._creator_stats(kind, mint, payload, is_new, first_migration)
         if is_new:
             self.pumpportal_new_candidates += 1
         else:
