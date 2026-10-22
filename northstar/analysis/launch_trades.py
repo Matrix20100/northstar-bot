@@ -183,14 +183,16 @@ def gate(lb: LaunchBuys) -> tuple[str, str]:
     return "UNKNOWN", lb.reasons[0] if lb.reasons else "launch trades unavailable"
 
 
-async def analyze(rpc, mint: str, curve: Optional[str], creator: Optional[str], s) -> LaunchBuys:
-    """Full check. Never raises."""
+async def analyze(rpc, mint: str, curve: Optional[str], creator: Optional[str], s,
+                  max_pages: Optional[int] = None) -> LaunchBuys:
+    """Full check. Never raises. `max_pages` overrides `launch_trades_max_pages` (runner candidates
+    page further back: a busy coin can have well over 5,000 curve transactions by $40K)."""
     if not curve or rpc is None:
         return LaunchBuys(reasons=["no bonding curve for this coin"])
     try:
         trades, pages, seen, reached, bt, slot = await first_trades(
             rpc, curve, mint, first_n=int(getattr(s, "launch_trades_first_n", 40)),
-            max_pages=int(getattr(s, "launch_trades_max_pages", 5)))
+            max_pages=int(max_pages or getattr(s, "launch_trades_max_pages", 5)))
     except Exception as e:  # noqa: BLE001
         lb = LaunchBuys(curve=curve, reasons=[f"launch trades unavailable: {type(e).__name__}"])
         return lb

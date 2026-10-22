@@ -339,6 +339,7 @@ class Settings(BaseSettings):
     runner_min_vol_m5: float = 7_500
     runner_min_score: float = 60.0
     runner_max_per_hour: int = 6
+    runner_launch_max_pages: int = 20      # v3.2.1: read up to 20,000 curve transactions back to the launch
     # v3.0.0 attention: public KOL Telegram channels (comma-separated names or t.me links), read from
     # their public web preview t.me/s/<channel>; crypto news RSS (CoinDesk, Cointelegraph, Decrypt)
     kol_telegram_channels: str = ""
