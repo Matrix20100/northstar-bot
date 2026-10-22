@@ -109,8 +109,16 @@ RULES = {
         "or lp_lock FAIL) is a serious warning that caps at WATCH, not a hard veto"),
     "holder_gate_warn": (
         "holder concentration over the bar is a serious warning that caps at WATCH, not a rejection"),
+    # v2.5.5 call profiles (operator, 22 Oct: "test it first, no live change"). They only ever
+    # make a call stricter: a STRONG call that misses the profile becomes WATCH.
+    "deep_liquidity": "a call needs at least $100,000 of liquidity",
+    "pool_age_1h": "a call needs a pool that has survived its first hour",
 }
-DEFAULT_RULES = "lp_unverified_warn,holder_gate_warn"
+PROFILE_RULES = {"deep_liquidity", "pool_age_1h"}
+DEEP_LIQUIDITY_USD = 100_000.0
+MIN_POOL_AGE_HOURS = 1.0
+# policies are separated by ";" (one row per policy per decision), rules inside one by ","
+DEFAULT_RULES = "lp_unverified_warn,holder_gate_warn;deep_liquidity;deep_liquidity,pool_age_1h"
 
 
 def init_schema(db) -> None:
@@ -130,9 +138,20 @@ class _Overlay:
         return getattr(self._base, name)
 
 
+def parse_policies(text: Optional[str]) -> list[list[str]]:
+    """NORTHSTAR_SHADOW_TEST_RULES -> one rule list per policy (";" separates policies)."""
+    out: list[list[str]] = []
+    for part in str(text if text is not None else DEFAULT_RULES).split(";"):
+        rules = parse_rules(part) if part.strip() else []
+        if rules and rules not in out:
+            out.append(rules)
+    return out
+
+
 def parse_rules(text: Optional[str]) -> list[str]:
+    """One policy's rules (comma-separated). A ';'-separated setting is read as all its policies' rules."""
     out = []
-    for r in str(text if text is not None else DEFAULT_RULES).split(","):
+    for r in str(text if text is not None else DEFAULT_RULES).replace(";", ",").split(","):
         r = r.strip()
         if not r:
             continue
@@ -201,7 +220,7 @@ def continue_research(gates: list[dict], report: dict, s: Any) -> bool:
         if not getattr(s, "shadow_test_enabled", True) or not getattr(s, "shadow_test_deep_research", True) \
                 or not getattr(s, "unified_enabled", True):
             return False
-        if "lp_unverified_warn" not in parse_rules(getattr(s, "shadow_test_rules", DEFAULT_RULES)):
+        if not any("lp_unverified_warn" in p for p in parse_policies(getattr(s, "shadow_test_rules", DEFAULT_RULES))):
             return False
         failed = [g for g in gates if isinstance(g, dict) and g.get("status") == "FAIL"]
         if not failed or not _lp_scope(report):
@@ -254,8 +273,32 @@ def propose(report: dict, s: Any, rules: list[str], overrides: dict) -> Optional
         else None
     ps = _Overlay(s, overrides) if overrides else s
     pu = U._assemble(led, report, ps, model=model, ai=u.get("ai"), conflicts=u.get("conflicts"))
+    fired += _apply_profile(pu, report, rules)
     pu["shadow_rules_fired"] = fired
     return pu
+
+
+def _apply_profile(pu: dict, report: dict, rules: list[str]) -> list[str]:
+    """Call-profile rules: a STRONG call that misses the profile is only a WATCH."""
+    from .analysis import unified as U
+
+    if pu.get("decision") != U.STRONG:
+        return []
+    misses: list[tuple[str, str]] = []
+    if "deep_liquidity" in rules:
+        liq = U._num((report.get("market") or {}).get("liquidity_usd"))
+        if liq is None or liq < DEEP_LIQUIDITY_USD:
+            misses.append(("deep_liquidity", f"liquidity ${liq or 0:,.0f} is under the ${DEEP_LIQUIDITY_USD:,.0f} "
+                                             "a call needs in this profile"))
+    if "pool_age_1h" in rules:
+        age = U._num((report.get("security") or {}).get("pool_age_hours"))
+        if age is None or age < MIN_POOL_AGE_HOURS:
+            misses.append(("pool_age_1h", "the pool has not survived its first hour yet"
+                                          + (f" ({age * 60:.0f} min old)" if age is not None else "")))
+    if misses:
+        pu["decision"], pu["reason_class"] = U.WATCH, "CALL_PROFILE"
+        pu["why"] = [f"call profile: {t}" for _, t in misses] + list(pu.get("why") or [])
+    return [k for k, _ in misses]
 
 
 def _components(u: dict) -> dict:
@@ -269,20 +312,28 @@ def _components(u: dict) -> dict:
 # ------------------------------------------------------------------------------- recording
 def record(db, out, s: Any, shadow_call_id: Optional[int] = None,
            now: Optional[float] = None) -> Optional[int]:
-    """Record the live and proposed decisions for one finalised research outcome.
+    """Record the live decision next to every configured proposal (one row per policy).
 
-    Returns the new row id, or None when nothing was recorded (disabled, no unified result,
-    duplicate). Never raises: shadow testing must never break research.
+    Returns the first new row id, or None when nothing was recorded (disabled, no unified result,
+    duplicates). Never raises: shadow testing must never break research.
     """
+    if not getattr(s, "shadow_test_enabled", True):
+        return None
+    overrides = parse_overrides(getattr(s, "shadow_test_overrides", ""), s)
+    first = None
+    for rules in parse_policies(getattr(s, "shadow_test_rules", DEFAULT_RULES)):
+        rid = _record_one(db, out, s, rules, overrides, shadow_call_id, now)
+        first = first or rid
+    return first
+
+
+def _record_one(db, out, s: Any, rules: list[str], overrides: dict, shadow_call_id: Optional[int],
+                now: Optional[float]) -> Optional[int]:
     try:
-        if not getattr(s, "shadow_test_enabled", True):
-            return None
         report = out.report
         live = report.get("final") if isinstance(report.get("final"), dict) else {}
         if not live.get("decision"):
             return None
-        rules = parse_rules(getattr(s, "shadow_test_rules", DEFAULT_RULES))
-        overrides = parse_overrides(getattr(s, "shadow_test_overrides", ""), s)
         policy = policy_name(rules, overrides)
         pu = propose(report, s, rules, overrides)
         if pu is None:
@@ -310,15 +361,15 @@ def record(db, out, s: Any, shadow_call_id: Optional[int] = None,
             "prop_class, prop_reasons, changed, rules_fired, components) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
         params = (now, out.mint, out.snapshot_id, shadow_call_id, policy,
-             getattr(pair, "price_usd", None), getattr(pair, "market_cap", None),
-             getattr(pair, "liquidity_usd", None),
-             live["decision"], live_action, out.score, live.get("risk_class"), live.get("confidence"),
-             live.get("reason_class"), json.dumps(list(out.reasons or [])[:8], default=str),
-             pv["decision"], pv["action"].value, pv["score"], pv["risk_class"], pv["confidence"].value,
-             pv["reason_class"], json.dumps(pv["reasons"][:8] + pv["blockers"][:4], default=str),
-             int(pv["decision"] != live["decision"] or pv["action"].value != live_action),
-             json.dumps(pu.get("shadow_rules_fired") or []),
-             json.dumps({"live": _components(report["unified"]), "proposed": _components(pu)}, default=str))
+                  getattr(pair, "price_usd", None), getattr(pair, "market_cap", None),
+                  getattr(pair, "liquidity_usd", None),
+                  live["decision"], live_action, out.score, live.get("risk_class"), live.get("confidence"),
+                  live.get("reason_class"), json.dumps(list(out.reasons or [])[:8], default=str),
+                  pv["decision"], pv["action"].value, pv["score"], pv["risk_class"], pv["confidence"].value,
+                  pv["reason_class"], json.dumps(pv["reasons"][:8] + pv["blockers"][:4], default=str),
+                  int(pv["decision"] != live["decision"] or pv["action"].value != live_action),
+                  json.dumps(pu.get("shadow_rules_fired") or []),
+                  json.dumps({"live": _components(report["unified"]), "proposed": _components(pu)}, default=str))
         with db._lock:
             cur = db._conn.execute(sql, params)
             return cur.lastrowid if cur.rowcount else None

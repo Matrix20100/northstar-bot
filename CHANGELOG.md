@@ -3,6 +3,44 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.5.5 — 2026-10-22 — follow fewer coins; test safer call profiles
+
+Operator decisions (22 Oct): stop following coins that fail, unless they have good numbers, a good
+narrative and no high holder concentration; keep a 10% learning sample of rejections; test
+safer call profiles before changing live calls. **Scoring, thresholds and safety gates are not
+changed. Live callouts are not changed.**
+
+- **A rejected coin is not re-researched any more** unless all three hold (`tracking_policy.py`):
+  - good numbers: score at or above the watch line, liquidity at least the minimum, not collapsing;
+  - a good narrative: enough evidence items, and the narrative category scored 0.6 or better;
+  - spread holders: the holder-concentration check ran and passed, and there is no whale, cluster
+    or developer-holdings hazard.
+
+  Even then, a coin gets at most `NORTHSTAR_REJECTED_MAX_RECHECKS` (6) looks. Proven traps,
+  prefilter rejections and rejections without a full analysis are never re-checked. A rejected
+  coin whose data has not changed is not re-queued. A radar surge or a new feed event still
+  brings any coin back for one look.
+- **Missing-data coins are retried at most `NORTHSTAR_INSUFFICIENT_MAX_RECHECKS` (8) times**,
+  instead of forever.
+- **Never-researched coins leave the watch list after `NORTHSTAR_DISCOVERED_MAX_AGE_HOURS` (6).**
+  On the 21 Oct backup that is 44,340 of the 50,846 coins the Watching tab counted. New
+  information (a surge, a migration, a new profile or boost) brings a coin back; a repeat of an
+  old event does not.
+- **Price tracking:** every call, watch and insufficient-data decision is tracked, as is every
+  second-chance rejection, plus a fixed 10% sample of the other rejections
+  (`NORTHSTAR_REJECT_TRACKING_SAMPLE_PCT`). On the backup's last 24 h that is 723 of 7,766
+  rejections instead of all of them. The sample is fixed by mint (a coin is always in or always
+  out), so the audit and the learning brain still measure false rejections, on less data.
+- **Shadow testing of two safer call profiles**, with no live change:
+  - `deep_liquidity`: a call needs $100K+ of liquidity;
+  - `deep_liquidity,pool_age_1h`: it also needs a pool that survived its first hour.
+
+  Each is recorded next to every live decision as its own policy, beside the existing audit
+  relaxations. `python main.py shadow` reports all of them. Why these profiles: on 439 coins
+  tracked a full 24 h in the backup (liquidity $20K+, no proven trap), fresh graduates with
+  $20–50K liquidity ran 2x first 11.6% of the time and rugged first 60%; $100K+ liquidity was
+  3.8% and 20%.
+
 ## 2.5.4 — 2026-10-22 — database size and fair outcome tracking
 
 Measured on a copy of the 21 Oct 17:22 backup (394 MB, v2.4.1 era). The production database was

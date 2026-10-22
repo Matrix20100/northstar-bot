@@ -94,5 +94,10 @@ Do not enable the metered stream unless you accept the cost. Verify current term
 | `CURVE_RETENTION_HOURS` | 6 | Bonding-curve trade events older than this are deleted (research reads only the last 5 minutes). 0 = keep the old 7-day backstop only. Negative = 0. |
 | `SNAPSHOT_COMPACT_HOURS` | 24 | Prefilter-rejection reports older than this lose their provider metadata; reasons, decision and every market number are kept. 0 = off. Negative = 0. |
 | `TRACKING_POLL_LIMIT` | 600 | Open decisions price-checked per outcome pass (called coins first, then never-checked, then least recently checked). 1–1200; 0 or negative = 600. See docs/DATABASE.md. |
+| `REJECTED_MAX_RECHECKS` | 6 | A rejected coin is re-checked only with good numbers, a good narrative and no high holder concentration (tracking_policy.py), and at most this many times. 0 = never. |
+| `INSUFFICIENT_MAX_RECHECKS` | 8 | Coins with missing data are retried at most this many times. |
+| `REJECT_TRACKING_SAMPLE_PCT` | 10 | % of the other rejected coins still price-tracked for 24 h, so false rejections can be measured. Calls and watches are always tracked. 0–100. |
+| `DISCOVERED_MAX_AGE_HOURS` | 6 | Coins never researched leave the watch list after this; new information brings them back. 0 = keep. |
+| `SHADOW_TEST_RULES` | 3 policies | Proposals recorded next to live decisions (`python main.py shadow`), separated by `;`. Default: `lp_unverified_warn,holder_gate_warn;deep_liquidity;deep_liquidity,pool_age_1h`. |
 
 At startup Northstar logs `CONFIGURATION PROBLEM:` for settings that make posting impossible (narrative threshold above 25, weights not summing to 100, scores above 100). `python -m northstar health` reports the same list.

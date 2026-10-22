@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     watchlist_recheck_seconds: int = 600
     insufficient_data_recheck_seconds: int = 900
     rejected_recheck_seconds: int = 3600  # only re-researched if market data changed
+    # v2.5.5 (operator rule): a rejected coin is re-checked only when it has good numbers, a good
+    # narrative and no high holder concentration (tracking_policy.py), and at most this many times
+    rejected_max_rechecks: int = 6
+    insufficient_max_rechecks: int = 8      # missing data is retried, but not forever
+    reject_tracking_sample_pct: float = 10.0  # % of other rejections still price-tracked 24 h (learning)
+    discovered_max_age_hours: float = 6.0   # never-researched coins drop off the list after this; 0 = keep
     max_queue_size: int = 500
     new_token_initial_delay_seconds: int = 20  # early-stage check; missing data is rechecked
     # Pump.fun emits hundreds of launches an hour and almost all of them die within minutes with
@@ -245,7 +251,7 @@ class Settings(BaseSettings):
     # to every live decision, with outcomes, for `python main.py shadow`. Record-only: it never
     # changes a live decision, a callout or a setting.
     shadow_test_enabled: bool = True
-    shadow_test_rules: str = "lp_unverified_warn,holder_gate_warn"
+    shadow_test_rules: str = "lp_unverified_warn,holder_gate_warn;deep_liquidity;deep_liquidity,pool_age_1h"  # ";" = separate policies
     shadow_test_overrides: str = ""         # JSON of unified-engine (u_*) settings to try, e.g. {"u_watch_min": 45}
     shadow_test_dedupe_minutes: float = 30.0
     shadow_test_deep_research: bool = True  # finish analysing coins whose only failed gates the LP rule
@@ -337,7 +343,17 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = True
 
-    @field_validator("curve_retention_hours", "snapshot_compact_hours")
+    @field_validator("reject_tracking_sample_pct")
+    @classmethod
+    def _sample_pct(cls, v: float) -> float:
+        return min(100.0, max(0.0, float(v)))
+
+    @field_validator("rejected_max_rechecks", "insufficient_max_rechecks")
+    @classmethod
+    def _rechecks(cls, v: int) -> int:
+        return max(0, int(v))
+
+    @field_validator("curve_retention_hours", "snapshot_compact_hours", "discovered_max_age_hours")
     @classmethod
     def _retention_hours(cls, v: float) -> float:
         # a negative age means "off", never "delete everything"

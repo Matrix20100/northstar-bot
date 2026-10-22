@@ -523,6 +523,12 @@ class Database:
                     (mint, source, now, body),
                 )
 
+            if row is not None and row["state"] == "STALE" and not (last is not None and last["payload"] == body):
+                # a coin that dropped off the list comes back on NEW information (a surge, a
+                # migration, a new profile or boost); a repeat of an old event does not revive it
+                c.execute("UPDATE candidates SET state = 'DISCOVERED', next_research_at = ? WHERE mint = ?",
+                          (now, mint))
+
             if row is None:
                 c.execute(
                     """
@@ -656,6 +662,22 @@ class Database:
         if n:
             self.execute(f"UPDATE candidates SET next_research_at = NULL WHERE {where}")
         return n
+
+    def expire_discovered(self, max_age_hours: float, now: Optional[float] = None) -> int:
+        """Never-researched coins older than `max_age_hours` leave the watch list (state STALE).
+
+        v2.5.4 and earlier kept every launch the feeds ever reported as DISCOVERED (the 21 Oct
+        backup: 50,846 coins on the watch list, nearly all never researched). New information
+        about a coin brings it back (upsert_discovery).
+        """
+        if not max_age_hours or max_age_hours <= 0:
+            return 0
+        cutoff = (now or time.time()) - max_age_hours * 3600
+        with self._lock:
+            return self._conn.execute(
+                "UPDATE candidates SET state = 'STALE', next_research_at = NULL, updated_at = ? "
+                "WHERE state = 'DISCOVERED' AND research_count = 0 AND discovered_at < ?",
+                (time.time(), cutoff)).rowcount
 
     def recover_after_restart(self) -> int:
         """Re-queue candidates left RESEARCHING after a crash."""

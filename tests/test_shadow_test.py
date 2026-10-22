@@ -30,15 +30,17 @@ from northstar.research import ResearchOutcome
 
 from test_unified_engine import gates, report
 
-RULES = SH.parse_rules(SH.DEFAULT_RULES)
+RULES = SH.parse_rules("lp_unverified_warn,holder_gate_warn")
 LP_DANGER = "RugCheck danger: Large Amount of LP Unlocked"
 
 
 @pytest.fixture
 def s() -> Settings:
+    # one policy, so row counts below are per decision (multi-policy recording is tested at the end)
     return Settings(_env_file=None, discord_token="t", discord_channel_id=1, discord_vip_channel_id=2,
                     min_liquidity_usd=15_000, min_narrative_evidence_items=0,
-                    min_volume_acceleration=0, min_buy_sell_ratio_h1=0)
+                    min_volume_acceleration=0, min_buy_sell_ratio_h1=0,
+                    shadow_test_rules="lp_unverified_warn,holder_gate_warn")
 
 
 def holder_fail() -> dict:
@@ -348,3 +350,42 @@ def test_summary_compares_and_counts_each_coin_once(db, s):
 
 def test_empty_summary_is_readable(db):
     assert "nothing recorded yet" in SH.format_summary(SH.summary(db))
+
+
+# =============================================================================================
+# v2.5.5: call profiles, recorded next to the live decision as separate policies
+# =============================================================================================
+def test_policies_parse_and_each_gets_its_own_row(db, s):
+    assert SH.parse_policies(SH.DEFAULT_RULES) == [["holder_gate_warn", "lp_unverified_warn"],
+                                                   ["deep_liquidity"], ["deep_liquidity", "pool_age_1h"]]
+    assert SH.parse_policies("deep_liquidity; ;deep_liquidity,bogus") == [["deep_liquidity"]]
+    multi = s.model_copy(update={"shadow_test_rules": SH.DEFAULT_RULES})
+    assert SH.record(db, outcome(report(), multi), multi)
+    assert len({r["policy"] for r in rows(db)}) == 3
+    assert SH.record(db, outcome(report(), multi), multi) is None, "same snapshot: no second set of rows"
+
+
+def test_a_call_below_the_profile_becomes_watch_and_nothing_else_changes(s):
+    r = report()
+    r["market"]["liquidity_usd"] = {"value": 60_000}
+    r["security"]["pool_age_hours"] = 0.4
+    r["unified"] = U.evaluate(r, s)
+    assert r["unified"]["decision"] == U.STRONG
+    live = copy.deepcopy(r["unified"])
+    p = SH.propose(r, s, ["deep_liquidity", "pool_age_1h"], {})
+    assert p["decision"] == U.WATCH and p["reason_class"] == "CALL_PROFILE"
+    assert p["shadow_rules_fired"] == ["deep_liquidity", "pool_age_1h"]
+    assert p["why"][0].startswith("call profile: liquidity $60,000")
+    assert p["score"] == live["score"] and r["unified"] == live, "the live result is untouched"
+
+
+def test_a_deep_old_call_passes_the_profile_and_profiles_never_lift_a_coin(s):
+    r = report()
+    r["market"]["liquidity_usd"] = {"value": 250_000}
+    r["security"]["pool_age_hours"] = 5.0
+    r["unified"] = U.evaluate(r, s)
+    p = SH.propose(r, s, ["deep_liquidity", "pool_age_1h"], {})
+    assert p["decision"] == U.STRONG and p["shadow_rules_fired"] == []
+    weak = holder_fail()
+    weak["unified"] = U.evaluate(weak, s)
+    assert SH.propose(weak, s, ["deep_liquidity"], {})["decision"] == U.REJECT

@@ -274,9 +274,14 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 SH.evaluate_due(db)
                 sm = SH.summary(db, args.days, policy=args.policy)
+                pols = [args.policy] if args.policy else (sm.get("policies") or [None])
+                sms = [sm if p == sm.get("policy") else SH.summary(db, args.days, policy=p) for p in pols]
             finally:
                 db.close()
-            print(json.dumps(sm, indent=2, default=str) if args.json else SH.format_summary(sm))
+            if args.json:
+                print(json.dumps(sms if len(sms) > 1 else sm, indent=2, default=str))
+            else:
+                print("\n\n".join(SH.format_summary(x) for x in sms))
             return 0
         if args.cmd == "db":
             from . import retention as RT

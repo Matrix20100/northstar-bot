@@ -535,6 +535,12 @@ class Engine:
         if not apply_final(out, out.report.get("final_notes")):
             return
         out.report["final"]["stage"] = "final"
+        if out.snapshot_id and out.pair is not None and out.action.value != "REJECT":
+            try:   # a coin rejected at research but lifted later (brain/AI) is always price-tracked
+                self.db.schedule_outcomes(out.snapshot_id, out.mint, out.action.value, out.score,
+                                          out.pair.price_usd, out.pair.liquidity_usd)
+            except Exception:  # noqa: BLE001
+                log.debug("could not schedule tracking for %s", out.mint, exc_info=True)
         if out.snapshot_id:
             try:
                 self.db.update_research_final(out.snapshot_id, out.action.value, out.score,
@@ -668,7 +674,9 @@ class Engine:
         self.stats["researched"] += 1
         now = time.time()
         if out.skipped_unchanged:
-            self.db.set_state(mint, prev_state, next_research_at=now + self.s.rejected_recheck_seconds)
+            # nothing changed since the last look: a rejected coin is not looked at again (v2.5.5)
+            self.db.set_state(mint, prev_state, next_research_at=None if prev_state == "REJECTED"
+                              else now + self.s.rejected_recheck_seconds)
             return
         if out.not_ready:
             # no pool and no trades: there is nothing to decide, so nothing is recorded. A coin
@@ -751,14 +759,21 @@ class Engine:
             self.db.set_state(mint, "WATCHLIST", next_research_at=now + interval, **common)
         elif out.action == Action.INSUFFICIENT_DATA:
             self.stats["insufficient"] += 1
+            # missing data is retried, but not forever (v2.5.5)
+            retry = common["research_count"] < int(getattr(self.s, "insufficient_max_rechecks", 8) or 0)
             self.db.set_state(mint, "INSUFFICIENT_DATA",
-                              next_research_at=now + self.s.insufficient_data_recheck_seconds, **common)
+                              next_research_at=now + self.s.insufficient_data_recheck_seconds if retry else None,
+                              **common)
         else:
             self.stats["rejected"] += 1
-            permanent = any(r.startswith(("invalid mint", "not a valid SPL mint")) or "pool age" in r
-                            for r in out.reasons)
+            # v2.5.5 operator rule: a coin that fails is not followed again, unless it has good
+            # numbers, a good narrative and no high holder concentration (tracking_policy.py)
+            from .tracking_policy import second_chance
+            again, why = second_chance(out.report, self.s)
+            again = again and common["research_count"] < int(getattr(self.s, "rejected_max_rechecks", 6) or 0)
+            out.report.setdefault("tracking", {})["recheck"] = why if again else f"not re-checked: {why}"
             self.db.set_state(mint, "REJECTED",
-                              next_research_at=None if permanent else now + self.s.rejected_recheck_seconds, **common)
+                              next_research_at=now + self.s.rejected_recheck_seconds if again else None, **common)
         T.record_outcome(self.db, out, now)
         final = out.report.get("final") or {}
         log.info("decision %s %s score=%s risk=%s class=%s", mint, out.action.value, out.score, out.risk.value,
@@ -895,8 +910,8 @@ class Engine:
         from . import retention as RT
 
         res = await asyncio.to_thread(RT.maintain, self.db, self.s)
-        if any(v for v in (res.get("pruned") or {}).values()) or res.get("discovery_duplicates_merged") \
-                or res.get("snapshots_compacted"):
+        if any(v for v in (res.get("pruned") or {}).values()) \
+                or any(isinstance(v, int) and v for v in res.values()):
             log.info("database retention: %s", res)
 
     async def _heartbeat(self) -> None:

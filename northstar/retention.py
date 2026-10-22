@@ -198,6 +198,7 @@ def maintain(db, s: Any, now: Optional[float] = None) -> dict:
         ("pruned", lambda: db.prune_old_data(getattr(s, "discovery_retention_days", 4.0),
                                              getattr(s, "snapshot_retention_days", 7.0), now,
                                              curve_retention_hours=getattr(s, "curve_retention_hours", 6.0))),
+        ("discovered_expired", lambda: db.expire_discovered(getattr(s, "discovered_max_age_hours", 6.0), now)),
         ("snapshots_compacted", lambda: sum(
             compact_snapshots(db, getattr(s, "snapshot_compact_hours", 24.0), now) for _ in range(5))),
     ):
