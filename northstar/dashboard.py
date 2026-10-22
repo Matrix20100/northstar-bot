@@ -555,6 +555,11 @@ class DashboardServer:
                     if u.path == "/api/pulse":
                         hours = float((parse_qs(u.query).get("hours") or ["3"])[0] or 3)
                         return self._send(200, view_pulse(c, now, max(0.5, min(hours, 24.0))))
+                    if u.path == "/api/curve":
+                        from . import curve_watch as CW
+                        if not _table_ok(c, "curve_watch"):
+                            return self._send(200, {"scored": 0, "pending": 0, "rules": {}, "days": 7})
+                        return self._send(200, CW.evaluate(_Ro(c), 7.0, now))
                     if u.path == "/api/calls":
                         return self._send(200, view_calls(c))
                     if u.path == "/api/decisions":
@@ -652,7 +657,7 @@ class DashboardServer:
                     coro, wait = eng.manual_research(mint), 150
                 else:
                     coro, wait = eng.manual_call(mint, note=str(body.get("note") or "")[:500],
-                                                 free_copy=bool(body.get("free_copy", True)),
+                                                 free_copy=bool(body.get("free_copy", False)),
                                                  override=bool(body.get("override"))), 90
                 try:
                     res = asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=wait)

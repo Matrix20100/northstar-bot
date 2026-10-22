@@ -146,10 +146,10 @@ def early_out():
 
 
 @pytest.mark.parametrize("mode,free,expect_channel,expect_status", [
-    ("free", 777, 777, "SENT"),
+    ("free", 777, "none", "UNTRACKED"),   # v3: early watches never post to free ("free" now means off)
     ("vip", 777, None, "SENT"),
-    ("off", 777, "none", "SILENT"),
-    ("free", None, "none", "SILENT"),   # never falls back to VIP
+    ("off", 777, "none", "UNTRACKED"),
+    ("free", None, "none", "UNTRACKED"),
 ])
 async def test_early_watch_channel_routing(tmp_path, db, mode, free, expect_channel, expect_status):
     s = Settings(_env_file=None, data_dir=str(tmp_path), dry_run=False, discord_enabled=False,

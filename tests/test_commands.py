@@ -35,8 +35,8 @@ class FakeFollowup:
     def __init__(self, log):
         self.log = log
 
-    async def send(self, content=None, embed=None, ephemeral=False):
-        self.log.append(("followup", content, embed, ephemeral))
+    async def send(self, content=None, embed=None, ephemeral=False, embeds=None):
+        self.log.append(("followup", content, embed if embeds is None else embeds, ephemeral))
 
 
 class FakeInteraction:
@@ -58,6 +58,12 @@ def fake_discord():
 
         def set_footer(self, text):
             self["footer"] = text
+
+        @classmethod
+        def from_dict(cls, d):
+            e = cls(d.get("title"), d.get("description"))
+            e.update(d)
+            return e
 
     class Intents:
         guilds = False
@@ -96,6 +102,7 @@ def fake_discord():
     ext.commands = ext_commands
     discord.Embed, discord.Intents, discord.Interaction = Embed, Intents, FakeInteraction
     discord.utils = types.SimpleNamespace(utcnow=lambda: None)
+    discord.InteractionType = types.SimpleNamespace(component="component", application_command="application_command")
     discord.app_commands, discord.ext = app_commands, ext
     return {"discord": discord, "discord.app_commands": app_commands, "discord.ext": ext,
             "discord.ext.commands": ext_commands}
@@ -309,3 +316,28 @@ async def test_learning_commands(cmds, db):
     it3 = FakeInteraction(admin=False)
     await cmds.tree.commands["learning_reset"].callback(it3)
     assert it3.log == [("send", "Administrator permission required.", None, True)]
+
+
+async def test_more_info_button_answers_only_the_clicker_with_the_full_research(cmds, db):
+    """v3.0.0: the compact call has a More info button (custom_id ns:more:<mint>)."""
+    report = {"mint": MINT, "lifecycle": "PRE_MIGRATION_BONDING_CURVE",
+              "identity": {"name": "Roadster", "symbol": "ROADSTER"},
+              "pre_migration": {"market_cap_usd_current": 40_000, "market_cap_sol_current": 200},
+              "verdict": {"level": "LOOKS CLEAN", "red": [], "green": ["mint revoked"], "unknown": []}}
+    db.execute("INSERT INTO research_snapshots(mint, ts, action, score, risk, report) VALUES (?,?,?,?,?,?)",
+               (MINT, time.time(), "WATCHLIST", 70, "MEDIUM", json.dumps(report)))
+    it = FakeInteraction()
+    it.type, it.data = "component", {"custom_id": f"ns:more:{MINT}"}
+    await cmds.on_more_info(it)
+    assert it.log[0][0] == "defer" and it.log[0][2] is True              # acknowledged, privately
+    kind, _, embeds, ephemeral = it.log[-1]
+    assert kind == "followup" and ephemeral and embeds and "ROADSTER" in json.dumps(embeds)
+    # other buttons and unknown coins
+    other = FakeInteraction()
+    other.type, other.data = "component", {"custom_id": "something_else"}
+    await cmds.on_more_info(other)
+    assert other.log == []
+    gone = FakeInteraction()
+    gone.type, gone.data = "component", {"custom_id": "ns:more:" + "1" * 40}
+    await cmds.on_more_info(gone)
+    assert "No saved research" in gone.log[-1][1]

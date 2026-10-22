@@ -199,7 +199,57 @@ async def run_research(bot, token: str):
         await _close(db)
 
 
+async def more_info(bot, interaction) -> None:
+    """v3.0.0 "More info" button on a call: the full research, only to the person who clicked."""
+    from .embeds import MORE_INFO_PREFIX, more_info_embeds
+    cid = str((interaction.data or {}).get('custom_id') or '')
+    mint = cid[len(MORE_INFO_PREFIX):].strip()[:64]
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    db = await bot.adb()
+    try:
+        row = db.fetchone('SELECT report FROM research_snapshots WHERE mint=? ORDER BY id DESC LIMIT 1', (mint,))
+        if row is None:
+            try:
+                row = db.fetchone('SELECT report FROM early_calls WHERE mint=?', (mint,))
+            except Exception:  # noqa: BLE001 - no early calls table yet
+                row = None
+    finally:
+        await _close(db)
+    try:
+        report = json.loads(row['report']) if row else None
+    except (TypeError, ValueError):
+        report = None
+    if not report:
+        await interaction.followup.send('No saved research for this coin any more.', ephemeral=True)
+        return
+    embeds = [discord.Embed.from_dict(e) for e in more_info_embeds(report)][:10]
+    await interaction.followup.send(embeds=embeds, ephemeral=True)
+
+
 def install_commands(bot: NorthstarCommands):
+    async def on_interaction(interaction: discord.Interaction):
+        from .embeds import MORE_INFO_PREFIX
+        if interaction.type != discord.InteractionType.component:
+            return
+        if not str((interaction.data or {}).get('custom_id') or '').startswith(MORE_INFO_PREFIX):
+            return
+        try:
+            await more_info(bot, interaction)
+        except Exception:
+            log.exception('More info button failed')
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send('Could not load the research for this coin.', ephemeral=True)
+                else:
+                    await interaction.response.send_message('Could not load the research for this coin.',
+                                                            ephemeral=True)
+            except Exception:  # noqa: BLE001
+                pass
+
+    bot.on_more_info = on_interaction
+    if hasattr(bot, 'event'):
+        bot.event(on_interaction)
+
     @bot.tree.error
     async def on_tree_error(interaction: discord.Interaction, error):
         cause = getattr(error, 'original', None) or error

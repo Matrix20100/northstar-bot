@@ -143,6 +143,9 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
       <div class="pcol"><h3>Migrated <span id="pcMigN"></span></h3><div class="plist" id="pcMig"></div></div>
       <div class="pcol passed"><h3>✅ Passed all filters <span id="pcPassN"></span></h3><div class="plist" id="pcPass"></div></div>
     </div>
+    <div class="card" style="margin-top:12px"><h2>Early band: what happened next <span id="curveSub">every pump.fun coin entering $10K-$80K on its curve, followed 4 h</span></h2>
+      <div class="tablewrap"><table><thead><tr><th>Entry rule</th><th>Coins</th><th>1.5x</th><th>2x</th><th>3x</th><th>Clean 2x</th><th>Fell to 0.3x</th><th>Migrated</th></tr></thead><tbody id="curveRules"></tbody></table></div>
+      <div class="sub" style="margin-top:6px">Peaks are the highest market cap reached within 4 h, not a sell price. Clean 2x = reached 2x without first falling to 0.6x.</div></div>
   </section>
 
   <section data-view="watching" class="hide">
@@ -244,7 +247,10 @@ function pcard(c){const img=c.image&&/^https?:/.test(c.image)?`<img src="${esc(c
  return `<div class="pc" data-mint="${esc(c.mint)}">${img}<div class="t">${esc(c.symbol?'$'+c.symbol:short(c.mint))} <small>${esc(c.name||'')}</small></div>
   <div class="r">${actPill(c.action)}</div><div class="sub">MC ${usd(c.market_cap)}${c.liquidity!=null?' · liq '+usd(c.liquidity):''}${c.pool_age_h!=null?' · '+dur(c.pool_age_h*3600):''} · ${ago(c.ts)}</div>
   <div class="r"><b>${c.score==null?'—':Math.round(c.score)}</b><span class="sub">/100</span>${rug}</div><div class="chips">${chips}</div></div>`}
-async function pulse(){const d=await api('/api/pulse');const cols=d.columns||{};
+async function curveTable(){try{const d=await api('/api/curve');$('curveSub').textContent=`${num(d.scored)} coins scored · ${num(d.pending)} still being followed · last ${d.days} days`;
+ const rows=Object.entries(d.rules||{});const p=v=>v==null?'—':v+'%';
+ $('curveRules').innerHTML=rows.length?rows.map(([k,r])=>`<tr><td><b>${esc(k)}</b><br><span class="sub">${esc(r.rule||'')}</span></td><td class="num">${num(r.n||0)}</td><td class="num">${p(r.hit_1_5x)}</td><td class="num">${p(r.hit_2x)}</td><td class="num">${p(r.hit_3x)}</td><td class="num up">${p(r.clean_2x)}</td><td class="num down">${p(r.fell_to_0_3x)}</td><td class="num">${p(r.migrated)}</td></tr>`).join(''):'<tr><td colspan=8 class="empty">No coins scored yet: the first results arrive 4 hours after the bot starts.</td></tr>'}catch(e){if(e.message==='auth')throw e}}
+async function pulse(){curveTable();const d=await api('/api/pulse');const cols=d.columns||{};
  const fill=(id,arr,empty)=>{$(id).innerHTML=arr&&arr.length?arr.map(pcard).join(''):`<div class="empty">${empty}</div>`;$(id+'N').textContent=arr?arr.length:0};
  fill('pcNew',cols.new,'No curve coins researched');fill('pcFinal',cols.final,'None close to migrating');fill('pcMig',cols.migrated,'No migrated coins researched');
  fill('pcPass',d.passed,'Nothing passed every filter in this window');
@@ -384,7 +390,7 @@ function callCard(t,mint){const mn=t.manual;
   ${v.length?`<div class="vetobox"><b>Hard veto.</b> Northstar would not call this:<br>${v.map(x=>'· '+esc(x)).join('<br>')}<label class="check" style="margin-top:8px"><input type="checkbox" id="callOverride"> Post it anyway. The post will say it overrode this.</label></div>`:''}
   <label class="sub" for="callNote">Your note (shown in the post, optional)</label>
   <textarea id="callNote" maxlength="500" placeholder="Why you are calling it"></textarea>
-  <label class="check"><input type="checkbox" id="callFree" checked> Also post a copy to the free channel after the usual delay</label>
+  <label class="check"><input type="checkbox" id="callFree"> Also post a copy to the free channel (normally it only gets 2x+ wins)</label>
   <div class="row"><button class="btn call" id="callBtn">Post call</button><button class="btn" id="callCancel" hidden>Cancel</button><span class="sub" id="callMsg">Research valid for 15 minutes.</span></div></div>`}
 function wireCall(t,mint){const rr=$('reResearch');if(rr)rr.onclick=()=>runResearch(mint);
  const ub=$('untrackBtn');if(ub){let armed=false;ub.onclick=async()=>{const undo=ub.dataset.state==='IGNORED';

@@ -233,6 +233,9 @@ def main(argv: list[str] | None = None) -> int:
     sh.add_argument("--days", type=float, default=7.0)
     sh.add_argument("--policy", default=None)
     sh.add_argument("--json", action="store_true")
+    cv = sub.add_parser("curve", help="what happened to pump.fun coins in the early band, per entry rule")
+    cv.add_argument("--days", type=float, default=7.0)
+    cv.add_argument("--json", action="store_true")
     dbm = sub.add_parser("db", help="database size, and the retention/compaction pass (dry run unless --apply)")
     dbm.add_argument("--apply", action="store_true", help="run the retention pass now")
     dbm.add_argument("--vacuum", action="store_true", help="also shrink the file (STOP the bot first)")
@@ -276,6 +279,16 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 db.close()
             print(json.dumps(sm, indent=2, default=str) if args.json else T.format_summary(sm))
+            return 0
+        if args.cmd == "curve":
+            from . import curve_watch as CW
+            db = _db(s)
+            try:
+                CW.init_schema(db)
+                ev = CW.evaluate(db, args.days)
+            finally:
+                db.close()
+            print(json.dumps(ev, indent=2) if args.json else CW.format_report(ev))
             return 0
         if args.cmd == "shadow":
             from . import shadow_test as SH

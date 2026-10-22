@@ -138,7 +138,7 @@ class Settings(BaseSettings):
     min_curve_buy_sol_5m: float = 2.0
     min_curve_early_score: float = 75.0
     max_curve_chase_pct: float = 400.0  # early-watch is not offered once the curve is up more than this since launch
-    early_watch_channel: str = "free"  # free | vip | off - where pre-migration early watches are posted
+    early_watch_channel: str = "off"  # v3.0.0 default off (runner calls replace them) | vip; free is no longer allowed
     early_watch_refresh_seconds: int = 30  # how often open early-watch posts are re-read from the bonding curve
     min_verified_swaps: int = 15  # verified PumpSwap swaps needed before post-migration demand counts as VERIFIED
 
@@ -330,6 +330,21 @@ class Settings(BaseSettings):
     # news, trending searches and Wikipedia). Posted to VIP tagged EARLY; a copy goes to the free
     # channel once a call passes early_call_free_at.
     early_call_enabled: bool = True
+    # v3.0.0 runner calls (runner.py): young pump.fun coins with real volume, called without an AI
+    # key once every safety check ran and passed and the runner score clears the bar
+    runner_calls_enabled: bool = True
+    runner_min_mc: float = 15_000
+    runner_max_mc: float = 90_000
+    runner_max_age_min: float = 45.0
+    runner_min_vol_m5: float = 7_500
+    runner_min_score: float = 60.0
+    runner_max_per_hour: int = 6
+    # v3.0.0 attention: public KOL Telegram channels (comma-separated names or t.me links), read from
+    # their public web preview t.me/s/<channel>; crypto news RSS (CoinDesk, Cointelegraph, Decrypt)
+    kol_telegram_channels: str = ""
+    kol_refresh_seconds: float = 120.0
+    kol_memory_hours: float = 6.0
+    attention_crypto_news: bool = True
     early_call_min_mc: float = 30_000
     early_call_max_mc: float = 50_000
     early_call_min_ai_score: int = 70
@@ -338,7 +353,7 @@ class Settings(BaseSettings):
     early_call_min_buy_sell_ratio: float = 1.2
     early_call_min_buy_sol_5m: float = 1.0
     early_call_max_per_hour: int = 0        # 0 = no limit (post every coin that qualifies)
-    early_call_free_at: float = 1.5         # post a copy to the free channel at this multiple
+    early_call_free_at: float = 2.0         # v3.0.0: the free channel only gets proven wins (2x+)
     early_call_track_hours: float = 24.0
     early_max_entry_pct: float = 20.0
     early_tp1: float = 2.0
@@ -355,6 +370,11 @@ class Settings(BaseSettings):
     curve_radar_hours: float = 3.0          # look at launches from the last N hours
     curve_radar_max_tokens: int = 2400
     curve_radar_min_buys_m5: int = 12
+    # v2.6.2 curve watch (curve_watch.py): outcomes of every pump.fun coin entering the early band
+    curve_watch_enabled: bool = True
+    curve_watch_band_lo: float = 10_000.0
+    curve_watch_band_hi: float = 80_000.0
+    curve_watch_hours: float = 4.0
     # ---------------------------------------------------------------- AI narrative judge (Claude)
     ai_enabled: bool = True                 # active only when a key is set (or provider=local)
     # anthropic | groq | gemini | openrouter | cerebras | mistral | github | local | custom
@@ -378,6 +398,7 @@ class Settings(BaseSettings):
     liquidity_collapse_pct: float = 50.0
     severe_drawdown_pct: float = 50.0
     max_tracking_hours: float = 72.0
+    free_proof_multiple: float = 2.0       # v3.0.0: a call is posted to the free channel once it reaches this
     callout_rug_close_x: float = 0.3       # v2.5.10: a call at or under this x of its call market cap is closed as rugged (0 = off)
     early_watch_rug_close_x: float = 0.3   # end an early watch once it trades at or under this x of the call price (0 = off)
     embed_edit_min_seconds: int = 300
@@ -462,10 +483,10 @@ class Settings(BaseSettings):
     @field_validator("early_watch_channel", mode="before")
     @classmethod
     def _early_channel(cls, v):
-        v = str(v or "free").strip().lower()
+        v = str(v or "off").strip().lower()
         if v not in ("free", "vip", "off"):
-            raise ValueError("early_watch_channel must be free, vip or off")
-        return v
+            raise ValueError("early_watch_channel must be vip or off")
+        return "off" if v == "free" else v      # v3.0.0: the free channel only gets proven wins
 
     @field_validator("min_confidence")
     @classmethod
@@ -566,10 +587,6 @@ class Settings(BaseSettings):
                             "to 30 so exits are not posted minutes late")
         if self.min_curve_early_score > 100:
             problems.append(f"NORTHSTAR_MIN_CURVE_EARLY_SCORE={self.min_curve_early_score:g} exceeds 100; early watches are impossible")
-        if (self.early_watch_channel == "free" and not self.discord_free_channel_id
-                and self.discord_channel_id and self.discord_enabled and not self.dry_run):
-            problems.append("NORTHSTAR_EARLY_WATCH_CHANNEL=free but NORTHSTAR_DISCORD_FREE_CHANNEL_ID is not set; "
-                            "early watches will not be posted (set the free channel, or use vip/off)")
         return problems
 
     def secrets(self) -> list[str]:

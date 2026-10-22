@@ -121,7 +121,7 @@ async def test_scalp_disabled_means_plain_reject(settings, db, monkeypatch):
 async def test_embed_shows_and_updates_peak(settings, db):
     settings.embed_edit_min_seconds = 0
     aid, pub, p, out = await published(settings, db)
-    assert any(f["name"] == "Peak since callout" for f in pub.sent[0][1]["fields"])
+    assert pub.sent[0][1]["description"].startswith("**Market Cap**")
     mon = Monitor(settings, db, pub, p.dex, None)
     p.dex.pairs = [make_pair(price_usd=out.pair.price_usd * 1.8, market_cap=out.pair.market_cap * 1.8)]
     await mon.run_once()
@@ -129,10 +129,10 @@ async def test_embed_shows_and_updates_peak(settings, db):
     await mon.run_once()
     a = db.get_alert(aid)
     assert abs(a["peak_mcap"] - out.pair.market_cap * 1.8) < 1 and a["peak_at"]
-    peak = next(f for f in pub.edits[-1][1]["fields"] if f["name"] == "Peak since callout")["value"]
-    assert peak.startswith(money(out.pair.market_cap * 1.8)) and "1.80x" in peak
-    since = next(f for f in pub.edits[-1][1]["fields"] if f["name"] == "Since callout")["value"]
-    assert "1.20x" in since
+    lines = pub.edits[-1][1]["description"].split("\n")
+    peak = next(x for x in lines if x.startswith("**Peak**"))
+    assert money(out.pair.market_cap * 1.8) in peak and "1.80x" in peak
+    assert "1.20x" in next(x for x in lines if x.startswith("**Market Cap**"))
 
 
 async def test_candle_high_raises_peak_between_checks(settings, db):

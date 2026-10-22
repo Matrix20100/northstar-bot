@@ -33,7 +33,7 @@ def seed_launches(db, now, term="roadster", n=12, creators=9, base=2):
 
 
 def test_launch_wave_needs_many_creators(db):
-    s = Settings(_env_file=None)
+    s = Settings(_env_file=None, runner_calls_enabled=False)
     seed_launches(db, NOW)
     waves = {w["term"]: w for w in EV.EventFeeds(s, db).launch_waves(NOW)}
     assert "roadster" in waves and waves["roadster"]["creators"] == 9 and waves["roadster"]["launches_30m"] == 12
@@ -55,7 +55,7 @@ def test_feeds_parse_and_match(db):
             return httpx.Response(200, json={"mostread": {"articles": [
                 {"normalizedtitle": "Tesla Roadster", "views": 90000, "description": "electric sports car"}]}})
         return httpx.Response(200, text=rss)
-    s = Settings(_env_file=None)
+    s = Settings(_env_file=None, runner_calls_enabled=False)
     ef = EV.EventFeeds(s, db, httpx.MockTransport(handler))
     seed_launches(db, NOW)
     asyncio.run(ef.refresh(NOW))
@@ -70,7 +70,7 @@ def test_feeds_parse_and_match(db):
 
 
 def test_feed_failure_never_raises(db):
-    s = Settings(_env_file=None)
+    s = Settings(_env_file=None, runner_calls_enabled=False)
     ef = EV.EventFeeds(s, db, httpx.MockTransport(lambda r: httpx.Response(503)))
     asyncio.run(ef.refresh(NOW))
     assert ef.news == [] and ef.status["news"]["ok"] is False
@@ -85,7 +85,7 @@ GOOD = {"narrative": "Tesla Roadster flight meme", "event": "Roadster flew", "ev
 def judge(db, handler, **kw):
     kw.setdefault("ai_price_input_per_mtok", 0.10)
     kw.setdefault("ai_price_output_per_mtok", 0.50)
-    s = Settings(_env_file=None, ai_key="test-key-not-real", ai_provider="anthropic", **kw)
+    s = Settings(_env_file=None, runner_calls_enabled=False, ai_key="test-key-not-real", ai_provider="anthropic", **kw)
     return s, AJ.AIJudge(s, db, httpx.MockTransport(handler))
 
 
@@ -150,7 +150,7 @@ def test_prompt_treats_coin_text_as_quoted_data(db):
 
 
 def test_judge_off_without_key(db):
-    s = Settings(_env_file=None)
+    s = Settings(_env_file=None, runner_calls_enabled=False)
     assert not AJ.AIJudge(s, db).enabled
 
 
@@ -174,7 +174,7 @@ def outcome(report):
 
 
 def caller(db, **kw):
-    s = Settings(_env_file=None, discord_channel_id=111, discord_free_channel_id=222,
+    s = Settings(_env_file=None, runner_calls_enabled=False, discord_channel_id=111, discord_free_channel_id=222,
                  ai_key="test-key-not-real", ai_provider="anthropic", **kw)
     pub = MemoryPublisher()
     ef = EV.EventFeeds(s, db)
@@ -218,7 +218,7 @@ def test_call_posted_only_on_ai_call_verdict(db):
 
 
 def test_pass_and_low_score_are_not_called(db):
-    s = Settings(_env_file=None, discord_channel_id=111, ai_key="test-key-not-real", ai_provider="anthropic")
+    s = Settings(_env_file=None, runner_calls_enabled=False, discord_channel_id=111, ai_key="test-key-not-real", ai_provider="anthropic")
     pub = MemoryPublisher()
     j = AJ.AIJudge(s, db, httpx.MockTransport(lambda r: reply({**GOOD, "verdict": "PASS", "score": 20})))
     assert asyncio.run(EC.EarlyCaller(s, db, pub, EV.EventFeeds(s, db), j).consider(outcome(curve_report()))) is None
@@ -228,7 +228,7 @@ def test_pass_and_low_score_are_not_called(db):
 
 
 def test_no_api_key_means_no_early_calls(db):
-    s = Settings(_env_file=None, discord_channel_id=111)
+    s = Settings(_env_file=None, runner_calls_enabled=False, discord_channel_id=111)
     pub = MemoryPublisher()
     c = EC.EarlyCaller(s, db, pub, EV.EventFeeds(s, db), AJ.AIJudge(s, db))
     assert asyncio.run(c.consider(outcome(curve_report()))) is None and pub.sent == []
@@ -261,7 +261,7 @@ def tracker(db, pub, monkeypatch, cap_sol=300.0, complete=False, pairs=()):
     from northstar.research import Researcher
     monkeypatch.setattr(Researcher, "_parse_pump_curve_account",
                         staticmethod(lambda acc: {"market_cap_sol": cap_sol, "complete": complete}))
-    s = Settings(_env_file=None, discord_channel_id=111, discord_free_channel_id=222, embed_edit_min_seconds=0)
+    s = Settings(_env_file=None, runner_calls_enabled=False, discord_channel_id=111, discord_free_channel_id=222, embed_edit_min_seconds=0)
 
     class Dex:
         async def tokens_batch(self, mints):
@@ -273,23 +273,27 @@ def test_tracker_records_peak_posts_plan_and_free_copy(db, monkeypatch):
     s, pub, c = caller(db)
     row = asyncio.run(c.consider(outcome(curve_report())))
     assert row["entry_mcap"] == 40_000
-    # 300 SOL * $200 = $60,000 = 1.5x -> free copy + TP ping
+    # v3: 1.5x is not proof yet -> no free post
     db.execute("UPDATE early_calls SET created_at=?, peak_at=? WHERE mint=?", (NOW, NOW, MINT))
     st, tr = tracker(db, pub, monkeypatch, cap_sol=300.0)
-    counts = asyncio.run(tr.run_once(NOW))
+    asyncio.run(tr.run_once(NOW))
+    assert not [e for ch, e in pub.sent if ch == 222]
+    # 400 SOL * $200 = $80,000 = 2x -> proven, free copy
+    st, tr = tracker(db, pub, monkeypatch, cap_sol=400.0)
+    counts = asyncio.run(tr.run_once(NOW + 60))
     r = db.fetchone("SELECT * FROM early_calls WHERE mint=?", (MINT,))
-    assert r["current_mcap"] == 60_000 and r["peak_mcap"] == 60_000 and counts["edited"] == 1
+    assert r["current_mcap"] == 80_000 and r["peak_mcap"] == 80_000 and counts["edited"] == 1
     assert r["free_message_id"] and counts["free_posts"] == 1
     free = [e for ch, e in pub.sent if ch == 222]
-    assert free and "UP +50%" in free[0]["title"] and "$40.0K" in free[0]["description"]
+    assert free and "UP +100%" in free[0]["title"] and "$40.0K" in free[0]["description"]
     # a drop keeps the peak and does not repost to free
     st2, tr2 = tracker(db, pub, monkeypatch, cap_sol=100.0)
     asyncio.run(tr2.run_once(NOW + 600))
     r2 = db.fetchone("SELECT * FROM early_calls WHERE mint=?", (MINT,))
-    assert r2["peak_mcap"] == 60_000 and r2["current_mcap"] == 20_000
+    assert r2["peak_mcap"] == 80_000 and r2["current_mcap"] == 20_000
     assert len([e for ch, e in pub.sent if ch == 222]) == 1
     peak_field = next(f for f in pub.edits[-1][1]["fields"] if f["name"] == "Peak since callout")
-    assert "$60.0K" in peak_field["value"] and "1.50x" in peak_field["value"]
+    assert "$80.0K" in peak_field["value"] and "2.00x" in peak_field["value"]
 
 
 def test_tracker_follows_the_coin_into_its_pool(db, monkeypatch):
@@ -321,7 +325,7 @@ class RadarDex:
 
 
 def test_curve_radar_picks_coins_entering_the_band(db):
-    s = Settings(_env_file=None)
+    s = Settings(_env_file=None, runner_calls_enabled=False)
     now = time.time()
     db.upsert_discovery(MINT, "pumpportal_new", 1.0, "Roadster", "ROADSTER")
     db.upsert_discovery(addr("big"), "pumpportal_new", 1.0, "Big", "BIG")
@@ -363,7 +367,7 @@ def test_free_providers_work(db, provider, host, path, reply_fn):
         seen["auth"] = req.headers.get("Authorization")
         seen["body"] = json.loads(req.content)
         return reply_fn(GOOD)
-    s = Settings(_env_file=None, ai_provider=provider, ai_key="free-key")
+    s = Settings(_env_file=None, runner_calls_enabled=False, ai_provider=provider, ai_key="free-key")
     j = AJ.AIJudge(s, db, httpx.MockTransport(handler))
     assert j.enabled
     res = asyncio.run(j.judge(MINT, {"symbol": "X", "market_cap_usd": 40_000}, {}, {}, NOW))
@@ -386,13 +390,13 @@ def test_provider_retries_without_unsupported_options(db):
         if "response_format" in body:
             return httpx.Response(400, text="response_format is not supported by this model")
         return openai_reply(GOOD)
-    s = Settings(_env_file=None, ai_provider="groq", ai_key="k")
+    s = Settings(_env_file=None, runner_calls_enabled=False, ai_provider="groq", ai_key="k")
     res = asyncio.run(AJ.AIJudge(s, db, httpx.MockTransport(handler)).judge(MINT, {"symbol": "X"}, {}, {}, NOW))
     assert res["verdict"] == "CALL" and len(tries) == 2 and "response_format" not in tries[1]
 
 
 def test_local_provider_needs_no_key(db):
-    s = Settings(_env_file=None, ai_provider="local")
+    s = Settings(_env_file=None, runner_calls_enabled=False, ai_provider="local")
     j = AJ.AIJudge(s, db, httpx.MockTransport(lambda r: openai_reply(GOOD)))
     assert j.enabled and "127.0.0.1" in j._endpoint()[0]
     assert asyncio.run(j.judge(MINT, {"symbol": "X"}, {}, {}, NOW))["verdict"] == "CALL"
@@ -400,11 +404,11 @@ def test_local_provider_needs_no_key(db):
 
 def test_unknown_provider_is_rejected():
     with pytest.raises(Exception):
-        Settings(_env_file=None, ai_provider="not-a-provider")
+        Settings(_env_file=None, runner_calls_enabled=False, ai_provider="not-a-provider")
 
 
 def test_rate_limited_provider_is_not_a_call(db):
-    s = Settings(_env_file=None, ai_provider="groq", ai_key="k")
+    s = Settings(_env_file=None, runner_calls_enabled=False, ai_provider="groq", ai_key="k")
     j = AJ.AIJudge(s, db, httpx.MockTransport(lambda r: httpx.Response(429, text="rate limit")))
     assert asyncio.run(j.judge(MINT, {"symbol": "X"}, {}, {}, NOW)) is None
 
@@ -428,7 +432,7 @@ class FakeCG:
 
 
 def test_coingecko_narratives_feed_the_judge(db):
-    s = Settings(_env_file=None, events_news=False, events_trends=False, events_wikipedia=False)
+    s = Settings(_env_file=None, runner_calls_enabled=False, events_news=False, events_trends=False, events_wikipedia=False)
     ef = EV.EventFeeds(s, db, cg_markets=FakeCG())
     asyncio.run(ef.refresh(NOW))
     assert ef.metas[0]["name"] == "AI Agents" and ef.cg_coins[0]["symbol"] == "ROADSTER"
@@ -442,7 +446,7 @@ def test_coingecko_narratives_feed_the_judge(db):
 
 
 def test_coingecko_failure_is_not_fatal(db):
-    s = Settings(_env_file=None, events_news=False, events_trends=False, events_wikipedia=False)
+    s = Settings(_env_file=None, runner_calls_enabled=False, events_news=False, events_trends=False, events_wikipedia=False)
     ef = EV.EventFeeds(s, db, cg_markets=FakeCG(fail=True))
     asyncio.run(ef.refresh(NOW))
     assert ef.metas == [] and ef.status["coingecko"]["ok"] is False

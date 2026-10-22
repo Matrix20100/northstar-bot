@@ -75,7 +75,8 @@ def _split_buttons(embed: dict) -> tuple[dict, list[dict]]:
         return embed, []
     clean = {k: v for k, v in embed.items() if k != "_buttons"}
     buttons = [b for b in (embed.get("_buttons") or [])
-               if isinstance(b, dict) and str(b.get("url", "")).startswith("https://") and b.get("label")]
+               if isinstance(b, dict) and b.get("label")
+               and (str(b.get("url", "")).startswith("https://") or str(b.get("custom_id", "")).startswith("ns:"))]
     return clean, buttons[:5]
 
 
@@ -169,8 +170,13 @@ class DiscordPublisher:
             return None
         view = self._discord.ui.View(timeout=None)
         for b in buttons:
-            view.add_item(self._discord.ui.Button(label=str(b["label"])[:80], url=b["url"],
-                                                  style=self._discord.ButtonStyle.link))
+            if b.get("custom_id"):
+                # v3.0.0 "More info": answered by the slash-command bot (commands.py), not here
+                view.add_item(self._discord.ui.Button(label=str(b["label"])[:80], custom_id=str(b["custom_id"])[:100],
+                                                      style=self._discord.ButtonStyle.primary))
+            else:
+                view.add_item(self._discord.ui.Button(label=str(b["label"])[:80], url=b["url"],
+                                                      style=self._discord.ButtonStyle.link))
         return view
 
     async def publish(self, embed: dict, channel_id: Optional[int] = None) -> tuple[int, int]:
@@ -184,6 +190,9 @@ class DiscordPublisher:
             msg = await asyncio.wait_for(ch.send(**kwargs), timeout=30)
         except Exception as e:  # noqa: BLE001 - mapped to PublishError
             raise self._wrap(e, after_send=True) from e
+        finally:
+            if view is not None and hasattr(view, "stop"):
+                view.stop()          # this client never answers button clicks; commands.py does
         return ch.id, msg.id
 
     async def edit(self, channel_id: int, message_id: int, embed: dict) -> None:
@@ -195,7 +204,11 @@ class DiscordPublisher:
             if view is not None:
                 kwargs["view"] = view
             msg = ch.get_partial_message(message_id)
-            await asyncio.wait_for(msg.edit(**kwargs), timeout=30)
+            try:
+                await asyncio.wait_for(msg.edit(**kwargs), timeout=30)
+            finally:
+                if view is not None and hasattr(view, "stop"):
+                    view.stop()
         except Exception as e:  # noqa: BLE001
             raise self._wrap(e) from e
 

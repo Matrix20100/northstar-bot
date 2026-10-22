@@ -141,9 +141,10 @@ class Monitor:
                 milestone = milestone_embed(merged, m)
                 # VIP gets all configured milestones; free gets only the selected public milestones.
                 await self._send(milestone, a["id"])
-                free_post = self.db.fetchone("SELECT status FROM free_channel_posts WHERE alert_id=?", (a["id"],))
-                if (self.s.discord_free_channel_id and free_post and free_post.get("status") == "SENT"
-                        and any(abs(m - fm) < 1e-9 for fm in self.s.free_milestone_list)):
+                # v3.0.0: the free channel only sees proven wins - every milestone from
+                # `free_proof_multiple` (2x) up, never the call itself
+                if (self.s.discord_free_channel_id and m >= float(getattr(self.s, "free_proof_multiple", 2.0))
+                        and a.get("call_type") != "RUG_SCALP"):
                     await self._send(milestone, a["id"], channel=self.s.discord_free_channel_id)
         upd["milestones_hit"] = hit
         for kind, detail in new_warnings:

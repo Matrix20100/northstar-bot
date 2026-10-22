@@ -463,6 +463,31 @@ def plan_status(alert: dict) -> str:
     return ""
 
 
+def _update_compact(e: dict, alert: dict, multiple, entry_mcap, current_mcap) -> dict:
+    """Refresh the market-cap, peak and plan lines of a v3 compact call post."""
+    lines = str(e.get("description") or "").split("\n")
+    out = []
+    peak = alert.get("peak_mcap")
+    status = plan_status(alert)
+    for ln in lines:
+        if ln.startswith("**Market Cap**:"):
+            ln = f"**Market Cap**: {money(entry_mcap)}" + (
+                f" → {money(current_mcap)} ({multiple:.2f}x)" if multiple is not None else "")
+        elif ln.startswith("**Peak**:") or ln.startswith("**Plan status**:"):
+            continue
+        elif ln.startswith("**Address**:"):
+            if status:
+                out.append(f"**Plan status**: {status.replace('**Plan status:** ', '')}")
+            if peak and entry_mcap and peak / entry_mcap >= 1.2:
+                out.append(f"**Peak**: {money(peak)} ({peak / entry_mcap:.2f}x)")
+        out.append(ln)
+    e["description"] = _clip("\n".join(out), 4000)
+    stamp = alert.get("last_update_at")
+    if stamp:
+        e["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stamp))
+    return fit(e)
+
+
 def updated_callout(original: dict, alert: dict) -> dict:
     e = dict(original)
     fields = []
@@ -476,6 +501,8 @@ def updated_callout(original: dict, alert: dict) -> dict:
         current_price = alert.get("current_price")
         multiple = current_price / entry_price if current_price is not None and entry_price else None
         gain = (multiple - 1) * 100 if multiple is not None else None
+    if "**Market Cap**:" in str(e.get("description") or ""):
+        return _update_compact(e, alert, multiple, entry_mcap, current_mcap)
     summary = {
         "Called at market cap": money(entry_mcap),
         "Current market cap": money(current_mcap),
@@ -672,3 +699,140 @@ def early_free_embed(report: dict, call: dict) -> dict:
                 "url": f"https://dexscreener.com/solana/{mint}", "description": "\n".join(l for l in lines if l is not None),
                 "color": COLOR_CALLOUT, "footer": {"text": f"{DISCLAIMER} · mint:{mint}"},
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+
+
+# ----------------------------------------------------------------------------- v3.0.0 compact posts
+MORE_INFO_PREFIX = "ns:more:"
+
+
+def _age_text(minutes) -> str:
+    if not isinstance(minutes, (int, float)):
+        return "—"
+    return f"{minutes:.0f}m" if minutes < 60 else (f"{minutes / 60:.1f}h" if minutes < 1440 else f"{minutes / 1440:.1f}d")
+
+
+def compact_call_embed(report: dict, call: dict, *, kind: str = "runner") -> dict:
+    """The v3 call post: only the key numbers (like the call bots traders already read), the image,
+    and buttons. Everything else is one click away (More info). Rebuilt on every edit.
+
+    ``call``: entry_mcap, current_mcap, peak_mcap, peak_at, sent_at, phase, status_line."""
+    mint = report.get("mint", "")
+    ident = report.get("identity") or {}
+    market = report.get("market") or {}
+    pm = report.get("pre_migration") or {}
+    run = report.get("runner") or {}
+    m = run.get("metrics") or {}
+    h = report.get("holders") or {}
+    lb = report.get("launch_buys") or {}
+    att = report.get("attention") or {}
+    u = report.get("unified") if isinstance(report.get("unified"), dict) else {}
+
+    def val(x):
+        return x.get("value") if isinstance(x, dict) else x
+
+    symbol, name = ident.get("symbol") or "?", ident.get("name") or "Unknown"
+    entry, cur, peak = call.get("entry_mcap"), call.get("current_mcap"), call.get("peak_mcap")
+    liq = m.get("liq") if m else val(market.get("liquidity_usd"))
+    vol5 = m.get("vol_m5") if m else val((market.get("volume") or {}).get("m5"))
+    chg5 = m.get("chg_m5") if m else val((market.get("price_change") or {}).get("m5"))
+    age = m.get("age_min") if m else (((report.get("security") or {}).get("pool_age_hours") or 0) * 60 or None)
+    score = run.get("score") if run else u.get("score")
+    lines = [f"**Market Cap**: {money(entry)}" + (f" → {money(cur)} ({cur / entry:.2f}x)" if cur and entry and
+                                                  abs(cur / entry - 1) >= 0.01 else ""),
+             f"**Liquidity**: {money(liq)}" + (" (bonding curve)" if call.get("phase", "CURVE") == "CURVE"
+                                                and kind == "runner" else ""),
+             f"**5m Volume**: {money(vol5)}" + (f" · {pct(chg5)}" if isinstance(chg5, (int, float)) else ""),
+             f"**Age**: {_age_text(age)}"]
+    hold = []
+    if isinstance(h.get("top10_adj"), (int, float)):
+        hold.append(f"top 10 {h['top10_adj']:.1f}%")
+    if isinstance(h.get("creator_pct"), (int, float)):
+        hold.append(f"dev {h['creator_pct']:.1f}%")
+    if isinstance(lb.get("sniper_held_pct"), (int, float)):
+        hold.append(f"snipers {lb['sniper_held_pct']:.1f}%")
+    if hold:
+        lines.append(f"**Holders**: {' · '.join(hold)}")
+    if lb.get("verdict") == "ORGANIC":
+        lines.append(f"**Launch**: organic (first buyers {lb.get('early_buy_pct', 0):.1f}%, bundle {lb.get('bundle_pct', 0):.1f}%)")
+    if u.get("rug_odds") is not None:
+        lines.append(f"**Rug odds**: {u['rug_odds'] * 100:.0f}% (learned)")
+    if att.get("reasons"):
+        lines.append(f"**Attention**: {att['reasons'][0]}")
+    tw = report.get("tracked_wallets") or {}
+    if tw.get("holding_count"):
+        lines.append(f"**Tracked wallets**: {tw['holding_count']} holding")
+    if isinstance(score, (int, float)):
+        lines.append(f"**Score**: {score:.0f}/100")
+    if kind != "runner":
+        risk = (u.get("risk") or report.get("risk") or "INCOMPLETE").replace("_", " ")
+        lines.append(f"**Risk**: {risk} · not rug-proof")
+    if call.get("status_line"):
+        lines.append(f"**Plan**: {call['status_line']}")
+    if peak and entry and peak / entry >= 1.2:
+        lines.append(f"**Peak**: {money(peak)} ({peak / entry:.2f}x)")
+    lines.append(f"**Address**: `{mint}`")
+    title = {"runner": "🎯 NORTHSTAR CALL", "standard": "🚀 NORTHSTAR CALL", "manual": "📣 MANUAL CALL",
+             "scalp": "☠️ RUG SCALP"}.get(kind, "🎯 NORTHSTAR CALL")
+    stamp = call.get("last_update_at") or call.get("sent_at") or time.time()
+    embed = {"title": f"{title} — {name} (${symbol})", "url": f"https://dexscreener.com/solana/{mint}",
+             "description": _clip("\n".join(lines), 4000),
+             "color": COLOR_CRITICAL if kind == "scalp" else (COLOR_EARLY if kind == "runner" else COLOR_CALLOUT),
+             "footer": {"text": f"Northstar · {'pump.fun curve · ' if kind == 'runner' else ''}{DISCLAIMER} · "
+                                f"mint:{mint}"},
+             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stamp)),
+             "_buttons": [{"label": "More info", "custom_id": f"{MORE_INFO_PREFIX}{mint}"},
+                          {"label": "Axiom", "url": f"https://axiom.trade/t/{mint}"},
+                          {"label": "DexScreener", "url": f"https://dexscreener.com/solana/{mint}"}]}
+    manual = report.get("manual") if kind == "manual" else None
+    if manual:
+        own = (f"Northstar's own read: **{u.get('decision')}** · {u.get('score', 0):.0f}/100"
+               if u.get("decision") else "Northstar's own read was not available")
+        embed["description"] = _clip(f"Called by hand from the dashboard. {own}.\n\n" + embed["description"], 4000)
+        fields = []
+        if manual.get("note"):
+            fields.append({"name": "📝 Caller's note", "value": _clip(str(manual["note"]), 1024), "inline": False})
+        if manual.get("override") and manual.get("vetoes"):
+            fields.append({"name": "⚠️ Posted over a hard veto",
+                           "value": _clip("Northstar would not have called this:\n" + _bullets(manual["vetoes"], 3),
+                                          1024), "inline": False})
+        if fields:
+            embed["fields"] = fields
+        embed["color"] = COLOR_MANUAL
+        embed["footer"]["text"] = "Manual call. " + embed["footer"]["text"]
+    image = ident.get("image_url") or market.get("image_url") or (m or {}).get("image_url")
+    if isinstance(image, str) and image.startswith(("https://", "http://")):
+        embed["thumbnail"] = {"url": image}
+    return fit(embed)
+
+
+def runner_call_embed(report: dict, call: dict) -> dict:
+    return compact_call_embed(report, call, kind="runner")
+
+
+def more_info_embeds(report: dict) -> list[dict]:
+    """The full research behind a call, for the More info button (one or two embeds)."""
+    if report.get("lifecycle") == "PRE_MIGRATION_BONDING_CURVE":
+        call = {"entry_mcap": (report.get("runner") or {}).get("metrics", {}).get("market_cap")
+                or (report.get("pre_migration") or {}).get("market_cap_usd_current"), "phase": "CURVE"}
+        e = early_call_embed(report, call)
+    else:
+        e = callout_embed(report)
+    e = {k: v for k, v in e.items() if k != "_buttons"}
+    e["title"] = "ℹ️ " + str(e.get("title") or "Research")
+    out = [e]
+    run = report.get("runner") or {}
+    att = report.get("attention") or {}
+    extra = []
+    if run:
+        extra.append(f"**Runner score {run.get('score', 0):.0f}/100** — momentum {run.get('momentum', 0):.0f}/45 · "
+                     f"safety {run.get('safety', 0):.0f}/30 · attention {run.get('attention', 0):.0f}/25")
+        extra += [f"· {n}" for n in (run.get("notes") or [])[:4]]
+    if att.get("reasons"):
+        extra.append("**Attention**")
+        extra += [f"· {r}" for r in att["reasons"][:5]]
+    lw = launch_wallets_text(report)
+    if lw:
+        extra.append(lw)
+    if extra:
+        out.append({"title": "Why it was called", "description": _clip("\n".join(extra), 4000), "color": COLOR_EARLY})
+    return out
