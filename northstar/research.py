@@ -1625,7 +1625,7 @@ class Researcher:
             "SELECT payload FROM discovery_events "
             "WHERE mint=? AND source IN "
             "('dexscreener_profile','dexscreener_cto') "
-            "ORDER BY ts DESC LIMIT 1",
+            "ORDER BY COALESCE(last_ts, ts) DESC LIMIT 1",
             (mint,),
         )
 

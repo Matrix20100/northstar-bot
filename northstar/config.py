@@ -330,9 +330,27 @@ class Settings(BaseSettings):
     data_dir: str = "data"
     discovery_retention_days: float = 4.0   # 0 = keep forever (the table grows ~70 MB/day)
     snapshot_retention_days: float = 7.0    # research snapshots no alert/outcome still needs
+    curve_retention_hours: float = 6.0      # bonding-curve trade events (read for the last 5 minutes only); 0 = 7 days
+    snapshot_compact_hours: float = 24.0    # slim prefilter-rejection reports older than this (reasons kept); 0 = off
+    tracking_poll_limit: int = 600          # open decision-tracking rows price-checked per outcome pass (round-robin)
     db_filename: str = "northstar.db"
     log_level: str = "INFO"
     log_json: bool = True
+
+    @field_validator("curve_retention_hours", "snapshot_compact_hours")
+    @classmethod
+    def _retention_hours(cls, v: float) -> float:
+        # a negative age means "off", never "delete everything"
+        return max(0.0, float(v))
+
+    @field_validator("tracking_poll_limit")
+    @classmethod
+    def _poll_limit(cls, v: int) -> int:
+        # SQLite treats a negative LIMIT as "no limit": one pass would then price-check every open
+        # row at once. 0/negative -> the default; capped at 1200 (40 DexScreener requests a pass,
+        # shared with research on the 200 rpm pairs limiter).
+        v = int(v)
+        return 600 if v <= 0 else min(v, 1200)
 
     @field_validator("max_allowed_risk")
     @classmethod

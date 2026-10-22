@@ -205,7 +205,10 @@ def check_engine(engine, db_path: str, now: Optional[float] = None) -> list[dict
     try:
         c = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
         last = c.execute("SELECT MAX(ts) FROM research_snapshots").fetchone()[0]
-        disc = c.execute("SELECT MAX(ts) FROM discovery_events").fetchone()[0]
+        try:   # repeats of the same event update last_ts (v2.5.4) instead of adding rows
+            disc = c.execute("SELECT MAX(COALESCE(last_ts, ts)) FROM discovery_events").fetchone()[0]
+        except Exception:  # noqa: BLE001 - a database from before v2.5.4
+            disc = c.execute("SELECT MAX(ts) FROM discovery_events").fetchone()[0]
         c.close()
     except sqlite3.Error:
         last = disc = None

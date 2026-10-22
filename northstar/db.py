@@ -346,6 +346,10 @@ class Database:
     EXTRA_COLUMNS = {
         "alerts": [("peak_mcap", "REAL"), ("peak_at", "REAL"), ("call_type", "TEXT NOT NULL DEFAULT 'STANDARD'"),
                    ("plan_json", "TEXT")],
+        # v2.5.4 retention: an identical repeat of the last event for the same mint+source is
+        # counted (seen, last_ts) instead of stored again; tracking is polled round-robin
+        "discovery_events": [("seen", "INTEGER NOT NULL DEFAULT 1"), ("last_ts", "REAL")],
+        "decision_tracking": [("last_polled_at", "REAL")],
     }
 
     def _add_missing_columns(self) -> None:
@@ -498,18 +502,26 @@ class Database:
                 (mint,),
             ).fetchone()
 
-            c.execute(
-                """
-                INSERT INTO discovery_events(mint, source, ts, payload)
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    mint,
-                    source,
-                    now,
-                    json.dumps(payload or {}, default=str)[:4000],
-                ),
-            )
+            body = json.dumps(payload or {}, default=str)[:4000]
+            # Feeds re-list the same coin every minute with the same payload (live DB 21 Oct:
+            # 74% of all discovery rows were exact repeats). Count the repeat on the last row
+            # instead of storing it again; a changed payload is still stored as a new event.
+            last = c.execute(
+                "SELECT id, payload FROM discovery_events WHERE mint = ? AND source = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (mint, source),
+            ).fetchone()
+            if last is not None and last["payload"] == body:
+                c.execute("UPDATE discovery_events SET seen = seen + 1, last_ts = ? WHERE id = ?",
+                          (now, last["id"]))
+            else:
+                c.execute(
+                    """
+                    INSERT INTO discovery_events(mint, source, ts, payload)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (mint, source, now, body),
+                )
 
             if row is None:
                 c.execute(
@@ -1490,13 +1502,27 @@ class Database:
             (now or time.time(), limit),
         )
 
+    def open_tracking_count(self) -> int:
+        return self.fetchone("SELECT COUNT(*) n FROM decision_tracking WHERE done = 0")["n"]
+
     def active_tracking(self, limit: int = 600) -> list[dict]:
+        """Open tracking rows, least recently polled first.
+
+        v2.5.3 and earlier took the 600 OLDEST rows every time. With more than 600 open rows
+        (live DB 21 Oct: ~2,600) the newest decisions were never polled until they became the
+        oldest, so a coin's first ~12 hours — when most runs and rugs happen — went unobserved.
+        Order now: called-out coins every pass (at most the daily alert cap of rows), then rows
+        never checked yet, then everything else least recently checked first, so every open row
+        is reached within ceil(open / limit) passes.
+        """
         return self.fetchall(
             """
             SELECT *
             FROM decision_tracking
             WHERE done = 0
-            ORDER BY decided_at
+            ORDER BY CASE WHEN action = 'AUTO_POST' THEN 0
+                          WHEN last_polled_at IS NULL THEN 1 ELSE 2 END,
+                     COALESCE(last_polled_at, 0), decided_at
             LIMIT ?
             """,
             (limit,),
@@ -1601,6 +1627,7 @@ class Database:
         discovery_retention_days: float,
         snapshot_retention_days: float,
         now: Optional[float] = None,
+        curve_retention_hours: float = 0.0,
     ) -> dict[str, int]:
         """Delete old high-volume rows that nothing still depends on.
 
@@ -1620,7 +1647,7 @@ class Database:
                 cur = c.execute(
                     """
                     DELETE FROM discovery_events
-                    WHERE ts < ?
+                    WHERE COALESCE(last_ts, ts) < ?
                       AND mint NOT IN (SELECT mint FROM early_signals)
                       AND mint NOT IN (SELECT mint FROM alerts)
                     """,
@@ -1628,6 +1655,12 @@ class Database:
                 )
                 removed["discovery_events"] = cur.rowcount
                 c.execute("DELETE FROM social_links WHERE first_seen < ?", (now - 14 * 86400,))
+            if curve_retention_hours and curve_retention_hours > 0:
+                # bonding-curve events are read only for the last 5 minutes (research.py)
+                cur = c.execute("DELETE FROM curve_snapshots WHERE ts < ?",
+                                (now - curve_retention_hours * 3600,))
+                if cur.rowcount:
+                    removed["curve_snapshots"] = cur.rowcount
             if snapshot_retention_days and snapshot_retention_days > 0:
                 cur = c.execute(
                     """

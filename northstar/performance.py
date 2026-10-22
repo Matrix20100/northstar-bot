@@ -24,14 +24,47 @@ log = logging.getLogger("northstar.performance")
 MIN_SAMPLE = 30
 
 
+MAX_POLL_LIMIT = 1200          # 40 DexScreener token requests per pass (30 addresses each)
+
+
+def checks_per_day(open_rows: int, limit: int, interval_s: float) -> float:
+    """How often each open decision is price-checked per 24 h with round-robin polling."""
+    if open_rows <= 0:
+        return float("inf")
+    passes_per_cycle = -(-open_rows // max(1, limit))          # ceil
+    return 86400.0 / (passes_per_cycle * max(1.0, interval_s))
+
+
 class OutcomeTracker:
     def __init__(self, db: Database, dex):
         self.db, self.dex = db, dex
+        self.poll_interval = 120.0
+        self._coverage_warned = 0.0
+
+    def _check_coverage(self, limit: int, now: float) -> None:
+        """Warn (hourly) when there are too many open decisions to label them reliably."""
+        if now - self._coverage_warned < 3600:
+            return
+        try:
+            from .brain import TRACK_MIN_SAMPLES
+            n = self.db.open_tracking_count()
+            per_day = checks_per_day(n, limit, self.poll_interval)
+            if per_day < 2 * TRACK_MIN_SAMPLES:
+                self._coverage_warned = now
+                log.warning("outcome tracking: %d open decisions, %d checked per pass every %.0fs -> each is "
+                            "checked about %.0f times a day (%d needed for a complete label); raise "
+                            "NORTHSTAR_TRACKING_POLL_LIMIT (max %d)", n, limit, self.poll_interval, per_day,
+                            TRACK_MIN_SAMPLES, MAX_POLL_LIMIT)
+        except Exception:  # noqa: BLE001 - a warning must never stop tracking
+            log.debug("coverage check failed", exc_info=True)
 
     async def run_once(self, now: Optional[float] = None) -> int:
         now = now or time.time()
         due = self.db.due_outcomes(now)
-        tracking = self.db.active_tracking()
+        limit = int(getattr(self, "poll_limit", 600) or 600)
+        limit = limit if 0 < limit <= MAX_POLL_LIMIT else 600
+        tracking = self.db.active_tracking(limit)
+        self._check_coverage(limit, now)
         snap_pool: dict[int, str] = {}
         ids = {r["snapshot_id"] for r in due} | {t["snapshot_id"] for t in tracking}
         for sid in ids:
@@ -65,12 +98,13 @@ class OutcomeTracker:
                 self.db.execute(
                     "UPDATE decision_tracking SET max_price=MAX(COALESCE(max_price,?),?), "
                     "min_price=MIN(COALESCE(min_price,?),?), last_price=?, "
-                    "min_liq=MIN(COALESCE(min_liq,?),?), samples=samples+1, done=? WHERE snapshot_id=?",
+                    "min_liq=MIN(COALESCE(min_liq,?),?), samples=samples+1, done=?, last_polled_at=? "
+                    "WHERE snapshot_id=?",
                     (p.price_usd, p.price_usd, p.price_usd, p.price_usd, p.price_usd,
-                     p.liquidity_usd or 0, p.liquidity_usd or 0, done, t["snapshot_id"]))
+                     p.liquidity_usd or 0, p.liquidity_usd or 0, done, now, t["snapshot_id"]))
             else:
-                self.db.execute("UPDATE decision_tracking SET missing=missing+1, done=? WHERE snapshot_id=?",
-                                (done, t["snapshot_id"]))
+                self.db.execute("UPDATE decision_tracking SET missing=missing+1, done=?, last_polled_at=? "
+                                "WHERE snapshot_id=?", (done, now, t["snapshot_id"]))
         return n
 
 
