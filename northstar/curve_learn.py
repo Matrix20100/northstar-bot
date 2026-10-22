@@ -85,6 +85,49 @@ def table(db, s, days: float = 7.0, now: Optional[float] = None) -> dict:
     return {"days": days, "safe_coins": len(rows), "floors": out}
 
 
+def blocked_table(db, s, days: float = 7.0, now: Optional[float] = None) -> dict:
+    """What coins blocked by each safety rule really did (v3.3.2), next to the coins that passed.
+    A rule whose blocked coins rarely rug and often run is costing calls; one whose blocked coins
+    mostly fall to 0.3x is doing its job."""
+    now = now or time.time()
+    cols = {r["name"] for r in db.fetchall("PRAGMA table_info(curve_watch)")}
+    if "runner_block" not in cols:
+        return {"days": days, "groups": []}
+    rows = [dict(r) for r in db.fetchall(
+        "SELECT * FROM curve_watch WHERE done = 1 AND COALESCE(excluded, 0) = 0 AND runner_at IS NOT NULL "
+        "AND entered_at > ?", (now - days * 86400,))]
+    groups: dict[str, list] = {}
+    for r in rows:
+        key = "passed every safety check" if r.get("runner_safe") else (r.get("runner_block") or "other")
+        groups.setdefault(key, []).append(r)
+    out = []
+    for key, sub in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        peaks = [r["peak_mc"] / r["entry_mc"] for r in sub if r.get("entry_mc")]
+        firsts = [(r.get("low_before_peak") or r["entry_mc"]) / r["entry_mc"] for r in sub if r.get("entry_mc")]
+        lows = [(r.get("low_mc") or r["entry_mc"]) / r["entry_mc"] for r in sub if r.get("entry_mc")]
+        res = [x for x in (trade_result(r, s) for r in sub) if x is not None]
+        n = len(peaks)
+        if not n:
+            continue
+        out.append({"group": key, "n": n,
+                    "hit_2x": round(100 * sum(p >= 2 for p in peaks) / n, 1),
+                    "clean_2x": round(100 * sum(p >= 2 and f > 0.6 for p, f in zip(peaks, firsts)) / n, 1),
+                    "fell_0_3x": round(100 * sum(lo <= 0.3 for lo in lows) / n, 1),
+                    "mean": round(statistics.fmean(res), 4) if res else None})
+    return {"days": days, "groups": out}
+
+
+def format_blocked(t: dict) -> str:
+    lines = [f"What the runner check's blocked coins really did (last {t['days']:g} days)", "",
+             f"{'first blocker':34} {'coins':>6} {'2x':>6} {'clean2x':>8} {'0.3x':>6} {'est/trade':>10}"]
+    for g in t["groups"]:
+        lines.append(f"{g['group'][:34]:34} {g['n']:>6} {g['hit_2x']:>5}% {g['clean_2x']:>7}% {g['fell_0_3x']:>5}% "
+                     f"{_pct(g['mean']):>10}")
+    if not t["groups"]:
+        lines.append("(no finished coins yet)")
+    return "\n".join(lines)
+
+
 def _mean(rows: list[dict], floor: float, s) -> tuple[Optional[float], int]:
     res = [x for x in (trade_result(r, s) for r in rows if r["runner_score"] >= floor) if x is not None]
     return (statistics.fmean(res) if res else None), len(res)

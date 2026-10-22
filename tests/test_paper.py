@@ -236,3 +236,62 @@ def test_dashboard_switches_accounts(db):
     assert json.loads(c.req("/api/paper?account=brain")[1])["equity"] == 300
     assert json.loads(c.req("/api/paper?account=calls")[1]).get("run", {}).get("start_usd") != 300
     srv.server.shutdown()
+
+
+# ----------------------------------------------------------------------------- v3.3.2 sanity rails
+def test_brain_skips_junk_pools_and_failed_coins(db):
+    bt = PT.BrainTrader(Settings(_env_file=None), db, Dex())
+    thin = researched(addr("thin"))
+    thin.pair = make_pair(base_mint=addr("thin"), market_cap=500_000.0, fdv=500_000.0, liquidity_usd=2_000.0)
+    assert "liquidity" in bt.consider(thin)
+    pre = researched(addr("pre"))
+    pre.report["final"] = {"reason_class": "PREFILTER"}
+    assert bt.consider(pre) == "failed prefilter"
+    rug = researched(addr("rugv"))
+    rug.report["verdict"] = {"level": "RUG LIKELY"}
+    assert bt.consider(rug) == "rug check: RUG LIKELY"
+    tiny = researched(addr("tiny"), mc=40.0)
+    assert "not believable" in bt.consider(tiny)
+
+
+def test_brain_prices_from_its_own_pool_and_ignores_bad_quotes(db):
+    class TwoPools:
+        caps = {}
+
+        async def tokens_batch(self, mints):
+            out = []
+            for m in mints:
+                if m in self.caps:
+                    real, junk = self.caps[m]
+                    out.append(make_pair(base_mint=m, pair_address="REALPOOL", market_cap=real, fdv=real,
+                                         liquidity_usd=50_000.0))
+                    out.append(make_pair(base_mint=m, pair_address="JUNKPOOL", market_cap=junk, fdv=junk,
+                                         liquidity_usd=90_000.0))      # deeper, but a broken price
+            return out
+
+    dex = TwoPools()
+    bt = PT.BrainTrader(Settings(_env_file=None), db, dex)
+    m = addr("pools")
+    coin = researched(m)
+    coin.pair = make_pair(base_mint=m, pair_address="REALPOOL", market_cap=500_000.0, fdv=500_000.0,
+                          liquidity_usd=50_000.0)
+    t0 = time.time()
+    bt.consider(coin, now=t0)
+    dex.caps[m] = (520_000.0, 9e12)
+    asyncio.run(bt.run_once(t0 + 15))
+    assert trade(db, m)["last_mcap"] == 520_000                    # its own pool, not the deeper junk one
+    dex.caps[m] = (5e11, 5e11)                                     # a 1,000,000x jump in 15 s: a bad quote
+    c = asyncio.run(bt.run_once(t0 + 30))
+    assert c.get("bad_quotes") == 1 and trade(db, m)["last_mcap"] == 520_000 and trade(db, m)["status"] == "OPEN"
+
+
+def test_repair_restarts_a_run_with_impossible_numbers(db):
+    run = PT.active_run(db, S, "brain")
+    db.execute("INSERT INTO paper_trades(run_id, ref, mint, kind, opened_at, entry_mcap, cost_usd, units, units_left, "
+               "proceeds_usd, status) VALUES (?,?,?,?,?,?,?,?,?,?,'CLOSED')",
+               (run["id"], "brain:x", "x", "brain", time.time(), 10.0, 100.0, 9.9, 0, 5e9))
+    assert PT.repair(db, S) == ["brain"]
+    new = PT.active_run(db, S, "brain")
+    assert new["id"] != run["id"] and new["start_usd"] == run["start_usd"] and PT.cash(db, new) == run["start_usd"]
+    assert PT.summary(db, S, account="brain")["past_runs"][0]["id"] == run["id"]
+    assert PT.repair(db, S) == []                                  # a healthy run is left alone

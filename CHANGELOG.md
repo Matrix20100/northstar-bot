@@ -3,6 +3,28 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 3.3.2 — 2026-10-23 — paper sanity rails, and what each safety rule blocks
+
+From the live log:
+
+- **The brain's paper account "bought" a coin for $1.35 billion.** One bad price quote had blown up
+  its balance. Fixes:
+  - **Rails:** the brain never buys a coin that failed the prefilter or a safety check, was rated
+    RUG LIKELY, has under $10K liquidity, or shows an unbelievable entry (market cap under $5K).
+  - **Same pool:** a position is priced from the pool it was bought in, never from another pool
+    with a broken price.
+  - **Bad quotes:** a price that moves more than 20x (up or down) between two checks 15 seconds
+    apart is ignored as a bad quote. This applies to both accounts.
+  - **Repair:** a run with impossible numbers (a trade or balance over 1,000x its start) is closed
+    once at start and a fresh run begins with the same settings. The broken run stays in history.
+- **What each safety rule really blocks.** In the log, all 4 runner candidates were blocked by
+  bundled launches (15-29% bought in the creation block), plus a 7.2x first-minute jump or an
+  already-dumped chart. The runner check now stores each coin's first blocker and its bundle share.
+  `python main.py curve` and the Learning tab then show, per blocker, how often the blocked coins
+  hit 2x, hit a clean 2x, or fell to 0.3x. Any loosening is then based on whether a rule blocks
+  rugs or blocks runners. Nothing is loosened by this change.
+- Tests in `tests/test_paper.py` and `tests/test_learning_v330.py`.
+
 ## 3.3.1 — 2026-10-23 — stop re-checking dead coins every hour
 
 From the live log: 157 "Curve trade sample" lookups in 2 minutes, nearly all finding no trades at

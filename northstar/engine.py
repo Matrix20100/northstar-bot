@@ -1061,9 +1061,10 @@ class Engine:
             self._tasks.append(new)
 
     async def _paper(self) -> None:
-        from .paper import PaperTrader
+        from .paper import PaperTrader, repair
         if getattr(self, "paper", None) is None:
             self.paper = PaperTrader(self.s, self.db)
+            repair(self.db, self.s)              # v3.3.2: a run broken by a bad price quote restarts clean
         counts = self.paper.run_once()
         if counts["opened"] or counts["closed"]:
             log.info("paper trader (calls): %s", counts)

@@ -293,7 +293,9 @@ class EarlyCaller:
         if m:                                    # a coin the radar saw in the band: count it
             # v3.3.0: the curve learner learns the score floor from coins that were safe enough
             safety = [b for b in why if not b.startswith(("runner score", "hourly cap"))]
-            CW.record_runner(self.db, out.mint, sc.get("score", 0.0), not safety, now)
+            CW.record_runner(self.db, out.mint, sc.get("score", 0.0), not safety, now,
+                             block=safety[0].split(":")[0] if safety else None,
+                             bundle_pct=(r.get("launch_buys") or {}).get("bundle_pct"))
             st = self.runner_stats
             st["candidates"] += 1
             st["called"] += 0 if why else 1
