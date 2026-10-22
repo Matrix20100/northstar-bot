@@ -119,7 +119,7 @@ SECURITY_GATES = {"mint_authority", "freeze_authority", "token_extensions", "min
 # A FAIL here means a configured threshold was crossed. Serious, but not proof of a trap, so it
 # warns and caps the decision instead of rejecting outright.
 THRESHOLD_GATES = {"holder_concentration", "creator_holdings", "creator_dumping", "launch_bundle",
-                   "liquidity", "price_fresh", "bundled_supply", "source_consistency"}
+                   "liquidity", "price_fresh", "bundled_supply", "source_consistency", "launch_shape"}
 
 # One fact, one entry. The gate, the verdict flag AND the scoring check that describe the same
 # thing share a canonical key: once a hazard is vetoed (at any severity) its scoring check is

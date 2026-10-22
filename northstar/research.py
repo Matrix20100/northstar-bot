@@ -560,6 +560,11 @@ class Researcher:
         flags += ms.flags
         report["market_structure"] = ms.to_dict()
 
+        # 10b. Launch shape (v2.5.7): did the coin start organically, or with an instant jump, a
+        # few giant coordinated buys, or has it already been dumped? A FAIL is a risk threshold:
+        # the coin is rejected and not watched.
+        gates += await self._launch_shape(mint, pair, pairs, report)
+
         # 11. Narrative.
         nr = await self._narrative(mint, pair)
         flags += nr.flags
@@ -1480,6 +1485,16 @@ class Researcher:
                 confidence=Confidence.LOW,
             )
 
+        if qualified and getattr(self.s, "launch_check_enabled", True):
+            # v2.5.7: an early watch also needs an organic start on the curve (analysis/launch.py)
+            lp = await self._curve_launch(mint, bonding_curve_key, cand)
+            report["launch"] = lp.to_dict()
+            from .analysis import launch as LA
+            status, why = LA.gate(lp)
+            if status == "FAIL":
+                return self._final(mint, Action.REJECT, report, [f"launch shape: {why}"], score=score,
+                                   risk=RiskLevel.INCOMPLETE, confidence=Confidence.MEDIUM)
+
         if qualified:
             return self._final(
                 mint,
@@ -1909,6 +1924,54 @@ class Researcher:
         )
 
         return ts, clusters
+
+    async def _curve_launch(self, mint: str, curve_key, cand: Optional[dict]):
+        """Launch profile of a coin still on its pump.fun curve: candles of the curve itself, from
+        the launch event (the first pumpportal_new event, else the first discovery)."""
+        from .analysis import launch as LA
+
+        row = self.db.fetchone("SELECT MIN(ts) t FROM discovery_events WHERE mint=? AND source='pumpportal_new'",
+                               (mint,))
+        created = (row or {}).get("t") or (cand or {}).get("discovered_at")
+        candles: list = []
+        cg = getattr(self.p, "coingecko", None)
+        if cg is not None and curve_key and created:
+            try:
+                candles = await cg.candles(str(curve_key), created - 60, min(time.time(), created + 16 * 3600),
+                                           token=mint)
+            except Exception:  # noqa: BLE001 - a missing chart must never stop research
+                candles = []
+        price = candles[-1][4] if candles else None
+        return LA.analyze(candles, created, price,
+                          max_first_jump_x=float(getattr(self.s, "launch_max_first_jump_x", 6.0)),
+                          max_drawdown_x=float(getattr(self.s, "launch_max_drawdown_x", 0.35)),
+                          pool=str(curve_key) if curve_key else None, dex="pumpfun", origin="curve")
+
+    async def _launch_shape(self, mint: str, pair: PairInfo, pairs: list, report: dict) -> list:
+        """The `launch_shape` gate from 1-minute candles of the coin's earliest pool. Never raises;
+        no candles = UNKNOWN (recorded, not treated as organic, and not blocking on its own)."""
+        from .analysis import launch as LA
+
+        s = self.s
+        if not getattr(s, "launch_check_enabled", True):
+            return []
+        own = [p for p in pairs or [] if getattr(p, "base_mint", None) == mint]
+        pool, dex, created = LA.launch_pool(own, pair)
+        candles: list = []
+        cg = getattr(self.p, "coingecko", None)
+        if cg is not None and pool and created:
+            try:
+                end = min(time.time(), created + 16 * 3600)   # one call: up to ~16 h of 1-minute candles
+                candles = await cg.candles(pool, created - 60, end, token=mint)
+            except Exception as e:  # noqa: BLE001 - a missing chart must never stop research
+                report.setdefault("sources", {})["launch_candles"] = f"FAILED: {type(e).__name__}"
+        lp = LA.analyze(candles, created, pair.price_usd,
+                        max_first_jump_x=float(getattr(s, "launch_max_first_jump_x", 6.0)),
+                        max_drawdown_x=float(getattr(s, "launch_max_drawdown_x", 0.35)), pool=pool, dex=dex,
+                        origin=LA.origin_of(mint, dex))
+        report["launch"] = lp.to_dict()
+        status, reason = LA.gate(lp)
+        return [GateResult("launch_shape", GateStatus[status], reason, critical=status == "FAIL")]
 
     async def _narrative(self, mint: str, pair: PairInfo):
         metas = await self.trending_metas()

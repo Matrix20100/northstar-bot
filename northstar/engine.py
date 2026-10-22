@@ -759,9 +759,13 @@ class Engine:
             self.stats["watchlist"] += 1
             if (out.report.get("pre_migration") or {}).get("qualified_early_watch") and not early_called:
                 await self.alerts.publish_early_watch(out)
-            # high-potential candidates are re-checked more often
+            # high-potential candidates are re-checked more often, but not forever (v2.5.7): a coin
+            # that has not become a call after `watchlist_max_rechecks` looks leaves the watch list
             interval = self.s.watchlist_recheck_seconds / (2 if (out.score or 0) >= 75 else 1)
-            self.db.set_state(mint, "WATCHLIST", next_research_at=now + interval, **common)
+            again = common["research_count"] < int(getattr(self.s, "watchlist_max_rechecks", 12) or 0)
+            # STALE leaves the watch list; a surge or a new listing brings the coin back
+            self.db.set_state(mint, "WATCHLIST" if again else "STALE",
+                              next_research_at=now + interval if again else None, **common)
         elif out.action == Action.INSUFFICIENT_DATA:
             self.stats["insufficient"] += 1
             # missing data is retried, but not forever (v2.5.5)
