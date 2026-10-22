@@ -741,7 +741,11 @@ class Engine:
                 sources = json.loads(cand["sources"] or "[]")
             except (TypeError, ValueError):
                 sources = []
-            launch_only = sources and all(s == "pumpportal_new" for s in sources)
+            # v3.3.1: a coin known only from the launch feed or the curve radar waits for the radar
+            # too. The radar re-queues it the moment it trades in the band again. Before, every coin
+            # the radar had ever found was re-checked hourly forever, about one RPC call a second
+            # on the live bot (nearly all on dead coins).
+            launch_only = sources and all(s in ("pumpportal_new", "curve_radar") for s in sources)
             T.record_outcome(self.db, out, now)
             self.db.set_state(mint, prev_state,
                               next_research_at=None if launch_only

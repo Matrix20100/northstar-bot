@@ -922,7 +922,8 @@ async def sample_curve_trades(
     out.trades = trades
     out.counters = counters
 
-    log.info(
+    # v3.3.1: a coin with nothing in the window is routine; logged at DEBUG (it filled the live log)
+    (log.info if out.signatures_in_window or out.error else log.debug)(
         "Curve trade sample: mint=%s signatures_examined=%d in_window=%d fetched=%d "
         "fetch_failed=%d verified_trades=%d no_pump_ix=%d non_trade_pump_ix=%d "
         "trade_ix_without_event=%d event_decode_error=%d event_other_mint=%d "
