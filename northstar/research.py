@@ -194,6 +194,20 @@ class Researcher:
 
         pair = sel.pair
 
+        # v3.2.1: DexScreener lists a pump.fun coin's own bonding curve as a "pumpfun" pair. When
+        # that is the best pool the coin has NOT migrated, so it must get the curve research (and
+        # the runner-call check), not the DEX-pool rules (whose $7,500 liquidity gate a curve
+        # always fails). Before this, curve coins went one way or the other depending on whether
+        # DexScreener happened to report a liquidity figure for the curve.
+        if pair is not None and (pair.dex_id or "").lower() in ("pumpfun", "pump.fun", "pump"):
+            curve = await self._probe_curve(mint, report)
+            if curve is not None and not curve[1].get("complete"):
+                return await self._research_pre_migration(
+                    mint, report, cand, now,
+                    "still on its pump.fun bonding curve (DexScreener lists the curve itself as a pair)",
+                    curve=curve, force=force,
+                )
+
         if pair is None:
             curve = await self._probe_curve(mint, report)
             if curve is not None and not curve[1].get("complete"):
@@ -2015,7 +2029,7 @@ class Researcher:
     # ------------------------------------------------------------------ v2.5.9 rug filters
 
     async def _launch_buys(self, mint: str, creator: Optional[str], supply_ui, token_2022: bool, report: dict,
-                           curve: Optional[str] = None) -> list:
+                           curve: Optional[str] = None, max_pages: Optional[int] = None) -> list:
         """`launch_buys` and `sniper_holdings` gates from the coin's first pump.fun trades. Only for
         pump.fun coins (their curve is a PDA of the mint). Never raises."""
         from .analysis import holdings as HO
@@ -2033,7 +2047,7 @@ class Researcher:
         if cached is not None:
             lb = LT.LaunchBuys(**{**cached, "snipers": list(cached["snipers"]), "reasons": list(cached["reasons"])})
         else:
-            lb = await LT.analyze(self.p.rpc, mint, curve, creator, s)
+            lb = await LT.analyze(self.p.rpc, mint, curve, creator, s, max_pages=max_pages)
             if lb.status == "OBSERVED":          # a finished launch is read once (RPC budget)
                 if len(self._launch_cache) >= 3000:
                     self._launch_cache.pop(next(iter(self._launch_cache)))
@@ -2091,7 +2105,9 @@ class Researcher:
 
         token_2022 = bool(getattr(mint_acc, "is_token_2022", False))
         gates = await self._launch_buys(mint, creator, LT.PUMP_SUPPLY, token_2022, report,
-                                        curve=str(curve_key) if curve_key else None)
+                                        curve=str(curve_key) if curve_key else None,
+                                        max_pages=int(getattr(self.s, "runner_launch_max_pages", 20))
+                                        if report.get("runner_candidate") else None)
         recent = [SimpleNamespace(wallet=r.get("wallet"), sol_amount=r.get("sol_amount"), side=r.get("tx_type"))
                   for r in trades or [] if isinstance(r, dict) and r.get("wallet")]
         gates += self._micro_trades(mint, report, trades=recent)
