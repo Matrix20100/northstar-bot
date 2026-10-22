@@ -3,6 +3,31 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.5.4 — 2026-10-22 — database size (not deployed; branch `db-retention`)
+
+Measured on a copy of the 21 Oct 17:22 database (394 MB). The production database was not touched.
+
+- **Repeat discovery events are counted, not stored again.** 74% of `discovery_events` rows (194,828
+  of 262,785) were exact repeats of the last event for the same coin and feed. A repeat now
+  increments `seen` and updates `last_ts`; a changed payload is still a new row. Existing repeats
+  are merged once, flagged in `meta`. The first launch event and the latest profile, which are
+  the rows readers use, were checked for every coin on the copy and are unchanged.
+- **Bonding-curve events are kept 6 hours** (`NORTHSTAR_CURVE_RETENTION_HOURS`, previously a
+  fixed 7 days). Research reads only the last 5 minutes.
+- **Old prefilter-rejection reports are slimmed** (`NORTHSTAR_SNAPSHOT_COMPACT_HOURS=24`):
+  provider metadata is dropped, while the reasons, the decision and the market numbers are kept.
+  A coin's latest snapshot, alert snapshots and any coin that reached a security check are never
+  touched.
+- **Outcome tracking is polled round-robin** (`NORTHSTAR_TRACKING_POLL_LIMIT=600`). It used to
+  take the 600 oldest open rows every pass. With about 2,600 open rows, decisions from the
+  latest ~12 hours had 0 price checks, which missed the hours when most coins run or rug.
+- `python main.py db` shows space per table and what the retention pass would remove.
+  `--apply` runs the pass; `--vacuum` also shrinks the file and needs the bot stopped.
+- On the copy: 394 MB → 179 MB after the retention pass and VACUUM. Alerts, price history,
+  decision tracking, outcomes, shadows, early signals and snapshot counts were unchanged.
+  `python main.py audit` gave identical output, and the brain's training rows were identical
+  (4,170 rows, 289 runners).
+
 ## 2.5.3 — 2026-10-21 — shadow testing
 
 Record-only comparison of the live decisions with a proposed scoring policy. **No live decision,

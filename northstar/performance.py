@@ -31,7 +31,7 @@ class OutcomeTracker:
     async def run_once(self, now: Optional[float] = None) -> int:
         now = now or time.time()
         due = self.db.due_outcomes(now)
-        tracking = self.db.active_tracking()
+        tracking = self.db.active_tracking(int(getattr(self, "poll_limit", 600) or 600))
         snap_pool: dict[int, str] = {}
         ids = {r["snapshot_id"] for r in due} | {t["snapshot_id"] for t in tracking}
         for sid in ids:
@@ -65,12 +65,13 @@ class OutcomeTracker:
                 self.db.execute(
                     "UPDATE decision_tracking SET max_price=MAX(COALESCE(max_price,?),?), "
                     "min_price=MIN(COALESCE(min_price,?),?), last_price=?, "
-                    "min_liq=MIN(COALESCE(min_liq,?),?), samples=samples+1, done=? WHERE snapshot_id=?",
+                    "min_liq=MIN(COALESCE(min_liq,?),?), samples=samples+1, done=?, last_polled_at=? "
+                    "WHERE snapshot_id=?",
                     (p.price_usd, p.price_usd, p.price_usd, p.price_usd, p.price_usd,
-                     p.liquidity_usd or 0, p.liquidity_usd or 0, done, t["snapshot_id"]))
+                     p.liquidity_usd or 0, p.liquidity_usd or 0, done, now, t["snapshot_id"]))
             else:
-                self.db.execute("UPDATE decision_tracking SET missing=missing+1, done=? WHERE snapshot_id=?",
-                                (done, t["snapshot_id"]))
+                self.db.execute("UPDATE decision_tracking SET missing=missing+1, done=?, last_polled_at=? "
+                                "WHERE snapshot_id=?", (done, now, t["snapshot_id"]))
         return n
 
 

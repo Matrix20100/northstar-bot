@@ -224,6 +224,9 @@ def main(argv: list[str] | None = None) -> int:
     sh.add_argument("--days", type=float, default=7.0)
     sh.add_argument("--policy", default=None)
     sh.add_argument("--json", action="store_true")
+    dbm = sub.add_parser("db", help="database size, and the retention/compaction pass (dry run unless --apply)")
+    dbm.add_argument("--apply", action="store_true", help="run the retention pass now")
+    dbm.add_argument("--vacuum", action="store_true", help="also shrink the file (STOP the bot first)")
     dash = sub.add_parser("dashboard", help="run the read-only web dashboard")
     dash.add_argument("--port", type=int, default=None)
     args = ap.parse_args(argv)
@@ -274,6 +277,24 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 db.close()
             print(json.dumps(sm, indent=2, default=str) if args.json else SH.format_summary(sm))
+            return 0
+        if args.cmd == "db":
+            from . import retention as RT
+            db = _db(s)
+            path = str(db.path)
+            try:
+                print(RT.format_sizes(RT.table_sizes(path), RT.file_size(path)))
+                if args.apply:
+                    print("retention pass:", json.dumps(RT.maintain(db, s), default=str))
+                else:
+                    print("dry run — would remove:", json.dumps(RT.estimate(db, s), default=str))
+                    print("run with --apply to do it (and --vacuum, with the bot stopped, to shrink the file)")
+            finally:
+                db.close()
+            if args.apply and args.vacuum:
+                r = RT.vacuum(path)
+                print(f"vacuum: {r['before_bytes'] / 1e6:,.1f} MB -> {r['after_bytes'] / 1e6:,.1f} MB")
+                print(RT.format_sizes(RT.table_sizes(path), RT.file_size(path)))
             return 0
         if args.cmd == "test-discord":
             return asyncio.run(_test_discord(s))

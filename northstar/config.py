@@ -330,6 +330,9 @@ class Settings(BaseSettings):
     data_dir: str = "data"
     discovery_retention_days: float = 4.0   # 0 = keep forever (the table grows ~70 MB/day)
     snapshot_retention_days: float = 7.0    # research snapshots no alert/outcome still needs
+    curve_retention_hours: float = 6.0      # bonding-curve trade events (read for the last 5 minutes only); 0 = 7 days
+    snapshot_compact_hours: float = 24.0    # slim prefilter-rejection reports older than this (reasons kept); 0 = off
+    tracking_poll_limit: int = 600          # open decision-tracking rows price-checked per outcome pass (round-robin)
     db_filename: str = "northstar.db"
     log_level: str = "INFO"
     log_json: bool = True

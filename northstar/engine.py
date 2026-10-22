@@ -165,6 +165,8 @@ class Engine:
         self.curve_radar = (CurveRadar(s, db, providers.dex)
                             if s.early_call_enabled and s.curve_radar_enabled and providers.dex is not None else None)
         self.outcomes = OutcomeTracker(db, providers.dex) if providers.dex else None
+        if self.outcomes:
+            self.outcomes.poll_limit = int(getattr(s, "tracking_poll_limit", 600) or 600)
         from .radar import SurgeRadar
         self.radar = (SurgeRadar(s, db, providers.dex, getattr(providers, "coingecko", None))
                       if (s.radar_enabled and providers.dex) else None)
@@ -889,10 +891,12 @@ class Engine:
             log.info("early-watch tracker: %s", counts)
 
     async def _prune(self) -> None:
-        removed = await asyncio.to_thread(self.db.prune_old_data, self.s.discovery_retention_days,
-                                          self.s.snapshot_retention_days)
-        if any(removed.values()):
-            log.info("database retention: removed %s", removed)
+        from . import retention as RT
+
+        res = await asyncio.to_thread(RT.maintain, self.db, self.s)
+        if any(v for v in (res.get("pruned") or {}).values()) or res.get("discovery_duplicates_merged") \
+                or res.get("snapshots_compacted"):
+            log.info("database retention: %s", res)
 
     async def _heartbeat(self) -> None:
         h = {r["provider"]: r["status"] for r in self.db.provider_health()}
