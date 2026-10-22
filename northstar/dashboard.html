@@ -72,6 +72,20 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
 .footer{color:#5b6372;text-align:center;font-size:11px;margin-top:28px}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid #3b4558;border-top-color:var(--blue);border-radius:50%;animation:sp 1s linear infinite;vertical-align:-2px}
 @keyframes sp{to{transform:rotate(360deg)}}
+.pulse{display:grid;gap:12px;grid-template-columns:repeat(4,minmax(0,1fr))}
+.pcol{border:1px solid var(--line);border-radius:var(--r);background:#0d1016;min-width:0;display:flex;flex-direction:column;max-height:78vh}
+.pcol h3{margin:0;padding:12px 14px;font-size:13px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+.pcol h3 span{color:var(--muted);font-weight:400}.pcol .plist{overflow-y:auto;padding:8px;display:grid;gap:8px;align-content:start}
+.pcol.passed{border-color:#315944}.pcol.passed h3{color:var(--green)}
+.pc{border:1px solid #1f2430;border-radius:11px;padding:10px;background:#11151d;cursor:pointer;display:grid;grid-template-columns:38px 1fr auto;gap:4px 10px}
+.pc:hover{border-color:#3a4356}.pc img,.pc .noimg{width:38px;height:38px;border-radius:50%;object-fit:cover;background:#1c2230;grid-row:span 2}
+.pc .t{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pc .t small{color:var(--muted);font-weight:400}
+.pc .r{text-align:right;font-size:12px}.pc .chips{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px}
+.chip{font-size:10.5px;padding:2px 7px;border-radius:99px;border:1px solid var(--line);white-space:nowrap}
+.chip.f{color:var(--red);border-color:#603238;background:#281418}.chip.w{color:var(--amber);border-color:#5a492b;background:#241e12}
+.chip.p{color:var(--green);border-color:#315944;background:#10251c}
+@media(max-width:1200px){.pulse{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.pulse{grid-template-columns:1fr}.pcol.passed{order:-1}}
 @media(max-width:1000px){.g4{grid-template-columns:repeat(2,minmax(0,1fr))}.g2,.g3{grid-template-columns:1fr}}
 @media(max-width:560px){.shell{padding:14px 12px 40px}.metric strong{font-size:21px}.test{grid-template-columns:22px 1fr}.test .ms,.test .tname{grid-column:2}
 .sig{grid-template-columns:120px 1fr 44px}}
@@ -97,7 +111,7 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
     <button class="btn primary" type="submit" id="researchBtn">Research</button>
   </form>
   <nav class="tabs" id="tabs">
-    <button data-tab="overview" class="on">Overview</button><button data-tab="watching">Watching</button>
+    <button data-tab="overview" class="on">Overview</button><button data-tab="pulse">Pulse</button><button data-tab="watching">Watching</button>
     <button data-tab="calls">Calls</button><button data-tab="learning">Learning</button>
     <button data-tab="settings">Settings</button><button data-tab="selftest">Self-test</button>
   </nav>
@@ -117,6 +131,17 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
         <div class="card"><h2>Decision funnel (24h) <span>where coins stop, and why</span></h2><div id="funnel"></div></div>
         <div class="card"><h2>Data sources <span>live health</span></h2><div id="providers"></div></div>
       </div>
+    </div>
+  </section>
+
+  <section data-view="pulse" class="hide">
+    <div class="card" style="margin-bottom:12px"><h2>Pulse <span id="pulseSub">every coin researched in the last 3 hours, by stage · click a coin for its research</span></h2>
+      <div id="pulseFunnel" class="sub"></div></div>
+    <div class="pulse">
+      <div class="pcol"><h3>New pairs <span id="pcNewN"></span></h3><div class="plist" id="pcNew"></div></div>
+      <div class="pcol"><h3>Final stretch <span id="pcFinalN"></span></h3><div class="plist" id="pcFinal"></div></div>
+      <div class="pcol"><h3>Migrated <span id="pcMigN"></span></h3><div class="plist" id="pcMig"></div></div>
+      <div class="pcol passed"><h3>✅ Passed all filters <span id="pcPassN"></span></h3><div class="plist" id="pcPass"></div></div>
     </div>
   </section>
 
@@ -200,7 +225,7 @@ document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>go(b.dataset.
 function go(t){if(!document.querySelector(`[data-view="${t}"]`))t='overview';tab=t;location.hash=t;
  document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
  document.querySelectorAll('[data-view]').forEach(v=>v.classList.toggle('hide',v.dataset.view!==t));refresh()}
-async function refresh(){clearTimeout(timer);try{await status();const f={overview:overview,watching:watching,calls:calls,learning:learning,settings:settings,selftest:selftest}[tab];await f();
+async function refresh(){clearTimeout(timer);try{await status();const f={overview:overview,pulse:pulse,watching:watching,calls:calls,learning:learning,settings:settings,selftest:selftest}[tab];await f();
  $('updated').textContent='updated '+new Date().toLocaleTimeString()}catch(e){if(e.message!=='auth')$('updated').textContent='connection problem — retrying'}
  const every=tab==='selftest'&&stRunning?2500:(tab==='settings'?60000:15000);timer=setTimeout(()=>{if(!document.hidden)refresh();else timer=setTimeout(refresh,every)},every)}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!$('app').classList.contains('hide'))refresh()});
@@ -211,6 +236,20 @@ async function status(){S=await api('/api/status');
  $('modeState').className='pill '+(S.mode==='LIVE'?'good':'warn');$('modeState').textContent=S.mode;
  $('footer').textContent=`Northstar · version ${S.version} · research, not financial advice`}
 
+function pcard(c){const img=c.image&&/^https?:/.test(c.image)?`<img src="${esc(c.image)}" alt="" loading="lazy" onerror="this.outerHTML='<div class=noimg></div>'">`:'<div class="noimg"></div>';
+ const rug=c.rug_odds==null?'':`<div class="sub">rug odds <b class="${c.rug_odds>=0.6?'down':c.rug_odds>0.3?'':'up'}">${Math.round(c.rug_odds*100)}%</b></div>`;
+ const chips=c.failed.map(f=>`<span class="chip f" title="${esc(f.reason)}">✕ ${esc(f.name)}</span>`).join('')+c.warned.map(f=>`<span class="chip w" title="${esc(f.reason)}">! ${esc(f.name)}</span>`).join('')
+  +(c.tracked?`<span class="chip p">👀 ${c.tracked} tracked</span>`:'')+`<span class="chip">${c.passed_count}/${c.filter_count} filters passed</span>`;
+ return `<div class="pc" data-mint="${esc(c.mint)}">${img}<div class="t">${esc(c.symbol?'$'+c.symbol:short(c.mint))} <small>${esc(c.name||'')}</small></div>
+  <div class="r">${actPill(c.action)}</div><div class="sub">MC ${usd(c.market_cap)}${c.liquidity!=null?' · liq '+usd(c.liquidity):''}${c.pool_age_h!=null?' · '+dur(c.pool_age_h*3600):''} · ${ago(c.ts)}</div>
+  <div class="r"><b>${c.score==null?'—':Math.round(c.score)}</b><span class="sub">/100</span>${rug}</div><div class="chips">${chips}</div></div>`}
+async function pulse(){const d=await api('/api/pulse');const cols=d.columns||{};
+ const fill=(id,arr,empty)=>{$(id).innerHTML=arr&&arr.length?arr.map(pcard).join(''):`<div class="empty">${empty}</div>`;$(id+'N').textContent=arr?arr.length:0};
+ fill('pcNew',cols.new,'No curve coins researched');fill('pcFinal',cols.final,'None close to migrating');fill('pcMig',cols.migrated,'No migrated coins researched');
+ fill('pcPass',d.passed,'Nothing passed every filter in this window');
+ const fo=Object.entries((d.funnel||{}).failed_on||{}).map(([k,v])=>`${esc(k)} ${num(v)}`).join(' · ');
+ $('pulseFunnel').innerHTML=`${num(d.funnel.researched)} researched · ${num(d.funnel.prefiltered)} dropped as dust (no liquidity / no trades, not shown) → <b class="up">${num(d.funnel.passed)} passed every filter</b>${fo?' · most common failure: '+fo:''}`}
+document.addEventListener('click',e=>{const c=e.target.closest('.pc[data-mint]');if(c&&!e.target.closest('a'))openToken(c.dataset.mint)});
 async function overview(){const d=await api('/api/decisions');
  $('mUp').textContent=S.running?dur(S.uptime_s):'—';$('mUpSub').textContent=S.stats?`${num(S.stats.researched)} researched · ${num(S.stats.errors)} errors`:'not attached to the bot';
  $('mRes').textContent=num(S.researched_1h);$('mResSub').textContent=`last ${ago(S.last_research)} · queue ${num(S.queue)}`;

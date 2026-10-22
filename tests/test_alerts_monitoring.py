@@ -204,6 +204,29 @@ async def test_tracking_closes_after_window(settings, db):
     assert db.get_candidate(MINT)["state"] == "CLOSED"
 
 
+async def test_a_rugged_call_is_closed_once_not_tracked_for_hours(settings, db):
+    aid, pub, p, out = await published(settings, db)
+    entry = db.get_alert(aid)["entry_mcap"]
+    p.dex.pairs = [make_pair(market_cap=entry * 0.25, price_usd=out.pair.price_usd * 0.25)]
+    mon = Monitor(settings, db, pub, p.dex, None)
+    await mon.run_once()
+    a = db.get_alert(aid)
+    assert a["state"] == "CLOSED" and "RUGGED" in json.loads(a["warnings"])
+    assert db.get_candidate(MINT)["state"] == "CLOSED"
+    rugged = [e for _, e in pub.sent if "RUGGED" in json.dumps(e)]
+    assert len(rugged) == 1
+    await mon.run_once()                                  # closed: no more tracking, no second warning
+    assert len([e for _, e in pub.sent if "RUGGED" in json.dumps(e)]) == 1
+
+
+async def test_a_dip_above_the_rug_line_stays_open(settings, db):
+    aid, pub, p, out = await published(settings, db)
+    entry = db.get_alert(aid)["entry_mcap"]
+    p.dex.pairs = [make_pair(market_cap=entry * 0.4, price_usd=out.pair.price_usd * 0.4)]
+    await Monitor(settings, db, pub, p.dex, None).run_once()
+    assert db.get_alert(aid)["state"] != "CLOSED"
+
+
 # ---------------------------------------------------------------- historical evaluation
 async def test_outcomes_tracked_for_rejected_and_dead_pools(settings, db):
     # v2.5.5: rejected coins are tracked as a sample (reject_tracking_sample_pct); 100% here so the

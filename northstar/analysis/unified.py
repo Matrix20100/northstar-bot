@@ -861,6 +861,19 @@ def _risk(vetoes: list[Veto], verdict: dict, completeness: float) -> str:
     return RISK_LOW
 
 
+def _risk_learned(vetoes: list[Veto], p_rug: float, completeness: float) -> str:
+    """v2.6.0: with a trusted rug model the risk class follows its measured odds; proven traps and
+    blocking thresholds still set it, the rule-of-thumb verdict level no longer does."""
+    if any(v.severity == CONFIRMED_CRITICAL for v in vetoes):
+        return RISK_EXTREME
+    strong = [v for v in vetoes if v.severity == STRONG_WARNING]
+    if any(v.blocking for v in vetoes) or len(strong) >= 2 or p_rug >= 0.5:
+        return RISK_HIGH
+    if strong or p_rug >= 0.25 or completeness < 0.55 or any(v.severity == UNRESOLVED for v in vetoes):
+        return RISK_MODERATE
+    return RISK_LOW
+
+
 EARLY, ON_TIME, LATE, COLLAPSED, ENTRY_UNKNOWN = "EARLY", "ON TIME", "LATE", "COLLAPSED", "UNKNOWN"
 
 
@@ -984,6 +997,39 @@ RC_GAP = "EVIDENCE_GAP"                   # missing evidence a call needs (narra
 RC_ESSENTIAL = "ESSENTIAL_DATA_THIN"      # an essential category is too blind or too weak
 RC_CONFIDENCE = "LOW_CONFIDENCE"          # evidence too thin or contradictory for a call
 RC_WATCH = "BELOW_CALL_LINE"              # watchable score, not yet a call
+RC_RUG = "LEARNED_RUG_RISK"               # v2.6.0: the trusted rug model's odds are too high
+
+# v2.6.0: threshold gates the trusted rug model may overrule when its odds are low. On the 22 Oct
+# data coins rejected only for top-10 concentration rugged as often as coins that passed (41% vs
+# 41%); those with learned rug odds of 0.2 or less: 1 of 13. Proven traps, liquidity and the launch / sniper
+# / insider-trade filters are never overruled.
+RUG_OVERRIDABLE = {HAZARD_ALIASES.get(k, k) for k in ("gate:holder_concentration", "gate:creator_holdings",
+                                                         "gate:bundled_supply")}
+
+
+def rug_view(report: dict, s: Any = None) -> Optional[dict]:
+    """The trusted rug model's result for this report, or None (not trained / not trusted / off)."""
+    rm = report.get("rug_model") if isinstance(report.get("rug_model"), dict) else None
+    if not rm or not rm.get("trusted") or _num(rm.get("p")) is None:
+        return None
+    if not getattr(s, "rug_model_enabled", True):
+        return None
+    return rm
+
+
+def _rug_relax(vetoes: list, p: float, s: Any) -> list:
+    """Low learned rug odds turn an overridable threshold veto into a recorded concern."""
+    limit = _num(getattr(s, "rug_override_max", None))
+    limit = 0.3 if limit is None else limit
+    if p > limit:
+        return vetoes
+    out = []
+    for v in vetoes:
+        if v.key in RUG_OVERRIDABLE and v.severity == STRONG_WARNING and "(not blocking:" not in v.text:
+            v = Veto(v.key, UNVERIFIED_SUSPICION,
+                     f"{v.text} (not blocking: learned rug odds {p * 100:.0f}%)", v.grade, False, v.cause)
+        out.append(v)
+    return out
 
 
 def _decide(score: float, score_ex_nar: float, risk: str, confidence: str, completeness: float,
@@ -1148,8 +1194,37 @@ def _assemble(led: Ledger, report: dict, s: Any, model: Optional[dict], ai: Opti
         confidence = "MEDIUM"      # sources disagree: do not claim high confidence
     entry = _entry(report, cats)
     timing = early_entry(report, s)
-    decision, why, reason_class = _decide(score, round(ex_nar + tilt - penalty, 1), risk,
+    opportunity, score_ex = score, round(ex_nar + tilt - penalty, 1)
+    rug = rug_view(report, s)
+    if rug:
+        # v2.6.0: the score is mostly SAFETY now: what was measured to separate rugs (the trusted
+        # rug model) carries `u_rug_weight` of it, the opportunity score the rest
+        p_rug = float(rug["p"])
+        led.vetoes = _rug_relax(led.vetoes, p_rug, s)
+        suspicions = [v for v in led.vetoes if v.severity == UNVERIFIED_SUSPICION]
+        penalty = round(min(9.0, 3.0 * len(suspicions)), 1)
+        opportunity = round(max(0.0, min(99.0, base + tilt - penalty)), 1)
+        w = _num(getattr(s, "u_rug_weight", None))
+        w = 0.6 if w is None else max(0.0, min(1.0, w))
+        safety_pts = 100.0 * (1.0 - p_rug)
+        score = round(max(0.0, min(99.0, w * safety_pts + (1 - w) * opportunity)), 1)
+        score_ex = round(max(0.0, min(99.0, w * safety_pts + (1 - w) * (ex_nar + tilt - penalty))), 1)
+        risk = _risk_learned(led.vetoes, p_rug, completeness)
+    decision, why, reason_class = _decide(score, score_ex, risk,
                                           confidence, completeness, led.vetoes, s, cats, entry)
+    if rug and decision not in (REJECT, INSUFFICIENT):
+        p_rug = float(rug["p"])
+        reject_at = _num(getattr(s, "rug_reject_min", None))
+        reject_at = 0.6 if reject_at is None else reject_at
+        call_max = _num(getattr(s, "rug_call_max", None))
+        call_max = 0.5 if call_max is None else call_max
+        if p_rug >= reject_at:
+            decision, reason_class = REJECT, RC_RUG
+            why = [f"learned rug odds {p_rug * 100:.0f}% (reject at {reject_at * 100:.0f}%): coins like this "
+                   f"fell to 0.3x"] + why
+        elif decision == STRONG and p_rug > call_max:
+            decision, reason_class = WATCH, RC_RUG
+            why = [f"learned rug odds {p_rug * 100:.0f}% above the {call_max * 100:.0f}% a call allows"] + why
 
     # Most decision-relevant first: weight x quality, with real signals ahead of the routine
     # "authority revoked" confirmations, which matter but are true of most tokens.
@@ -1165,7 +1240,11 @@ def _assemble(led: Ledger, report: dict, s: Any, model: Optional[dict], ai: Opti
     return {
         "version": 2,
         "score": score, "base_score": round(base, 1),
-        "score_basis": ("v2.4 (safety points included)" if getattr(s, "u_score_includes_safety", False)
+        "opportunity_score": opportunity,
+        "rug_odds": (round(float(rug["p"]), 4) if rug else None),
+        "score_basis": (f"learned safety ({(_num(getattr(s, 'u_rug_weight', None)) or 0.6) * 100:.0f}%) + "
+                        "opportunity" if rug else
+                        "v2.4 (safety points included)" if getattr(s, "u_score_includes_safety", False)
                         else "opportunity only — safety is the veto layer"),
         "reason_class": reason_class,
         "safety": _safety(led.vetoes, risk),
@@ -1252,9 +1331,13 @@ def panel_text(u: dict, max_lines: int = 4) -> str:
     """The one decision panel used on Discord and in the dashboard."""
     d = str(u.get("decision") or INSUFFICIENT)
     risk = str(u.get("risk") or RISK_MODERATE)
-    lines = [f"{EMOJI.get(d, '')} **{d}** · opportunity score **{u.get('score', 0):.0f}/100** · "
+    score_word = "score" if u.get("rug_odds") is not None else "opportunity score"
+    lines = [f"{EMOJI.get(d, '')} **{d}** · {score_word} **{u.get('score', 0):.0f}/100** · "
              f"risk {RISK_EMOJI.get(risk, '')} {risk} · confidence {u.get('confidence', 'LOW')} · "
              f"evidence {float(u.get('completeness') or 0) * 100:.0f}%"]
+    if u.get("rug_odds") is not None:
+        lines.append(f"🧪 learned rug odds **{u['rug_odds'] * 100:.0f}%** · opportunity "
+                     f"{u.get('opportunity_score', 0):.0f}/100")
     ee = u.get("early_entry") or {}
     safety = (u.get("safety") or {}).get("status")
     if ee.get("grade") or safety:

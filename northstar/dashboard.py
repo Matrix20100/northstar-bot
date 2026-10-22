@@ -151,6 +151,94 @@ def view_watching(c, now: float) -> dict:
             "waiting_launches": waiting, "surges": surges, "early": early, "trending": trending}
 
 
+PULSE_FINAL_STRETCH_USD = 40_000.0   # a curve coin past this market cap is close to migrating
+
+
+def _pulse_card(row: dict) -> Optional[dict]:
+    try:
+        r = json.loads(row["report"] or "{}")
+    except (TypeError, ValueError):
+        return None
+    ident = r.get("identity") or {}
+    market = r.get("market") or {}
+    pm = r.get("pre_migration") or {}
+    u = r.get("unified") if isinstance(r.get("unified"), dict) else {}
+
+    def val(x):
+        return x.get("value") if isinstance(x, dict) else x
+
+    curve = r.get("lifecycle") == "PRE_MIGRATION_BONDING_CURVE"
+    mc = pm.get("market_cap_usd_current") if curve else val(market.get("market_cap"))
+    if curve:
+        prog = pm.get("curve_progress_pct")
+        stage = ("final" if (prog is not None and prog >= 70) or (prog is None and (mc or 0) >= PULSE_FINAL_STRETCH_USD)
+                 else "new")
+    else:
+        stage = "migrated"
+    gates = [g for g in r.get("gates") or [] if isinstance(g, dict)]
+    relaxed = {t.split(":")[0] for t in (u.get("suspicions") or []) if "(not blocking:" in t}
+    filters = []
+    for g in gates:
+        name = str(g.get("name") or "")
+        label = name.replace("_", " ")
+        st = g.get("status") or "UNKNOWN"
+        if st == "FAIL" and label in relaxed:
+            st = "WARN"
+        filters.append({"name": label, "status": st, "reason": str(g.get("reason") or "")[:160]})
+    rug = u.get("rug_odds")
+    if rug is not None:
+        filters.append({"name": "learned rug odds", "status": "FAIL" if rug >= 0.6 else ("WARN" if rug > 0.3 else "PASS"),
+                        "reason": f"{rug * 100:.0f}%"})
+    action = row.get("action") or r.get("final_action")
+    reasons = [str(x) for x in r.get("reasons") or []]
+    prefilter = bool(reasons) and all(x.startswith("prefilter:") for x in reasons)
+    if action == "REJECT" and not any(f["status"] == "FAIL" for f in filters) and reasons:
+        # rejected by a rule that is not a gate (prefilter, timing, curve thresholds): show why
+        why = reasons[0]
+        name = ("already pumped" if "since launch" in why else
+                "curve activity" if why.startswith("pre-migration activity") else
+                "learned rug odds" if "rug odds" in why else
+                str(u.get("reason_class") or "").replace("_", " ").lower() or why.split(":")[0][:28])
+        filters.append({"name": name, "status": "FAIL", "reason": why[:160]})
+    return {
+        "prefilter": prefilter,
+        "mint": row["mint"], "symbol": ident.get("symbol"), "name": ident.get("name"),
+        "image": market.get("image_url") or ident.get("image_url"), "stage": stage, "ts": row["ts"],
+        "market_cap": mc, "liquidity": None if curve else val(market.get("liquidity_usd")),
+        "pool_age_h": (r.get("security") or {}).get("pool_age_hours"),
+        "action": action, "decision": u.get("decision"), "score": u.get("score", row.get("score")),
+        "opportunity": u.get("opportunity_score"), "rug_odds": rug,
+        "passed": action in ("AUTO_POST", "WATCHLIST"),
+        "failed": [f for f in filters if f["status"] == "FAIL"][:4],
+        "warned": [f for f in filters if f["status"] == "WARN"][:3],
+        "passed_count": sum(1 for f in filters if f["status"] == "PASS"), "filter_count": len(filters),
+        "why": (r.get("reasons") or [""])[0][:200] if r.get("reasons") else "",
+        "tracked": ((r.get("tracked_wallets") or {}).get("holding_count") or 0),
+    }
+
+
+def view_pulse(c, now: float, hours: float = 3.0) -> dict:
+    """v2.6.0: Axiom-Pulse-style view of what the bot researched recently. Three stages (new on the
+    curve, final stretch before migration, migrated) and the coins that passed every filter."""
+    rows = [dict(r) for r in c.execute(
+        "SELECT s.mint, s.ts, s.action, s.score, s.report FROM research_snapshots s "
+        "JOIN (SELECT mint, MAX(id) AS id FROM research_snapshots WHERE ts > ? GROUP BY mint) m ON s.id = m.id "
+        "ORDER BY s.ts DESC LIMIT 300", (now - hours * 3600,))]
+    every = [x for x in (_pulse_card(r) for r in rows) if x]
+    cards = [x for x in every if not x["prefilter"]]   # dust (no liquidity, no trades) is counted, not shown
+    cols = {"new": [], "final": [], "migrated": []}
+    for x in cards:
+        cols[x["stage"]].append(x)
+    passed = [x for x in cards if x["passed"]]
+    funnel = {"researched": len(every), "prefiltered": len(every) - len(cards), "passed": len(passed),
+              "failed_on": {}}
+    for x in cards:
+        for f in x["failed"][:1]:
+            funnel["failed_on"][f["name"]] = funnel["failed_on"].get(f["name"], 0) + 1
+    funnel["failed_on"] = dict(sorted(funnel["failed_on"].items(), key=lambda kv: -kv[1])[:8])
+    return {"hours": hours, "columns": {k: v[:60] for k, v in cols.items()}, "passed": passed[:40], "funnel": funnel}
+
+
 def view_calls(c) -> dict:
     cols = {r[1] for r in c.execute("PRAGMA table_info(alerts)")}
     extra = ", ".join(x for x in ("peak_mcap", "peak_at", "call_type", "plan_json") if x in cols)
@@ -456,6 +544,9 @@ class DashboardServer:
                         return self._send(200, view_status(c, s, now))
                     if u.path == "/api/watching":
                         return self._send(200, view_watching(c, now))
+                    if u.path == "/api/pulse":
+                        hours = float((parse_qs(u.query).get("hours") or ["3"])[0] or 3)
+                        return self._send(200, view_pulse(c, now, max(0.5, min(hours, 24.0))))
                     if u.path == "/api/calls":
                         return self._send(200, view_calls(c))
                     if u.path == "/api/decisions":
