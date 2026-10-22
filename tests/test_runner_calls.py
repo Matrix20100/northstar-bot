@@ -198,3 +198,43 @@ def test_attention_never_raises():
             raise RuntimeError("boom")
     a = Attention(Settings(_env_file=None), events=Broken(), fetch=lambda u: None)
     assert a.score(MINT, "Kimchi", "KIMCHI")["score"] == 0
+
+
+# ----------------------------------------------------------------------------- v3.2.2
+def test_a_typical_safe_active_coin_with_no_attention_clears_the_default_score():
+    """No KOL channel set means attention is usually 0. A safe coin with ordinary momentum
+    (25% of its market cap traded in 5 min, 4 buys for 3 sells) must still be callable."""
+    m = {"market_cap": 40_000, "vol_m5": 10_000, "buys_m5": 80, "sells_m5": 60, "chg_m5": 5}
+    sc = RN.score(report(), m, {"score": 0})
+    assert sc["score"] >= Settings(_env_file=None).runner_min_score
+    weak = RN.score(report(), {**m, "vol_m5": 7_500, "market_cap": 85_000, "buys_m5": 60, "sells_m5": 60,
+                               "chg_m5": -10}, {"score": 0})
+    assert weak["score"] < Settings(_env_file=None).runner_min_score
+
+
+def test_runner_summary_counts_candidates_and_names_the_blockers(db):
+    radar(db)
+    s, pub, c = caller(db)
+    r = report()
+    r["gates"][0]["status"] = "UNKNOWN"
+    asyncio.run(c.consider(out(r)))
+    asyncio.run(c.consider(out(report())))
+    line = c.runner_summary()
+    assert line.startswith("runner check: 2 coin(s) in the band, 1 called")
+    assert "mint authority not passed x1" in line
+    assert c.runner_summary() is None                        # reset after each report
+
+
+def test_dashboard_counts_and_lists_runner_calls(db):
+    import json as _json
+    from test_dashboard import serve
+    radar(db)
+    s, pub, c = caller(db)
+    asyncio.run(c.consider(out(report())))
+    srv, cl = serve(db, "pw")
+    cl.req("/api/login", {"password": "pw"})
+    st = _json.loads(cl.req("/api/status")[1])
+    assert st["calls_24h"] == 1 and st["open_calls"] == 1
+    calls = _json.loads(cl.req("/api/calls")[1])["calls"]
+    assert calls[0]["call_type"] == "RUNNER" and calls[0]["symbol"] == "KIMCHI"
+    srv.server.shutdown()

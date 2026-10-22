@@ -308,7 +308,7 @@ async function watching(){const d=await api('/api/watching');$('queueSub').textC
 
 async function calls(){const d=await api('/api/calls');
  $('calls').innerHTML=d.calls.length?d.calls.map(c=>{const nowx=c.entry_mcap&&c.current_mcap?c.current_mcap/c.entry_mcap:null;const ev=(c.events||[]).map(e=>`<span class="pill ${/STOP|DANGER|TIME/.test(e.kind)?'bad':/TP|TRAIL/.test(e.kind)?'good':'dim'}" style="margin:1px">${esc(e.kind)}</span>`).join('');
-  return `<tr class="click" data-mint="${esc(c.mint)}"><td>${coin(c.mint,c.symbol,c.name)}</td><td>${c.call_type==='RUG_SCALP'?'<span class="pill bad">☠️ SCALP</span>':'<span class="pill good">VIP</span>'}</td>
+  return `<tr class="click" data-mint="${esc(c.mint)}"><td>${coin(c.mint,c.symbol,c.name)}</td><td>${c.call_type==='RUG_SCALP'?'<span class="pill bad">☠️ SCALP</span>':c.call_type==='RUNNER'?'<span class="pill violet">🎯 RUNNER</span>':c.call_type==='EARLY'?'<span class="pill info">⚡ EARLY</span>':'<span class="pill good">VIP</span>'}</td>
   <td class="num">${usd(c.entry_mcap)}</td><td class="num">${usd(c.current_mcap)}<br>${x(nowx)}</td><td class="num">${c.peak_mcap?usd(c.peak_mcap)+'<br>':''}${x(c.max_multiple)}</td><td class="num">${x(c.min_multiple)}</td>
   <td>${ev||'<span class="sub">—</span>'}</td><td>${actPill(c.state||c.status)}</td><td class="sub num">${ago(c.sent_at||c.created_at)}</td></tr>`}).join(''):'<tr><td colspan=9 class="empty">No calls yet</td></tr>'}
 

@@ -3,6 +3,28 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 3.2.2 — 2026-10-22 — let safe runners through, show runner calls
+
+Operator: "nothing called out for 5 hours".
+
+- **The v3.2.1 curve-routing fix is included.** It was pushed after PR #12 had been merged, so it
+  never went live.
+- **Runner score floor 60 → 45.** The score is momentum 45 + safety 30 + attention 25. With no
+  KOL channels set, attention is usually 0. A safe coin with ordinary momentum (a quarter of its
+  market cap traded in 5 minutes, 4 buys for every 3 sells) scores about 50-58, so 60 blocked
+  coins that had passed every safety check. The live coin `8HUGj6…` scored exactly 60.
+  - Every safety rule still applies: each required check must PASS, and any FAIL blocks.
+  - 45 still rejects weak flow, for example flat buys at $85K with falling price.
+  - It is a setting (`NORTHSTAR_RUNNER_MIN_SCORE`). The curve watch shows how coins at each
+    level did.
+- **Runner summary in the log every 5 minutes:** how many coins reached the runner check, how many
+  were called, the best score, and the most common blockers. The next "why nothing?" can be
+  answered from one line.
+- **The dashboard counts runner calls.** "Calls (24h)", "open" and the Calls tab only read the old
+  calls table, so runner calls would have shown 0. They are now included, marked 🎯 RUNNER.
+- Unchanged on purpose: the "price sources disagree" check that rejected $KIMCHI. On your history,
+  coins rejected for it rugged 64% of the time (23 of 36).
+
 ## 3.2.1 — 2026-10-22 — curve coins reach the runner check
 
 From the first 10 minutes of v3.0.0 live: the curve radar found coins, but most never reached the

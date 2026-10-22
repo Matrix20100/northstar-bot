@@ -182,10 +182,27 @@ class CurveRadar:
 # ----------------------------------------------------------------------------- caller
 class EarlyCaller:
     def __init__(self, s, db, publisher, events=None, judge=None):
+        self.runner_stats = self._fresh_stats()
         self.s, self.db, self.pub, self.events, self.judge = s, db, publisher, events, judge
         self.attention = None            # set by the engine (attention.py)
         init_schema(db)
         self._no_key_logged = False
+
+    @staticmethod
+    def _fresh_stats() -> dict:
+        return {"candidates": 0, "called": 0, "blockers": {}, "best": (0.0, "")}
+
+    def runner_summary(self, reset: bool = True) -> Optional[str]:
+        """One line for the log: how many coins the runner check saw, and what stopped them."""
+        st = self.runner_stats
+        if reset:
+            self.runner_stats = self._fresh_stats()
+        if not st["candidates"]:
+            return None
+        top = sorted(st["blockers"].items(), key=lambda kv: -kv[1])[:5]
+        return (f"runner check: {st['candidates']} coin(s) in the band, {st['called']} called; best score "
+                f"{st['best'][0]:.0f} (${st['best'][1]}); top blockers: "
+                + ("; ".join(f"{k} x{n}" for k, n in top) or "none"))
 
     def gate(self, out) -> tuple[bool, str]:
         """Cheap checks before spending an AI call. (ok, reason)."""
@@ -272,6 +289,14 @@ class EarlyCaller:
             if n.get("n", 0) >= cap:
                 why.append(f"hourly cap of {cap} runner calls reached")
         r["runner"] = {**sc, "metrics": m, "blockers": why[:8], "called": not why}
+        if m:                                    # a coin the radar saw in the band: count it
+            st = self.runner_stats
+            st["candidates"] += 1
+            st["called"] += 0 if why else 1
+            for b in why[:4]:
+                key = b.split(":")[0].split(" ($")[0][:60]
+                st["blockers"][key] = st["blockers"].get(key, 0) + 1
+            st["best"] = max(st["best"], (sc.get("score", 0), ident.get("symbol") or out.mint[:6]))
         if why:
             if r.get("runner_candidate"):
                 log.info("runner %s ($%s): score %.0f - not called: %s", out.mint, ident.get("symbol"),

@@ -1008,6 +1008,10 @@ class Engine:
     async def _heartbeat(self) -> None:
         h = {r["provider"]: r["status"] for r in self.db.provider_health()}
         log.info("heartbeat stats=%s providers=%s queue=%d", self.stats, h, self.queue.qsize())
+        early = getattr(self, "early", None)
+        line = early.runner_summary() if early is not None and hasattr(early, "runner_summary") else None
+        if line:
+            log.info("%s", line)
 
 
 def install_signal_handlers(engine: Engine) -> None:

@@ -13,7 +13,7 @@ A coin is CALLED when every one of these holds:
      - launch buys organic (no bundled or sniped start), snipers no longer holding a big share
      - no tiny-trade wash by insiders; launch chart not an instant jump, staircase or dump
      - no failed gate of any kind; rug check not RUG LIKELY / HIGH RISK; no recycled socials
-  3. runner score at or above `runner_min_score`:
+  3. runner score at or above `runner_min_score` (45; v3.2.2, was 60):
        momentum  45  (volume vs market cap, buy pressure, buyers, rising)
        safety    30  (organic launch, low sniper share, spread holders, small dev bag, no wash)
        attention 25  (attention.py: KOL channels, tracked wallets, launch waves, trending, news)

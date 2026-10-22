@@ -87,6 +87,10 @@ def view_status(c, s, now: float) -> dict:
     open_calls = c.execute("SELECT COUNT(*) FROM alerts WHERE state NOT IN ('CLOSED') AND status='SENT'").fetchone()[0] \
         if _table_ok(c, "alerts") else 0
     calls_24h = c.execute("SELECT COUNT(*) FROM alerts WHERE status='SENT' AND sent_at > ?", (now - 86400,)).fetchone()[0]
+    if _table_ok(c, "early_calls"):        # v3.2.2: runner calls live in early_calls
+        calls_24h += c.execute("SELECT COUNT(*) FROM early_calls WHERE status IN ('SENT','DRY_RUN','CLOSED') "
+                               "AND created_at > ?", (now - 86400,)).fetchone()[0]
+        open_calls += c.execute("SELECT COUNT(*) FROM early_calls WHERE status IN ('SENT','DRY_RUN')").fetchone()[0]
     last_research = c.execute("SELECT MAX(ts) FROM research_snapshots").fetchone()[0]
     researched_1h = c.execute("SELECT COUNT(*) FROM research_snapshots WHERE ts > ?", (now - 3600,)).fetchone()[0]
     surges_6h = c.execute("SELECT COUNT(*) FROM radar_obs WHERE fired=1 AND ts > ?", (now - 6 * 3600,)).fetchone()[0] \
@@ -279,7 +283,27 @@ def view_calls(c) -> dict:
     for r in rows:
         r["events"] = [e for e in events.get(r["id"], []) if e["kind"] not in ("published",)][-8:]
         r.pop("plan_json", None)
-    return {"calls": rows}
+    if _table_ok(c, "early_calls"):        # v3.2.2: runner calls (young pump.fun coins) too
+        for e in c.execute("SELECT * FROM early_calls ORDER BY created_at DESC LIMIT 40"):
+            e = dict(e)
+            try:
+                rep = json.loads(e.get("report") or "{}")
+                sent = json.loads(e.get("plan_sent") or "[]")
+            except ValueError:
+                rep, sent = {}, []
+            ident = rep.get("identity") or {}
+            entry = e.get("entry_mcap") or 0
+            rows.append({"id": f"early:{e['mint']}", "mint": e["mint"], "status": e["status"],
+                         "state": "CLOSED" if e["status"] in ("CLOSED", "UNTRACKED") else "OPEN",
+                         "created_at": e["created_at"], "sent_at": e["created_at"], "symbol": ident.get("symbol"),
+                         "name": ident.get("name"), "entry_mcap": entry, "current_mcap": e.get("current_mcap"),
+                         "peak_mcap": e.get("peak_mcap"),
+                         "max_multiple": (e.get("peak_mcap") or 0) / entry if entry else None,
+                         "min_multiple": (e.get("low_mcap") or 0) / entry if entry and e.get("low_mcap") else None,
+                         "call_type": "RUNNER" if rep.get("runner") else "EARLY",
+                         "events": [{"ts": None, "kind": k} for k in sent]})
+        rows.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
+    return {"calls": rows[:80]}
 
 
 def view_decisions(c) -> dict:
