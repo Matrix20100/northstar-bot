@@ -3,6 +3,75 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.5.5 — 2026-10-22 — follow fewer coins; test safer call profiles
+
+Operator decisions (22 Oct): stop following coins that fail, unless they have good numbers, a good
+narrative and no high holder concentration; keep a 10% learning sample of rejections; test
+safer call profiles before changing live calls. **Scoring, thresholds and safety gates are not
+changed. Live callouts are not changed.**
+
+- **A rejected coin is not re-researched any more** unless all three hold (`tracking_policy.py`):
+  - good numbers: score at or above the watch line, liquidity at least the minimum, not collapsing;
+  - a good narrative: enough evidence items, and the narrative category scored 0.6 or better;
+  - spread holders: the holder-concentration check ran and passed, and there is no whale, cluster
+    or developer-holdings hazard.
+
+  Even then, a coin gets at most `NORTHSTAR_REJECTED_MAX_RECHECKS` (6) looks. Proven traps,
+  prefilter rejections and rejections without a full analysis are never re-checked. A rejected
+  coin whose data has not changed is not re-queued. A radar surge or a new feed event still
+  brings any coin back for one look.
+- **Missing-data coins are retried at most `NORTHSTAR_INSUFFICIENT_MAX_RECHECKS` (8) times**,
+  instead of forever.
+- **Never-researched coins leave the watch list after `NORTHSTAR_DISCOVERED_MAX_AGE_HOURS` (6).**
+  On the 21 Oct backup that is 44,340 of the 50,846 coins the Watching tab counted. New
+  information (a surge, a migration, a new profile or boost) brings a coin back; a repeat of an
+  old event does not.
+- **Price tracking:** every call, watch and insufficient-data decision is tracked, as is every
+  second-chance rejection, plus a fixed 10% sample of the other rejections
+  (`NORTHSTAR_REJECT_TRACKING_SAMPLE_PCT`). On the backup's last 24 h that is 723 of 7,766
+  rejections instead of all of them. The sample is fixed by mint (a coin is always in or always
+  out), so the audit and the learning brain still measure false rejections, on less data.
+- **Size bounds.**
+  - Finished coins nobody follows are forgotten after `NORTHSTAR_CANDIDATE_RETENTION_DAYS` (7).
+    Those are stale coins, and rejected or insufficient-data coins with no re-check scheduled.
+    Coins with a callout, an early signal or open price tracking are always kept.
+  - Learning rows are kept only as long as the learner and the brain read them (21 days instead
+    of 45).
+  - `NORTHSTAR_DB_VACUUM_ON_START` (off by default) shrinks the file at startup once 20% of it
+    is free space. It needs free disk about the size of the remaining data, so on a host with a
+    tight disk limit, shrink a downloaded copy instead (docs/DATABASE.md).
+- **Automatic size control**, in the hourly retention pass (docs/DATABASE.md):
+  - analysed research reports lose bulky detail after 24 h;
+  - snapshots that only repeat a coin's previous decision are removed;
+  - callout price updates are thinned to the 5-minute high and low after 24 h;
+  - market snapshots are kept 48 h;
+  - freed space goes back to the disk on its own (incremental auto-vacuum, switched on by one
+    full VACUUM or for new databases).
+
+  On the 22 Oct database (514 MB): 236 MB, with callouts, tracking, outcomes, learning shadows,
+  brain training rows, `audit` output and every callout's peak, low and event order unchanged.
+- **Shadow testing of call profiles chosen from the stored price paths** (no live change):
+  - `pool_age_5m`;
+  - `liquidity_50k,pool_age_5m`;
+  - `deep_liquidity` ($100K, the safe extreme).
+
+  They're recorded next to every live decision with the audit's relaxations. The
+  $100K-and-1-hour profile is no longer a default: on 17 coins it had no 2x at all. A profile
+  only ever turns a STRONG call into WATCH, but whether a coin fits it is recorded for every
+  analysed coin. See docs/DECISION_ENGINE.md, "Upside vs rug".
+- **The shadow report separates clean runners from pump-then-rugs** (0.3x after the 2x on the
+  ordered path). It shows calls per day and compares the coins each profile admits with the ones
+  it excludes.
+- **A re-check needs objectively strong numbers.**
+  - Liquidity of `NORTHSTAR_SECOND_CHANCE_MIN_LIQUIDITY_USD` ($35K) or more.
+  - Buyers ahead of sellers over 1 h, and volume keeping its 6-hour pace (not fading).
+  - Score at or above the watch line *without* the learning brain's tilt.
+  - Safety established: an unresolved critical check never earns a re-check, alongside the
+    narrative and holder conditions above.
+- **The learning brain cannot drive calls while unvalidated.** An untrusted brain (walk-forward
+  accuracy under `NORTHSTAR_BRAIN_MIN_AUC`, 0.58) adds no tilt, and the brain never clears a veto.
+  This was already the behaviour; tests now cover it alongside the re-check rule.
+
 ## 2.5.4 — 2026-10-22 — database size and fair outcome tracking
 
 Measured on a copy of the 21 Oct 17:22 backup (394 MB, v2.4.1 era). The production database was

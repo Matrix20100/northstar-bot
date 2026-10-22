@@ -88,6 +88,19 @@ class Settings(BaseSettings):
     watchlist_recheck_seconds: int = 600
     insufficient_data_recheck_seconds: int = 900
     rejected_recheck_seconds: int = 3600  # only re-researched if market data changed
+    # v2.5.5 (operator rule): a rejected coin is re-checked only when it has good numbers, a good
+    # narrative and no high holder concentration (tracking_policy.py), and at most this many times
+    rejected_max_rechecks: int = 6
+    second_chance_min_liquidity_usd: float = 35_000.0  # "strong liquidity" for a re-check (rug rate fell above ~$33K on 21 Oct paths)
+    insufficient_max_rechecks: int = 8      # missing data is retried, but not forever
+    reject_tracking_sample_pct: float = 10.0  # % of other rejections still price-tracked 24 h (learning)
+    candidate_retention_days: float = 7.0   # finished, unfollowed coins are forgotten after this; 0 = keep
+    price_history_detail_hours: float = 24.0   # every price update of a callout is kept this long ...
+    price_history_bucket_minutes: float = 5.0  # ... then only the high and low of each bucket; 0 = keep all
+    market_snapshot_retention_hours: float = 48.0  # read for the last 24 h only (minimum 25)
+    db_auto_shrink: bool = True             # give freed pages back to the disk each retention pass
+    db_vacuum_on_start: bool = False        # shrink the file at startup when 20%+ (50 MB+) is free; needs free disk about the size of the data (off: hosting disk limits)
+    discovered_max_age_hours: float = 6.0   # never-researched coins drop off the list after this; 0 = keep
     max_queue_size: int = 500
     new_token_initial_delay_seconds: int = 20  # early-stage check; missing data is rechecked
     # Pump.fun emits hundreds of launches an hour and almost all of them die within minutes with
@@ -245,7 +258,7 @@ class Settings(BaseSettings):
     # to every live decision, with outcomes, for `python main.py shadow`. Record-only: it never
     # changes a live decision, a callout or a setting.
     shadow_test_enabled: bool = True
-    shadow_test_rules: str = "lp_unverified_warn,holder_gate_warn"
+    shadow_test_rules: str = "lp_unverified_warn,holder_gate_warn;pool_age_5m;liquidity_50k,pool_age_5m;deep_liquidity"  # ";" = separate policies
     shadow_test_overrides: str = ""         # JSON of unified-engine (u_*) settings to try, e.g. {"u_watch_min": 45}
     shadow_test_dedupe_minutes: float = 30.0
     shadow_test_deep_research: bool = True  # finish analysing coins whose only failed gates the LP rule
@@ -337,7 +350,19 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = True
 
-    @field_validator("curve_retention_hours", "snapshot_compact_hours")
+    @field_validator("reject_tracking_sample_pct")
+    @classmethod
+    def _sample_pct(cls, v: float) -> float:
+        return min(100.0, max(0.0, float(v)))
+
+    @field_validator("rejected_max_rechecks", "insufficient_max_rechecks")
+    @classmethod
+    def _rechecks(cls, v: int) -> int:
+        return max(0, int(v))
+
+    @field_validator("curve_retention_hours", "snapshot_compact_hours", "discovered_max_age_hours",
+                     "candidate_retention_days", "price_history_detail_hours", "price_history_bucket_minutes",
+                     "market_snapshot_retention_hours")
     @classmethod
     def _retention_hours(cls, v: float) -> float:
         # a negative age means "off", never "delete everything"

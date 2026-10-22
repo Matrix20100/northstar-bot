@@ -38,6 +38,15 @@ async def _run(s: Settings) -> int:
     except RuntimeError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
+    if getattr(s, "db_vacuum_on_start", False):
+        # v2.5.5: give space freed by the retention pass back to the disk, once, before the bot
+        # opens the database (we hold the instance lock, so nothing else is using it)
+        from . import retention as RT
+        path = str(Path(s.data_dir) / s.db_filename)
+        r = RT.vacuum_on_start(path)
+        if r:
+            print(f"[northstar] database shrunk: {r['before_bytes'] / 1e6:,.0f} MB -> "
+                  f"{r['after_bytes'] / 1e6:,.0f} MB", flush=True)
     db = _db(s)
     try:
         from .dashboard import attach, start_dashboard
@@ -274,9 +283,14 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 SH.evaluate_due(db)
                 sm = SH.summary(db, args.days, policy=args.policy)
+                pols = [args.policy] if args.policy else (sm.get("policies") or [None])
+                sms = [sm if p == sm.get("policy") else SH.summary(db, args.days, policy=p) for p in pols]
             finally:
                 db.close()
-            print(json.dumps(sm, indent=2, default=str) if args.json else SH.format_summary(sm))
+            if args.json:
+                print(json.dumps(sms if len(sms) > 1 else sm, indent=2, default=str))
+            else:
+                print("\n\n".join(SH.format_summary(x) for x in sms))
             return 0
         if args.cmd == "db":
             from . import retention as RT

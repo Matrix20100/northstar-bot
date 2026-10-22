@@ -2418,16 +2418,20 @@ class Researcher:
                 top10_adj_pct=holders.get("top10_adj"),
             )
 
-            # Track every decision, including rejected tokens, to avoid
-            # survivorship bias in later performance statistics.
-            self.db.schedule_outcomes(
-                snapshot_id,
-                mint,
-                action.value,
-                score,
-                pair.price_usd,
-                pair.liquidity_usd,
-            )
+            # Track every non-rejection, every rejection that keeps a second chance, and a fixed
+            # random sample of the other rejections (v2.5.5, tracking_policy.py): enough to
+            # measure false rejections without following thousands of dead coins.
+            from .tracking_policy import track_outcome
+
+            if track_outcome(mint, action.value, report, self.s):
+                self.db.schedule_outcomes(
+                    snapshot_id,
+                    mint,
+                    action.value,
+                    score,
+                    pair.price_usd,
+                    pair.liquidity_usd,
+                )
 
         outcome.snapshot_id = snapshot_id
         return outcome

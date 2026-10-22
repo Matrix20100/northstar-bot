@@ -206,6 +206,9 @@ async def test_tracking_closes_after_window(settings, db):
 
 # ---------------------------------------------------------------- historical evaluation
 async def test_outcomes_tracked_for_rejected_and_dead_pools(settings, db):
+    # v2.5.5: rejected coins are tracked as a sample (reject_tracking_sample_pct); 100% here so the
+    # dead-pool accounting itself is tested. The sampling rule is tested in test_tracking_policy.py.
+    settings = settings.model_copy(update={"reject_tracking_sample_pct": 100.0})
     p = strong_providers()
     p.dex.pairs = [make_pair(liquidity_usd=8_000.0)]
     seed_profile(db)

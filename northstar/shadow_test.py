@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS shadow_tests (
     outcome_src TEXT,
     peak_x REAL,
     trough_x REAL,
-    outcome_checked_at REAL
+    outcome_checked_at REAL,
+    after_2x_low REAL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_shadow_tests_snap ON shadow_tests(snapshot_id, policy);
 CREATE INDEX IF NOT EXISTS ix_shadow_tests_mint ON shadow_tests(mint, policy, ts);
@@ -109,13 +110,31 @@ RULES = {
         "or lp_lock FAIL) is a serious warning that caps at WATCH, not a hard veto"),
     "holder_gate_warn": (
         "holder concentration over the bar is a serious warning that caps at WATCH, not a rejection"),
+    # v2.5.5 call profiles (operator, 22 Oct: "test it first, no live change"). They only ever
+    # make a call stricter: a STRONG call that misses the profile becomes WATCH.
+    "deep_liquidity": "a call needs at least $100,000 of liquidity",
+    "pool_age_1h": "a call needs a pool that has survived its first hour",
+    # from 318 ordered 4-hour price paths (21 Oct backup, see docs/DECISION_ENGINE.md): pools
+    # under 5 minutes old were the worst group (58% rug or pump-then-rug); $50K+ liquidity
+    # roughly halved rugs while keeping most 2x runs, unlike $100K+ (2x runs fell to 9%)
+    "pool_age_5m": "a call needs a pool that is at least 5 minutes old",
+    "liquidity_50k": "a call needs at least $50,000 of liquidity",
 }
-DEFAULT_RULES = "lp_unverified_warn,holder_gate_warn"
+PROFILE_RULES = {"deep_liquidity", "pool_age_1h", "pool_age_5m", "liquidity_50k"}
+PROFILE_LIQUIDITY = {"deep_liquidity": 100_000.0, "liquidity_50k": 50_000.0}
+PROFILE_POOL_AGE_H = {"pool_age_1h": 1.0, "pool_age_5m": 5 / 60}
+DEEP_LIQUIDITY_USD = PROFILE_LIQUIDITY["deep_liquidity"]
+MIN_POOL_AGE_HOURS = PROFILE_POOL_AGE_H["pool_age_1h"]
+# policies are separated by ";" (one row per policy per decision), rules inside one by ","
+DEFAULT_RULES = "lp_unverified_warn,holder_gate_warn;pool_age_5m;liquidity_50k,pool_age_5m;deep_liquidity"
 
 
 def init_schema(db) -> None:
     with db._lock:
         db._conn.executescript(SCHEMA)
+        have = {r[1] for r in db._conn.execute("PRAGMA table_info(shadow_tests)")}
+        if "after_2x_low" not in have:        # v2.5.5: lowest price after the first 2x (pump-then-rug)
+            db._conn.execute("ALTER TABLE shadow_tests ADD COLUMN after_2x_low REAL")
 
 
 class _Overlay:
@@ -130,9 +149,20 @@ class _Overlay:
         return getattr(self._base, name)
 
 
+def parse_policies(text: Optional[str]) -> list[list[str]]:
+    """NORTHSTAR_SHADOW_TEST_RULES -> one rule list per policy (";" separates policies)."""
+    out: list[list[str]] = []
+    for part in str(text if text is not None else DEFAULT_RULES).split(";"):
+        rules = parse_rules(part) if part.strip() else []
+        if rules and rules not in out:
+            out.append(rules)
+    return out
+
+
 def parse_rules(text: Optional[str]) -> list[str]:
+    """One policy's rules (comma-separated). A ';'-separated setting is read as all its policies' rules."""
     out = []
-    for r in str(text if text is not None else DEFAULT_RULES).split(","):
+    for r in str(text if text is not None else DEFAULT_RULES).replace(";", ",").split(","):
         r = r.strip()
         if not r:
             continue
@@ -201,7 +231,7 @@ def continue_research(gates: list[dict], report: dict, s: Any) -> bool:
         if not getattr(s, "shadow_test_enabled", True) or not getattr(s, "shadow_test_deep_research", True) \
                 or not getattr(s, "unified_enabled", True):
             return False
-        if "lp_unverified_warn" not in parse_rules(getattr(s, "shadow_test_rules", DEFAULT_RULES)):
+        if not any("lp_unverified_warn" in p for p in parse_policies(getattr(s, "shadow_test_rules", DEFAULT_RULES))):
             return False
         failed = [g for g in gates if isinstance(g, dict) and g.get("status") == "FAIL"]
         if not failed or not _lp_scope(report):
@@ -254,8 +284,45 @@ def propose(report: dict, s: Any, rules: list[str], overrides: dict) -> Optional
         else None
     ps = _Overlay(s, overrides) if overrides else s
     pu = U._assemble(led, report, ps, model=model, ai=u.get("ai"), conflicts=u.get("conflicts"))
+    fired += _apply_profile(pu, report, rules)
     pu["shadow_rules_fired"] = fired
     return pu
+
+
+def profile_misses(report: dict, rules: list[str]) -> list[tuple[str, str]]:
+    """Which call-profile rules this coin misses (whatever its decision). [] = it fits the profile."""
+    from .analysis import unified as U
+
+    misses: list[tuple[str, str]] = []
+    liq = U._num((report.get("market") or {}).get("liquidity_usd"))
+    age = U._num((report.get("security") or {}).get("pool_age_hours"))
+    for rule in sorted(r for r in rules if r in PROFILE_LIQUIDITY):
+        need = PROFILE_LIQUIDITY[rule]
+        if liq is None or liq < need:       # unknown liquidity never counts as enough
+            misses.append((rule, f"liquidity ${liq or 0:,.0f} is under the ${need:,.0f} a call needs in this profile"))
+    for rule in sorted(r for r in rules if r in PROFILE_POOL_AGE_H):
+        need = PROFILE_POOL_AGE_H[rule]
+        if age is None or age < need:
+            misses.append((rule, ("the pool is too new" if age is not None else "the pool age is unknown")
+                           + (f" ({age * 60:.0f} min old, needs {need * 60:.0f})" if age is not None else "")))
+    return misses
+
+
+def _apply_profile(pu: dict, report: dict, rules: list[str]) -> list[str]:
+    """Call-profile rules: a STRONG call that misses the profile is only a WATCH. The pass/miss is
+    recorded for every decision, so the report can compare the coins a profile admits with the
+    ones it excludes, not only the handful of calls."""
+    from .analysis import unified as U
+
+    if not any(r in PROFILE_RULES for r in rules):
+        return []
+    misses = profile_misses(report, rules)
+    pu["shadow_profile"] = {"fits": not misses, "misses": [k for k, _ in misses]}
+    if pu.get("decision") != U.STRONG or not misses:
+        return []
+    pu["decision"], pu["reason_class"] = U.WATCH, "CALL_PROFILE"
+    pu["why"] = [f"call profile: {t}" for _, t in misses] + list(pu.get("why") or [])
+    return [k for k, _ in misses]
 
 
 def _components(u: dict) -> dict:
@@ -263,26 +330,35 @@ def _components(u: dict) -> dict:
     return {"points": {k: (c or {}).get("points") for k, c in cats.items()},
             "base": u.get("base_score"), "penalty": u.get("penalty"),
             "tilt": (u.get("model") or {}).get("tilt"), "completeness": u.get("completeness"),
-            "score_ex_narrative": u.get("score_ex_narrative")}
+            "score_ex_narrative": u.get("score_ex_narrative"),
+            "profile": u.get("shadow_profile")}
 
 
 # ------------------------------------------------------------------------------- recording
 def record(db, out, s: Any, shadow_call_id: Optional[int] = None,
            now: Optional[float] = None) -> Optional[int]:
-    """Record the live and proposed decisions for one finalised research outcome.
+    """Record the live decision next to every configured proposal (one row per policy).
 
-    Returns the new row id, or None when nothing was recorded (disabled, no unified result,
-    duplicate). Never raises: shadow testing must never break research.
+    Returns the first new row id, or None when nothing was recorded (disabled, no unified result,
+    duplicates). Never raises: shadow testing must never break research.
     """
+    if not getattr(s, "shadow_test_enabled", True):
+        return None
+    overrides = parse_overrides(getattr(s, "shadow_test_overrides", ""), s)
+    first = None
+    for rules in parse_policies(getattr(s, "shadow_test_rules", DEFAULT_RULES)):
+        rid = _record_one(db, out, s, rules, overrides, shadow_call_id, now)
+        first = first or rid
+    return first
+
+
+def _record_one(db, out, s: Any, rules: list[str], overrides: dict, shadow_call_id: Optional[int],
+                now: Optional[float]) -> Optional[int]:
     try:
-        if not getattr(s, "shadow_test_enabled", True):
-            return None
         report = out.report
         live = report.get("final") if isinstance(report.get("final"), dict) else {}
         if not live.get("decision"):
             return None
-        rules = parse_rules(getattr(s, "shadow_test_rules", DEFAULT_RULES))
-        overrides = parse_overrides(getattr(s, "shadow_test_overrides", ""), s)
         policy = policy_name(rules, overrides)
         pu = propose(report, s, rules, overrides)
         if pu is None:
@@ -310,15 +386,15 @@ def record(db, out, s: Any, shadow_call_id: Optional[int] = None,
             "prop_class, prop_reasons, changed, rules_fired, components) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
         params = (now, out.mint, out.snapshot_id, shadow_call_id, policy,
-             getattr(pair, "price_usd", None), getattr(pair, "market_cap", None),
-             getattr(pair, "liquidity_usd", None),
-             live["decision"], live_action, out.score, live.get("risk_class"), live.get("confidence"),
-             live.get("reason_class"), json.dumps(list(out.reasons or [])[:8], default=str),
-             pv["decision"], pv["action"].value, pv["score"], pv["risk_class"], pv["confidence"].value,
-             pv["reason_class"], json.dumps(pv["reasons"][:8] + pv["blockers"][:4], default=str),
-             int(pv["decision"] != live["decision"] or pv["action"].value != live_action),
-             json.dumps(pu.get("shadow_rules_fired") or []),
-             json.dumps({"live": _components(report["unified"]), "proposed": _components(pu)}, default=str))
+                  getattr(pair, "price_usd", None), getattr(pair, "market_cap", None),
+                  getattr(pair, "liquidity_usd", None),
+                  live["decision"], live_action, out.score, live.get("risk_class"), live.get("confidence"),
+                  live.get("reason_class"), json.dumps(list(out.reasons or [])[:8], default=str),
+                  pv["decision"], pv["action"].value, pv["score"], pv["risk_class"], pv["confidence"].value,
+                  pv["reason_class"], json.dumps(pv["reasons"][:8] + pv["blockers"][:4], default=str),
+                  int(pv["decision"] != live["decision"] or pv["action"].value != live_action),
+                  json.dumps(pu.get("shadow_rules_fired") or []),
+                  json.dumps({"live": _components(report["unified"]), "proposed": _components(pu)}, default=str))
         with db._lock:
             cur = db._conn.execute(sql, params)
             return cur.lastrowid if cur.rowcount else None
@@ -344,7 +420,17 @@ def _from_path(db, row: dict) -> Optional[tuple]:
     lab = B.label_path(path)
     if lab in (None, B.INCOMPLETE):
         return None
-    return (lab, "path", max(p[1] for p in path), min(p[2] for p in path))
+    return (lab, "path", max(p[1] for p in path), min(p[2] for p in path), after_2x_low(path))
+
+
+def after_2x_low(path: list) -> Optional[float]:
+    """Lowest low after the first candle that reached 2x (None if it never did). A runner whose
+    price then fell to 0.3x of entry or lower is a pump-then-rug, not a clean run."""
+    t2 = next((p[0] for p in path if p[1] >= 2.0), None)
+    if t2 is None:
+        return None
+    after = [p[2] for p in path if p[0] > t2]
+    return min(after) if after else None
 
 
 def _from_tracking(db, row: dict) -> Optional[tuple]:
@@ -359,7 +445,7 @@ def _from_tracking(db, row: dict) -> Optional[tuple]:
         return None
     e = tr["entry_price"]
     return (lab, "tracking", (tr["max_price"] / e) if e and tr["max_price"] else None,
-            (tr["min_price"] / e) if e and tr["min_price"] else None)
+            (tr["min_price"] / e) if e and tr["min_price"] else None, None)   # high/low only: order unknown
 
 
 def evaluate_due(db, now: Optional[float] = None, limit: int = 500) -> int:
@@ -371,9 +457,10 @@ def evaluate_due(db, now: Optional[float] = None, limit: int = 500) -> int:
                            "AND ts < ? ORDER BY ts LIMIT ?", (now - EVAL_AFTER, limit)):
         res = _from_path(db, row) or _from_tracking(db, row)
         if res:
-            lab, src, peak, trough = res
+            lab, src, peak, trough, low_after = res
             db.execute("UPDATE shadow_tests SET outcome_label=?, outcome_src=?, peak_x=?, trough_x=?, "
-                       "outcome_checked_at=? WHERE id=?", (lab, src, peak, trough, now, row["id"]))
+                       "after_2x_low=?, outcome_checked_at=? WHERE id=?",
+                       (lab, src, peak, trough, low_after, now, row["id"]))
             done += 1
         elif row["ts"] < now - GIVE_UP_AFTER:
             db.execute("UPDATE shadow_tests SET outcome_src='none', outcome_checked_at=? WHERE id=?",
@@ -395,16 +482,28 @@ CALL = "AUTO_POST"
 
 
 def _tally(rows: list[dict]) -> dict:
-    t = {"n": len(rows), "labelled": 0, B.RUNNER: 0, B.RUG: 0, B.FLAT: 0, B.AMBIGUOUS: 0}
+    """Outcome counts. A runner is split by what happened after its first 2x (paths only):
+    clean, pump-then-rug (0.3x of entry or lower after the 2x), or order unknown (24 h tracking)."""
+    t = {"n": len(rows), "labelled": 0, B.RUNNER: 0, B.RUG: 0, B.FLAT: 0, B.AMBIGUOUS: 0,
+         "clean_runner": 0, "pump_then_rug": 0, "runner_order_unknown": 0}
     for r in rows:
         lab = r["outcome_label"]
         if lab in (B.RUNNER, B.RUG, B.FLAT, B.AMBIGUOUS):
             t[lab] += 1
             if lab != B.AMBIGUOUS:
                 t["labelled"] += 1
+        if lab == B.RUNNER:
+            low = r.get("after_2x_low")
+            if r.get("outcome_src") != "path":
+                t["runner_order_unknown"] += 1
+            elif low is not None and low <= 0.3:
+                t["pump_then_rug"] += 1
+            else:
+                t["clean_runner"] += 1
     n = t["labelled"]
-    t["runner_pct"] = round(100.0 * t[B.RUNNER] / n, 1) if n else None
-    t["rug_pct"] = round(100.0 * t[B.RUG] / n, 1) if n else None
+    pct = lambda k: round(100.0 * t[k] / n, 1) if n else None  # noqa: E731
+    t["runner_pct"], t["rug_pct"] = pct(B.RUNNER), pct(B.RUG)
+    t["clean_runner_pct"], t["pump_then_rug_pct"] = pct("clean_runner"), pct("pump_then_rug")
     return t
 
 
@@ -452,13 +551,25 @@ def summary(db, days: float = 7.0, now: Optional[float] = None, policy: Optional
         "unchanged": _tally([r for r in uniq if not r["changed"]]),
         "rules": {k: {"text": RULES.get(k, ""), **_tally(v)} for k, v in fired.items()},
     })
+    span_days = max(1e-9, min(days, (now - min(r["ts"] for r in rows)) / 86400)) if rows else days
+    out["calls_per_day"] = {"live": round(out["live_calls"]["n"] / span_days, 2),
+                            "proposed": round(out["proposed_calls"]["n"] / span_days, 2)}
+    fits, misses = [], []
+    for r in uniq:
+        prof = (json.loads(r["components"] or "{}").get("proposed") or {}).get("profile")
+        if isinstance(prof, dict):
+            (fits if prof.get("fits") else misses).append(r)
+    if fits or misses:
+        # every analysed decision, not only calls: a far bigger sample of what the profile filters
+        out["profile_fits"], out["profile_excludes"] = _tally(fits), _tally(misses)
     return out
 
 
 def _line(name: str, t: dict) -> str:
     if not t["n"]:
         return f"  {name:<44} 0"
-    rate = (f"{t['runner_pct']:.0f}% ran 2x, {t['rug_pct']:.0f}% rugged"
+    rate = (f"{t['runner_pct']:.0f}% ran 2x ({t['clean_runner']} clean, {t['pump_then_rug']} pump-then-rug, "
+            f"{t['runner_order_unknown']} order unknown), {t['rug_pct']:.0f}% rugged"
             if t["labelled"] else "no outcomes yet")
     return (f"  {name:<44} {t['n']:>4} coins · {t['labelled']} with outcome · "
             f"{t[B.RUNNER]} runner / {t[B.FLAT]} flat / {t[B.RUG]} rug ({rate})")
@@ -484,6 +595,12 @@ def format_summary(sm: dict) -> str:
               _line("live REJECT -> proposed WATCH/call", sm["live_reject_proposed_watch_or_better"]),
               _line("proposed REJECT -> live WATCH/call", sm["proposed_reject_live_watch_or_better"]),
               _line("same decision", sm["unchanged"])]
+    if sm.get("calls_per_day"):
+        lines.append(f"  calls per day: live {sm['calls_per_day']['live']:g} · proposed {sm['calls_per_day']['proposed']:g}")
+    if sm.get("profile_fits"):
+        lines += ["", "  every analysed coin, by whether it fits this policy's call profile:",
+                  _line("fits the profile", sm["profile_fits"]),
+                  _line("excluded by the profile", sm["profile_excludes"])]
     if sm.get("rules"):
         lines += ["", "  rules that changed something:"]
         lines += [_line(k, v) for k, v in sm["rules"].items()]
