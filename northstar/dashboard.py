@@ -240,6 +240,22 @@ def view_pulse(c, now: float, hours: float = 3.0) -> dict:
     return {"hours": hours, "columns": {k: v[:60] for k, v in cols.items()}, "passed": passed[:40], "funnel": funnel}
 
 
+def view_paper(c, s, now: float) -> dict:
+    """The paper account (read-only connection: shows the defaults until the bot starts a run)."""
+    from . import paper as PT
+    if not _table_ok(c, "paper_runs"):
+        return {"ready": False, "defaults": {"start_usd": getattr(s, "paper_start_usd", 1000.0),
+                                             "position_pct": getattr(s, "paper_position_pct", 10.0),
+                                             "fee_pct": getattr(s, "paper_fee_pct", 1.0)}}
+    db = _Ro(c)
+    run = db.fetchone("SELECT * FROM paper_runs WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1")
+    if not run or not _table_ok(c, "paper_trades"):
+        return {"ready": False, "defaults": {"start_usd": getattr(s, "paper_start_usd", 1000.0),
+                                             "position_pct": getattr(s, "paper_position_pct", 10.0),
+                                             "fee_pct": getattr(s, "paper_fee_pct", 1.0)}}
+    return {"ready": True, **PT.summary(db, s, now, run=run)}
+
+
 def view_calls(c) -> dict:
     cols = {r[1] for r in c.execute("PRAGMA table_info(alerts)")}
     extra = ", ".join(x for x in ("peak_mcap", "peak_at", "call_type", "plan_json") if x in cols)
@@ -562,6 +578,8 @@ class DashboardServer:
                         return self._send(200, CW.evaluate(_Ro(c), 7.0, now))
                     if u.path == "/api/calls":
                         return self._send(200, view_calls(c))
+                    if u.path == "/api/paper":
+                        return self._send(200, view_paper(c, s, now))
                     if u.path == "/api/decisions":
                         return self._send(200, view_decisions(c))
                     if u.path == "/api/funnel":
@@ -616,7 +634,32 @@ class DashboardServer:
                     return self._manual(u.path, self._body())
                 if u.path in ("/api/untrack", "/api/retrack"):
                     return self._untrack(u.path, self._body())
+                if u.path == "/api/paper/start":
+                    return self._paper_start(self._body())
                 return self._send(404, {"error": "not found"})
+
+            def _paper_start(self, body: dict):
+                """Start a new paper run with the amount typed on the Paper tab."""
+                from . import paper as PT
+                from .db import Database
+                try:
+                    start = float(body.get("start_usd"))
+                    pos = float(body.get("position_pct", 10))
+                    fee = float(body.get("fee_pct", 1))
+                except (TypeError, ValueError):
+                    return self._send(422, {"ok": False, "error": "Enter numbers for the amount, size and fee."})
+                if not (1 <= start <= 1e9) or not (0.1 <= pos <= 100) or not (0 <= fee <= 20):
+                    return self._send(422, {"ok": False, "error": "Amount $1-$1,000,000,000, size 0.1-100%, "
+                                                                  "fee 0-20%."})
+                db = Database(owner.db_path)
+                db.open()
+                try:
+                    run = PT.start_run(db, start, pos, fee)
+                except Exception as e:  # noqa: BLE001
+                    return self._send(500, {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"})
+                finally:
+                    db.close()
+                return self._send(200, {"ok": True, "run": run})
 
             def _untrack(self, path: str, body: dict):
                 """Untrack / retrack a coin: through the running bot, or straight in the database."""

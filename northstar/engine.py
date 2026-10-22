@@ -241,6 +241,8 @@ class Engine:
                  asyncio.create_task(self._loop("free-channel-delivery", 15, self.alerts.publish_due_free_posts)),
                  asyncio.create_task(self._loop("heartbeat", 300, self._heartbeat)),
                  asyncio.create_task(self._loop("db-retention", 3600, self._prune))]
+        if getattr(self.s, "paper_enabled", True):
+            tasks.append(asyncio.create_task(self._loop("paper-trader", 15, self._paper)))
         if self.radar:
             tasks.append(asyncio.create_task(self._loop("surge-radar", self.s.radar_interval_seconds, self._radar)))
         if self.s.early_call_enabled:
@@ -250,7 +252,7 @@ class Engine:
             if self.curve_radar is not None:
                 tasks.append(asyncio.create_task(self._loop("curve-radar", self.s.curve_radar_seconds,
                                                             self._curve_radar)))
-            if not self.judge.enabled:
+            if not self.judge.enabled and not getattr(self.s, "runner_calls_enabled", True):
                 log.warning("early narrative calls need NORTHSTAR_ANTHROPIC_API_KEY (Claude) - AI judge is off")
         if self.s.learning_enabled:
             tasks.append(asyncio.create_task(self._loop("learning-sync", 60, self._learning_sync)))
@@ -961,6 +963,14 @@ class Engine:
         counts = await self.early_calls.run_once()
         if counts["open"]:
             log.info("early-call tracker: %s", counts)
+
+    async def _paper(self) -> None:
+        from .paper import PaperTrader
+        if getattr(self, "paper", None) is None:
+            self.paper = PaperTrader(self.s, self.db)
+        counts = self.paper.run_once()
+        if counts["opened"] or counts["closed"]:
+            log.info("paper trader: %s", counts)
 
     async def _track_early_watch(self) -> None:
         counts = await self.early_tracker.run_once()

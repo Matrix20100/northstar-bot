@@ -345,6 +345,12 @@ class Settings(BaseSettings):
     kol_refresh_seconds: float = 120.0
     kol_memory_hours: float = 6.0
     attention_crypto_news: bool = True
+    # v3.1.0 paper trading (paper.py): a simulated account follows every call's plan. These are the
+    # first run's values; the dashboard's Paper tab changes them (a new amount starts a new run).
+    paper_enabled: bool = True
+    paper_start_usd: float = 1000.0
+    paper_position_pct: float = 10.0       # share of the cash left put into each call
+    paper_fee_pct: float = 1.0             # per buy and per sell: fees + slippage (an assumption)
     early_call_min_mc: float = 30_000
     early_call_max_mc: float = 50_000
     early_call_min_ai_score: int = 70
