@@ -149,3 +149,90 @@ def test_dashboard_before_any_run_shows_the_defaults(db):
     d = json.loads(c.req("/api/paper")[1])
     assert d["ready"] is False and d["defaults"]["start_usd"] == 1000
     srv.server.shutdown()
+
+
+# ----------------------------------------------------------------------------- v3.2.0 brain account
+import asyncio  # noqa: E402
+import types  # noqa: E402
+
+from conftest import make_pair  # noqa: E402
+
+
+def researched(mint, p=0.2, rug=0.1, mc=500_000.0):
+    report = {"brain": {"p": p}, "unified": {"version": 1, "rug_odds": rug}}
+    return types.SimpleNamespace(mint=mint, report=report,
+                                 pair=make_pair(base_mint=mint, base_symbol="BRN", market_cap=mc, fdv=mc))
+
+
+class Dex:
+    def __init__(self):
+        self.caps = {}
+
+    async def tokens_batch(self, mints):
+        return [make_pair(base_mint=m, market_cap=self.caps[m], fdv=self.caps[m]) for m in mints if m in self.caps]
+
+
+def test_brain_buys_only_its_confident_safe_picks(db):
+    s = Settings(_env_file=None, paper_brain_max_open=2)
+    bt = PT.BrainTrader(s, db, Dex())
+    assert bt.consider(researched(addr("b1"))) == "bought"
+    assert bt.consider(researched(addr("b1"))) == "already traded this run"
+    assert "runner odds" in bt.consider(researched(addr("low"), p=0.05))
+    assert "rug odds" in bt.consider(researched(addr("rug"), rug=0.5))
+    assert bt.consider(types.SimpleNamespace(mint=addr("x"), report={}, pair=None)) is None
+    assert bt.consider(researched(addr("b2"))) == "bought"
+    assert "already open" in bt.consider(researched(addr("b3")))
+    t = trade(db, addr("b1"))
+    assert t["kind"] == "brain" and t["entry_mcap"] == 500_000 and t["note"] == "runner odds 20% · rug odds 10%"
+    # a separate account: the calls account is untouched
+    assert PT.summary(db, S, account="calls")["trades"] == []
+    assert PT.summary(db, s, account="brain")["open"] == 2
+
+
+def test_brain_positions_follow_the_standard_plan_on_live_prices(db):
+    s = Settings(_env_file=None)
+    plan = TP.build_plan(500_000.0, s, "standard")
+    dex = Dex()
+    bt = PT.BrainTrader(s, db, dex)
+    t0 = time.time()
+    m = addr("run")
+    bt.consider(researched(m), now=t0)
+    dex.caps[m] = 500_000 * plan.tp1
+    asyncio.run(bt.run_once(t0 + 60))
+    t = trade(db, m)
+    assert json.loads(t["done"]) == ["TP1"]
+    assert t["proceeds_usd"] == pytest.approx(t["units"] * plan.tp1_sell_pct / 100 * 500_000 * plan.tp1 * 0.99)
+    dex.caps[m] = 500_000 * plan.stop * 0.9                 # crashes: the plan exits the rest
+    assert asyncio.run(bt.run_once(t0 + 120))["closed"] == 1
+    assert trade(db, m)["status"] == "CLOSED"
+
+
+def test_brain_position_closes_after_the_hold_time_even_without_a_price(db):
+    s = Settings(_env_file=None, paper_brain_hold_hours=1)
+    bt = PT.BrainTrader(s, db, Dex())
+    t0 = time.time()
+    bt.consider(researched(addr("hold")), now=t0)
+    asyncio.run(bt.run_once(t0 + 7200))
+    t = trade(db, addr("hold"))
+    assert t["status"] == "CLOSED" and t["exit_reason"] == "HOLD"
+    assert t["proceeds_usd"] == pytest.approx(t["cost_usd"] * 0.99 * 0.99)     # last price = entry
+
+
+def test_brain_off(db):
+    s = Settings(_env_file=None, paper_brain_enabled=False)
+    assert PT.BrainTrader(s, db).consider(researched(addr("off"))) is None
+
+
+def test_dashboard_switches_accounts(db):
+    from test_dashboard import serve
+    PT.BrainTrader(Settings(_env_file=None), db).consider(researched(addr("dashb")))
+    srv, c = serve(db, "pw")
+    c.req("/api/login", {"password": "pw"})
+    d = json.loads(c.req("/api/paper?account=brain")[1])
+    assert d["ready"] and d["account"] == "brain" and d["trades"][0]["kind"] == "brain"
+    assert d["brain"]["min_p"] == 0.15
+    st, body = c.req("/api/paper/start", {"account": "brain", "start_usd": 300, "position_pct": 5, "fee_pct": 1})
+    assert st == 200 and json.loads(body)["run"]["account"] == "brain"
+    assert json.loads(c.req("/api/paper?account=brain")[1])["equity"] == 300
+    assert json.loads(c.req("/api/paper?account=calls")[1]).get("run", {}).get("start_usd") != 300
+    srv.server.shutdown()

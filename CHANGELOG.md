@@ -3,6 +3,27 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 3.2.0 — 2026-10-22 — the learning brain paper trades its own picks
+
+Operator request: let the AI learner paper trade.
+
+- **Brain paper account (`paper.py` BrainTrader).** This is a second account, separate from the
+  calls account, with its own starting amount. Simulated only.
+  - Every coin researched with a DEX pool gets the runner brain's odds and the rug brain's odds.
+  - The brain buys when the runner odds are 15%+ (`NORTHSTAR_PAPER_BRAIN_MIN_P`; the base rate is
+    about 5%) and the rug odds are under 30% (`NORTHSTAR_PAPER_BRAIN_MAX_RUG`). It buys at the
+    pool's market cap at that moment.
+  - One position per coin per run, at most 10 open (`NORTHSTAR_PAPER_BRAIN_MAX_OPEN`).
+  - Positions follow the standard trade plan (TP1, TP2, stop, time stop, trailing stop) on
+    DexScreener prices checked every 15 seconds. Anything still open after 24 h
+    (`NORTHSTAR_PAPER_BRAIN_HOLD_HOURS`) is sold at the last price seen.
+  - It never posts anything and has no effect on real calls. It shows whether the brain's picks
+    make money before the brain gets a say.
+- **Paper tab:** a switch between "Bot's calls" and "Brain's picks". Each account has its own
+  starting amount and "Start new run". Brain trades show the odds they were bought at.
+- **`/paper`** shows both accounts.
+- Tests: brain account in `tests/test_paper.py`.
+
 ## 3.1.0 — 2026-10-22 — paper trading on every call
 
 Operator request: paper trade every callout, with an editable starting amount.

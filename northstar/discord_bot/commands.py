@@ -321,26 +321,27 @@ def install_commands(bot: NorthstarCommands):
             await _reply(interaction, embed=_embed('PERFORMANCE',format_report(report)[:4000]))
         finally: await _close(db)
 
-    @bot.tree.command(name='paper', description='Paper trading: how the simulated account following every call is doing')
+    @bot.tree.command(name='paper', description='Paper trading: the calls account and the learning brain\'s own account')
     async def paper(interaction: discord.Interaction):
         from .. import paper as PT
         await _ack(interaction)
         db=await bot.adb()
         try:
-            d=PT.summary(db, bot.settings)
+            accts=[PT.summary(db, bot.settings, account=a) for a in PT.ACCOUNTS]
         finally: await _close(db)
-        run=d['run']
         def usd(v): return '—' if v is None else ('-' if v<0 else '')+f"${abs(v):,.2f}"
-        lines=[f"**Balance:** {usd(d['equity'])} (started with {usd(run['start_usd'])})",
-               f"**Profit / loss:** {'+' if d['pnl']>=0 else ''}{usd(d['pnl'])} ({d['pnl_pct']:+.1f}%)",
-               f"**Cash:** {usd(d['cash'])} · **open:** {d['open']} worth {usd(d['open_value'])}",
-               f"**Closed trades:** {d['closed']} ({d['wins']} in profit)"]
-        recent=[t for t in d['trades'] if t['status']!='SKIPPED'][:6]
-        if recent:
-            lines.append('')
+        lines=[]
+        for d,label in zip(accts,("📣 **Bot's calls**","🧠 **Brain's own picks**")):
+            run=d['run']
+            lines+=[label,
+                    f"Balance {usd(d['equity'])} (started {usd(run['start_usd'])}) · "
+                    f"{'+' if d['pnl']>=0 else ''}{usd(d['pnl'])} ({d['pnl_pct']:+.1f}%)",
+                    f"{d['open']} open · {d['closed']} closed ({d['wins']} in profit)"]
+            recent=[t for t in d['trades'] if t['status']!='SKIPPED'][:4]
             lines+=[f"• ${t['symbol'] or t['mint'][:6]}: "+(f"{'+' if t['pnl']>=0 else ''}{usd(t['pnl'])} ({t['pnl_pct']:+.0f}%)" if t['pnl'] is not None else '—')
                     +(f" · {t['exit']}" if t['status']=='CLOSED' else ' · open') for t in recent]
-        lines.append(f"\n{run['position_pct']:g}% of cash per call · {run['fee_pct']:g}% fee per side · simulated, no real trades. Change the amount on the dashboard's Paper tab.")
+            lines.append('')
+        lines.append('Simulated, no real trades. Change the amounts on the dashboard\'s Paper tab.')
         await _reply(interaction, embed=_embed('PAPER TRADING','\n'.join(lines)[:4000]))
 
     @bot.tree.command(name='why', description='Explain the latest saved decision for a token')

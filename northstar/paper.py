@@ -1,25 +1,29 @@
-"""Paper trading: a simulated account that follows every call the bot posts (v3.1.0).
+"""Paper trading: simulated accounts. No real trades, ever; nothing here signs or sends a transaction.
 
-No real trades, ever. Nothing here signs or sends a transaction.
+Two separate accounts, each with its own starting amount (dashboard Paper tab):
 
-How a paper trade works
+`calls` (v3.1.0) follows every call the bot posts
   * Every call posted after the current run started opens one position: `position_pct` of the
     cash left, bought at the call's entry market cap, minus `fee_pct` (fees and slippage).
   * It then does exactly what the call's trade plan tells people to do, at the moment the bot
-    posts it and at the market cap the bot tracked at that moment:
-      TP1  -> sell the plan's TP1 share of the position
-      TP2  -> sell the plan's TP2 share (capped at what is left)
-      TRAIL / STOP / TIME / DANGER -> sell everything left
-  * When the bot stops tracking the call (tracking window over, coin rugged to 0.3x, message
-    deleted, untracked), whatever is left is sold at the last market cap the bot saw.
-  * Sells also pay `fee_pct`.
+    posts it and at the market cap the bot tracked then: TP1 / TP2 sell the plan's share;
+    TRAIL / STOP / TIME / DANGER sell everything left.
+  * When the bot stops tracking the call (window over, rugged, message deleted, untracked),
+    whatever is left is sold at the last market cap the bot saw.
 
-Market cap is used as the price: a pump.fun coin's supply is fixed, so a 2x in market cap is
-a 2x in price. The fills are the bot's own observations (one every refresh interval), so a
-real fill can be better or worse. Every number here comes from tracked calls; nothing is made up.
+`brain` (v3.2.0) trades the learning brain's own picks, not the bot's calls
+  * Every coin the bot researches with a DEX pool gets the runner brain's odds (it reaches
+    `brain_win_x` before falling to `brain_loss_x`) and the rug brain's odds.
+  * The brain buys when its runner odds are at least `paper_brain_min_p` and the rug odds are
+    under `paper_brain_max_rug` (when known), at the pool's market cap at that moment. One
+    position per coin per run, at most `paper_brain_max_open` open at once.
+  * It is followed with the standard trade plan (the same rules a call gets), priced from
+    DexScreener every cycle, and closed after `paper_brain_hold_hours` at the last price seen.
+  * This shows whether the brain's picks make money BEFORE it is given any say in real calls.
 
-The account (starting amount, position size, fee) is set on the dashboard's Paper tab. A new
-amount starts a new run; earlier runs and their trades are kept.
+Market cap is used as the price (supply is fixed, so a 2x in market cap is a 2x in price). Fills
+are the bot's own observations, one every refresh interval, so a real fill can be better or
+worse. Sells also pay `fee_pct`. Every number comes from tracked data; nothing is made up.
 """
 from __future__ import annotations
 
@@ -39,7 +43,8 @@ CREATE TABLE IF NOT EXISTS paper_runs (
     start_usd REAL NOT NULL,
     position_pct REAL NOT NULL,
     fee_pct REAL NOT NULL,
-    ended_at REAL
+    ended_at REAL,
+    account TEXT NOT NULL DEFAULT 'calls'
 );
 CREATE TABLE IF NOT EXISTS paper_trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,20 +67,26 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     status TEXT NOT NULL DEFAULT 'OPEN',
     exit_reason TEXT,
     closed_at REAL,
+    note TEXT,
     UNIQUE(run_id, ref)
 );
 CREATE INDEX IF NOT EXISTS ix_paper_open ON paper_trades(run_id, status);
 """
-
+ACCOUNTS = ("calls", "brain")
 SELL_KINDS = ("TP1", "TP2") + tuple(sorted(TP.EXIT_KINDS))
 REASONS = {"TP1": "take profit 1", "TP2": "take profit 2", "TRAIL": "trailing stop", "STOP": "stop loss",
-           "TIME": "time stop", "DANGER": "exit now (danger)", "END": "tracking ended"}
+           "TIME": "time stop", "DANGER": "exit now (danger)", "END": "tracking ended", "HOLD": "hold time over"}
 MIN_POSITION_USD = 1.0
 
 
 def init_schema(db) -> None:
     with db._lock:
         db._conn.executescript(SCHEMA)
+        for table, col, decl in (("paper_runs", "account", "TEXT NOT NULL DEFAULT 'calls'"),
+                                 ("paper_trades", "note", "TEXT")):
+            cols = {r[1] for r in db._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if col not in cols:
+                db._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
 
 def _clamp(v, lo, hi, default):
@@ -88,26 +99,33 @@ def _clamp(v, lo, hi, default):
     return max(lo, min(hi, v))
 
 
-def active_run(db, s=None) -> dict:
-    """The current run; the first one is created from the settings."""
+def _account(account) -> str:
+    return account if account in ACCOUNTS else "calls"
+
+
+def active_run(db, s=None, account: str = "calls") -> dict:
+    """The account's current run; the first one is created from the settings."""
     init_schema(db)
-    row = db.fetchone("SELECT * FROM paper_runs WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1")
+    account = _account(account)
+    row = db.fetchone("SELECT * FROM paper_runs WHERE ended_at IS NULL AND account = ? ORDER BY id DESC LIMIT 1",
+                      (account,))
     if row:
         return dict(row)
     return start_run(db, getattr(s, "paper_start_usd", 1000.0), getattr(s, "paper_position_pct", 10.0),
-                     getattr(s, "paper_fee_pct", 1.0))
+                     getattr(s, "paper_fee_pct", 1.0), account=account)
 
 
-def start_run(db, start_usd, position_pct, fee_pct, now: Optional[float] = None) -> dict:
-    """End the current run (its open trades are kept as they are) and start a new one."""
+def start_run(db, start_usd, position_pct, fee_pct, now: Optional[float] = None, account: str = "calls") -> dict:
+    """End the account's current run (its trades are kept as they are) and start a new one."""
     init_schema(db)
     now = now or time.time()
+    account = _account(account)
     start = _clamp(start_usd, 1.0, 1e9, 1000.0)
     pos = _clamp(position_pct, 0.1, 100.0, 10.0)
     fee = _clamp(fee_pct, 0.0, 20.0, 1.0)
-    db.execute("UPDATE paper_runs SET ended_at = ? WHERE ended_at IS NULL", (now,))
-    db.execute("INSERT INTO paper_runs(started_at, start_usd, position_pct, fee_pct) VALUES (?,?,?,?)",
-               (now, start, pos, fee))
+    db.execute("UPDATE paper_runs SET ended_at = ? WHERE ended_at IS NULL AND account = ?", (now, account))
+    db.execute("INSERT INTO paper_runs(started_at, start_usd, position_pct, fee_pct, account) VALUES (?,?,?,?,?)",
+               (now, start, pos, fee, account))
     return dict(db.fetchone("SELECT * FROM paper_runs ORDER BY id DESC LIMIT 1"))
 
 
@@ -117,7 +135,87 @@ def cash(db, run: dict) -> float:
     return float(run["start_usd"]) - float(r["c"]) + float(r["p"])
 
 
-# ----------------------------------------------------------------------------- the calls to follow
+# ----------------------------------------------------------------------------- shared mechanics
+def _buy(db, run: dict, ref: str, mint: str, symbol, kind: str, entry: float, plan: Optional[dict], now: float,
+         note: Optional[str] = None) -> Optional[str]:
+    """Open a position. Returns why it could not, or None."""
+    if not entry or entry <= 0:
+        return "no entry market cap"
+    size = cash(db, run) * float(run["position_pct"]) / 100
+    if size < MIN_POSITION_USD:
+        return f"cash too low for a position (${size:.2f})"
+    units = size * (1 - float(run["fee_pct"]) / 100) / entry
+    db.execute(
+        "INSERT OR IGNORE INTO paper_trades(run_id, ref, mint, symbol, kind, opened_at, entry_mcap, cost_usd, units, "
+        "units_left, last_mcap, peak_mcap, plan, fills, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (run["id"], ref, mint, symbol, kind, now, entry, size, units, units, entry, entry,
+         json.dumps(plan) if plan else None,
+         json.dumps([{"kind": "BUY", "at": now, "mcap": entry, "multiple": 1.0, "usd": round(size, 2)}]), note))
+    log.info("paper[%s]: bought $%s for $%.2f at $%.0f market cap", run.get("account", "calls"),
+             symbol or mint[:6], size, entry)
+    return None
+
+
+def _skip(db, run: dict, ref: str, mint: str, symbol, kind: str, entry, why: str, now: float) -> None:
+    """Remember a skipped call, so the skip is shown and it is not retried every cycle."""
+    db.execute("INSERT OR IGNORE INTO paper_trades(run_id, ref, mint, symbol, kind, opened_at, entry_mcap, cost_usd, "
+               "units, units_left, status, exit_reason, closed_at) VALUES (?,?,?,?,?,?,?,0,0,0,'SKIPPED',?,?)",
+               (run["id"], ref, mint, symbol, kind, now, entry or 0, why[:120], now))
+
+
+def _execute(db, row: dict, run: dict, mcap: Optional[float], kinds: list[str], end: Optional[str], now: float) -> bool:
+    """Apply sell events to an open position and store it. Returns True when it closed."""
+    t = {**row, "fills": json.loads(row["fills"] or "[]"), "done": set(json.loads(row["done"] or "[]"))}
+    mcap = mcap or t["last_mcap"] or t["entry_mcap"]
+    t["last_mcap"] = mcap
+    t["peak_mcap"] = max(t["peak_mcap"] or 0, mcap)
+    plan = json.loads(t["plan"]) if t.get("plan") else None
+    fee = float(run["fee_pct"]) / 100
+
+    def sell(units: float, kind: str) -> None:
+        units = min(units, t["units_left"])
+        if units <= 0:
+            return
+        net = units * mcap * (1 - fee)
+        t["units_left"] -= units
+        t["proceeds_usd"] += net
+        t["fills"].append({"kind": kind, "at": now, "mcap": mcap, "multiple": round(mcap / t["entry_mcap"], 4),
+                           "sold_pct": round(100 * units / t["units"], 1), "usd": round(net, 2)})
+
+    for kind in [k for k in SELL_KINDS if k in set(kinds)]:
+        if kind in t["done"] or t["units_left"] <= 0:
+            continue
+        t["done"].add(kind)
+        if kind == "TP1" and plan:
+            sell(t["units"] * plan["tp1_sell_pct"] / 100, kind)
+        elif kind == "TP2" and plan:
+            share = 100 if TP.sells_everything(TP.Plan(**plan)) else plan["tp2_sell_pct"]
+            sell(t["units"] * share / 100, kind)
+        elif kind in TP.EXIT_KINDS:
+            sell(t["units_left"], kind)
+            t["exit_reason"] = kind
+    if end and t["units_left"] > 0:
+        sell(t["units_left"], end)
+        t["exit_reason"] = t.get("exit_reason") or end
+    closed = t["units_left"] <= t["units"] * 1e-9
+    if closed:
+        t["units_left"] = 0.0
+        t["status"] = "CLOSED"
+        t["closed_at"] = t.get("closed_at") or now
+        t["exit_reason"] = t.get("exit_reason") or (t["fills"][-1]["kind"] if t["fills"] else "END")
+    db.execute("UPDATE paper_trades SET units_left=?, proceeds_usd=?, last_mcap=?, peak_mcap=?, done=?, fills=?, "
+               "status=?, exit_reason=?, closed_at=? WHERE id=?",
+               (t["units_left"], t["proceeds_usd"], t["last_mcap"], t["peak_mcap"], json.dumps(sorted(t["done"])),
+                json.dumps(t["fills"][-40:]), t["status"], t.get("exit_reason"), t.get("closed_at"), t["id"]))
+    if closed:
+        pnl = t["proceeds_usd"] - t["cost_usd"]
+        log.info("paper[%s]: closed $%s (%s): %+.2f USD (%+.0f%%)", run.get("account", "calls"),
+                 t.get("symbol") or t["mint"][:6], REASONS.get(t["exit_reason"], t["exit_reason"]), pnl,
+                 100 * pnl / max(t["cost_usd"], 1e-9))
+    return closed
+
+
+# ----------------------------------------------------------------------------- the calls account
 def _plan_from_alert(a: dict, s) -> Optional[dict]:
     if not getattr(s, "trade_plan_enabled", True) or not a.get("entry_mcap"):
         return None
@@ -172,114 +270,145 @@ def calls_since(db, since: float, s) -> list[dict]:
     return sorted(out, key=lambda c: c["created_at"])
 
 
-# ----------------------------------------------------------------------------- the trader
 class PaperTrader:
+    """The `calls` account: follows every posted call."""
+
     def __init__(self, s, db):
         self.s, self.db = s, db
-
-    def _sell(self, t: dict, units: float, mcap: float, kind: str, run: dict, now: float) -> float:
-        units = min(units, t["units_left"])
-        if units <= 0 or not mcap or mcap <= 0:
-            return 0.0
-        gross = units * mcap
-        net = gross * (1 - float(run["fee_pct"]) / 100)
-        t["units_left"] -= units
-        t["proceeds_usd"] += net
-        t["fills"].append({"kind": kind, "at": now, "mcap": mcap, "multiple": round(mcap / t["entry_mcap"], 4),
-                           "sold_pct": round(100 * units / t["units"], 1), "usd": round(net, 2)})
-        return net
-
-    def _open(self, c: dict, run: dict, now: float) -> Optional[str]:
-        entry = c.get("entry")
-        if not entry or entry <= 0:
-            return "no entry market cap"
-        size = cash(self.db, run) * float(run["position_pct"]) / 100
-        if size < MIN_POSITION_USD:
-            return f"cash too low for a position (${size:.2f})"
-        units = size * (1 - float(run["fee_pct"]) / 100) / entry
-        self.db.execute(
-            "INSERT OR IGNORE INTO paper_trades(run_id, ref, mint, symbol, kind, opened_at, entry_mcap, cost_usd, units, "
-            "units_left, last_mcap, peak_mcap, plan, fills) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (run["id"], c["ref"], c["mint"], c.get("symbol"), c.get("kind"), now, entry, size, units, units, entry,
-             entry, json.dumps(c.get("plan")) if c.get("plan") else None,
-             json.dumps([{"kind": "BUY", "at": now, "mcap": entry, "multiple": 1.0, "usd": round(size, 2)}])))
-        log.info("paper: bought $%s for $%.2f at $%.0f market cap (%s call)", c.get("symbol") or c["mint"][:6], size,
-                 entry, c.get("kind"))
-        return None
-
-    def _follow(self, t: dict, c: Optional[dict], run: dict, now: float) -> None:
-        t = {**t, "fills": json.loads(t["fills"] or "[]"), "done": set(json.loads(t["done"] or "[]"))}
-        mcap = (c or {}).get("current") or t["last_mcap"] or t["entry_mcap"]
-        t["last_mcap"] = mcap
-        t["peak_mcap"] = max(t["peak_mcap"] or 0, mcap)
-        plan = json.loads(t["plan"]) if t.get("plan") else None
-        for kind in [k for k in SELL_KINDS if k in set((c or {}).get("events") or [])] if c else []:
-            if kind in t["done"] or t["units_left"] <= 0:
-                continue
-            t["done"].add(kind)
-            if kind == "TP1" and plan:
-                self._sell(t, t["units"] * plan["tp1_sell_pct"] / 100, mcap, kind, run, now)
-            elif kind == "TP2" and plan:
-                share = 100 if TP.sells_everything(TP.Plan(**plan)) else plan["tp2_sell_pct"]
-                self._sell(t, t["units"] * share / 100, mcap, kind, run, now)
-            elif kind in TP.EXIT_KINDS:
-                self._sell(t, t["units_left"], mcap, kind, run, now)
-                t["exit_reason"] = kind
-        if t["units_left"] > 0 and (c is None or not c.get("open")):
-            self._sell(t, t["units_left"], mcap, "END", run, now)
-            t["exit_reason"] = t.get("exit_reason") or "END"
-        if t["units_left"] <= t["units"] * 1e-9:
-            t["units_left"] = 0.0
-            t["status"] = "CLOSED"
-            t["closed_at"] = t.get("closed_at") or now
-            t["exit_reason"] = t.get("exit_reason") or (t["fills"][-1]["kind"] if t["fills"] else "END")
-        self.db.execute("UPDATE paper_trades SET units_left=?, proceeds_usd=?, last_mcap=?, peak_mcap=?, done=?, "
-                        "fills=?, status=?, exit_reason=?, closed_at=? WHERE id=?",
-                        (t["units_left"], t["proceeds_usd"], t["last_mcap"], t["peak_mcap"],
-                         json.dumps(sorted(t["done"])), json.dumps(t["fills"][-40:]), t["status"], t.get("exit_reason"),
-                         t.get("closed_at"), t["id"]))
-        if t["status"] == "CLOSED":
-            pnl = t["proceeds_usd"] - t["cost_usd"]
-            log.info("paper: closed $%s (%s): %+.2f USD (%+.0f%%)", t.get("symbol") or t["mint"][:6],
-                     REASONS.get(t["exit_reason"], t["exit_reason"]), pnl, 100 * pnl / max(t["cost_usd"], 1e-9))
 
     def run_once(self, now: Optional[float] = None) -> dict:
         counts = {"opened": 0, "followed": 0, "closed": 0, "skipped": 0}
         if not getattr(self.s, "paper_enabled", True):
             return counts
         now = now or time.time()
-        run = active_run(self.db, self.s)
+        run = active_run(self.db, self.s, "calls")
         calls = {c["ref"]: c for c in calls_since(self.db, run["started_at"], self.s)}
         have = {r["ref"] for r in self.db.fetchall("SELECT ref FROM paper_trades WHERE run_id = ?", (run["id"],))}
         for ref, c in calls.items():
             if ref in have:
                 continue
-            why = self._open(c, run, now)
+            why = _buy(self.db, run, ref, c["mint"], c.get("symbol"), c.get("kind"), c.get("entry"), c.get("plan"), now)
             if why:
                 counts["skipped"] += 1
-                log.info("paper: skipped %s: %s", c.get("symbol") or c["mint"][:6], why)
-                # remember it, so the skip is shown and it is not retried every cycle
-                self.db.execute("INSERT OR IGNORE INTO paper_trades(run_id, ref, mint, symbol, kind, opened_at, "
-                                "entry_mcap, cost_usd, units, units_left, status, exit_reason, closed_at) "
-                                "VALUES (?,?,?,?,?,?,?,0,0,0,'SKIPPED',?,?)",
-                                (run["id"], ref, c["mint"], c.get("symbol"), c.get("kind"), now,
-                                 c.get("entry") or 0, why[:120], now))
+                log.info("paper[calls]: skipped %s: %s", c.get("symbol") or c["mint"][:6], why)
+                _skip(self.db, run, ref, c["mint"], c.get("symbol"), c.get("kind"), c.get("entry"), why, now)
             else:
                 counts["opened"] += 1
         for t in self.db.fetchall("SELECT * FROM paper_trades WHERE run_id = ? AND status = 'OPEN'", (run["id"],)):
-            t = dict(t)
-            self._follow(t, calls.get(t["ref"]), run, now)
+            c = calls.get(t["ref"])
             counts["followed"] += 1
-            if self.db.fetchone("SELECT status FROM paper_trades WHERE id = ?", (t["id"],))["status"] == "CLOSED":
+            if _execute(self.db, dict(t), run, (c or {}).get("current"), (c or {}).get("events") or [],
+                        None if (c and c.get("open")) else "END", now):
+                counts["closed"] += 1
+        return counts
+
+
+# ----------------------------------------------------------------------------- the brain account
+def _money(v: float) -> str:
+    return f"${v:,.0f}"
+
+
+class BrainTrader:
+    """The `brain` account: buys the learning brain's own picks and follows them with the standard plan."""
+
+    def __init__(self, s, db, dex=None):
+        self.s, self.db, self.dex = s, db, dex
+
+    def enabled(self) -> bool:
+        return bool(getattr(self.s, "paper_enabled", True) and getattr(self.s, "paper_brain_enabled", True))
+
+    def consider(self, out, now: Optional[float] = None) -> Optional[str]:
+        """Called once per finished research. Returns "bought" or why not (None when the brain gave no odds)."""
+        if not self.enabled():
+            return None
+        r = out.report or {}
+        p = (r.get("brain") or {}).get("p")
+        pair = getattr(out, "pair", None)
+        if p is None or pair is None:
+            return None
+        need = float(getattr(self.s, "paper_brain_min_p", 0.15))
+        if p < need:
+            return f"runner odds {p:.0%} under {need:.0%}"
+        rug = (r.get("unified") or {}).get("rug_odds") if isinstance(r.get("unified"), dict) else None
+        if rug is None:
+            rug = (r.get("rug_model") or {}).get("p")
+        max_rug = float(getattr(self.s, "paper_brain_max_rug", 0.3))
+        if rug is not None and rug >= max_rug:
+            return f"rug odds {rug:.0%} at or over {max_rug:.0%}"
+        mc = pair.market_cap or pair.fdv
+        if not mc:
+            return "no market cap"
+        now = now or time.time()
+        run = active_run(self.db, self.s, "brain")
+        ref = f"brain:{out.mint}"
+        if self.db.fetchone("SELECT 1 AS x FROM paper_trades WHERE run_id = ? AND ref = ?", (run["id"], ref)):
+            return "already traded this run"
+        n_open = self.db.fetchone("SELECT COUNT(*) AS n FROM paper_trades WHERE run_id = ? AND status = 'OPEN'",
+                                  (run["id"],))["n"]
+        cap = int(getattr(self.s, "paper_brain_max_open", 10))
+        if n_open >= cap:
+            return f"{cap} positions already open"
+        try:
+            plan = TP.build_plan(mc, self.s, "standard")
+        except (AttributeError, KeyError, TypeError):
+            plan = None
+        note = f"runner odds {p:.0%}" + (f" · rug odds {rug:.0%}" if rug is not None else "")
+        why = _buy(self.db, run, ref, out.mint, pair.base_symbol, "brain", mc, plan.__dict__ if plan else None, now,
+                   note=note)
+        return why or "bought"
+
+    async def _caps(self, mints: list[str]) -> dict[str, float]:
+        if not mints or self.dex is None:
+            return {}
+        try:
+            pairs = await self.dex.tokens_batch(mints)
+        except Exception:  # noqa: BLE001 - prices are retried next cycle
+            log.info("paper[brain]: price refresh failed", exc_info=True)
+            return {}
+        best: dict = {}
+        for p in pairs:
+            if (p.market_cap or p.fdv) and (p.base_mint not in best or (p.liquidity_usd or 0) >
+                                            (best[p.base_mint].liquidity_usd or 0)):
+                best[p.base_mint] = p
+        return {m: (p.market_cap or p.fdv) for m, p in best.items()}
+
+    async def run_once(self, now: Optional[float] = None) -> dict:
+        counts = {"followed": 0, "closed": 0, "priced": 0}
+        if not self.enabled():
+            return counts
+        now = now or time.time()
+        run = active_run(self.db, self.s, "brain")
+        rows = [dict(t) for t in self.db.fetchall("SELECT * FROM paper_trades WHERE run_id = ? AND status = 'OPEN'",
+                                                  (run["id"],))]
+        if not rows:
+            return counts
+        caps = await self._caps(sorted({t["mint"] for t in rows}))
+        hold = float(getattr(self.s, "paper_brain_hold_hours", 24.0)) * 3600
+        for t in rows:
+            mc = caps.get(t["mint"])
+            counts["followed"] += 1
+            kinds: list[str] = []
+            if mc:
+                counts["priced"] += 1
+                plan = json.loads(t["plan"]) if t.get("plan") else None
+                if plan:
+                    peak = max(t["peak_mcap"] or 0, mc)
+                    done = set(json.loads(t["done"] or "[]"))
+                    kinds = [k for k, _ in TP.evaluate(TP.Plan(**plan), mc / t["entry_mcap"], peak / t["entry_mcap"],
+                                                       now - t["opened_at"], done, _money)]
+            end = "HOLD" if now - t["opened_at"] >= hold else None
+            if _execute(self.db, t, run, mc, kinds, end, now):
                 counts["closed"] += 1
         return counts
 
 
 # ----------------------------------------------------------------------------- reporting
-def summary(db, s=None, now: Optional[float] = None, trades_limit: int = 60, run: Optional[dict] = None) -> dict:
+def summary(db, s=None, now: Optional[float] = None, trades_limit: int = 60, run: Optional[dict] = None,
+            account: str = "calls") -> dict:
     """Account, open positions and trade history for the current run (and a list of past runs)."""
     now = now or time.time()
-    run = run or active_run(db, s)
+    run = run or active_run(db, s, account)
+    account = run.get("account") or account
     rows = [dict(r) for r in db.fetchall("SELECT * FROM paper_trades WHERE run_id = ? ORDER BY opened_at DESC",
                                          (run["id"],))]
     cash_now = cash(db, run)
@@ -297,18 +426,18 @@ def summary(db, s=None, now: Optional[float] = None, trades_limit: int = 60, run
                        if r["entry_mcap"] else None, "cost": r["cost_usd"], "proceeds": r["proceeds_usd"],
                        "open_value": value if r["status"] == "OPEN" else 0.0, "pnl": pnl,
                        "pnl_pct": 100 * pnl / r["cost_usd"] if pnl is not None and r["cost_usd"] else None,
-                       "exit": REASONS.get(r["exit_reason"] or "", r["exit_reason"]),
+                       "exit": REASONS.get(r["exit_reason"] or "", r["exit_reason"]), "note": r.get("note"),
                        "fills": json.loads(r["fills"] or "[]")})
     equity = cash_now + open_value
     wins = [p for p in closed if p > 0]
-    past = [dict(r) for r in db.fetchall("SELECT * FROM paper_runs WHERE id != ? ORDER BY id DESC LIMIT 10",
-                                         (run["id"],))]
+    past = [dict(r) for r in db.fetchall("SELECT * FROM paper_runs WHERE id != ? AND COALESCE(account, 'calls') = ? "
+                                         "ORDER BY id DESC LIMIT 10", (run["id"], account))]
     for p in past:
         p["end_cash"] = round(cash(db, p), 2)
         p["trades"] = db.fetchone("SELECT COUNT(*) AS n FROM paper_trades WHERE run_id = ? AND status != 'SKIPPED'",
                                   (p["id"],))["n"]
-    return {"run": run, "cash": round(cash_now, 2), "open_value": round(open_value, 2), "equity": round(equity, 2),
-            "pnl": round(equity - run["start_usd"], 2),
+    return {"account": account, "run": run, "cash": round(cash_now, 2), "open_value": round(open_value, 2),
+            "equity": round(equity, 2), "pnl": round(equity - run["start_usd"], 2),
             "pnl_pct": round(100 * (equity / run["start_usd"] - 1), 2) if run["start_usd"] else None,
             "open": sum(1 for t in trades if t["status"] == "OPEN"), "closed": len(closed), "wins": len(wins),
             "realized": round(sum(closed), 2) if closed else 0.0,

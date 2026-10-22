@@ -240,20 +240,27 @@ def view_pulse(c, now: float, hours: float = 3.0) -> dict:
     return {"hours": hours, "columns": {k: v[:60] for k, v in cols.items()}, "passed": passed[:40], "funnel": funnel}
 
 
-def view_paper(c, s, now: float) -> dict:
-    """The paper account (read-only connection: shows the defaults until the bot starts a run)."""
+def view_paper(c, s, now: float, account: str = "calls") -> dict:
+    """A paper account (read-only connection: shows the defaults until the bot starts a run)."""
     from . import paper as PT
-    if not _table_ok(c, "paper_runs"):
-        return {"ready": False, "defaults": {"start_usd": getattr(s, "paper_start_usd", 1000.0),
+    account = account if account in PT.ACCOUNTS else "calls"
+    has_account = _table_ok(c, "paper_runs") and any(
+        r[1] == "account" for r in c.execute("PRAGMA table_info(paper_runs)").fetchall())
+    brain = {"min_p": getattr(s, "paper_brain_min_p", 0.15), "max_rug": getattr(s, "paper_brain_max_rug", 0.3),
+             "max_open": getattr(s, "paper_brain_max_open", 10), "hold_hours": getattr(s, "paper_brain_hold_hours", 24)}
+    if not has_account:
+        return {"ready": False, "account": account, "brain": brain, "defaults": {"start_usd": getattr(s, "paper_start_usd", 1000.0),
                                              "position_pct": getattr(s, "paper_position_pct", 10.0),
                                              "fee_pct": getattr(s, "paper_fee_pct", 1.0)}}
     db = _Ro(c)
-    run = db.fetchone("SELECT * FROM paper_runs WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1")
+    run = db.fetchone("SELECT * FROM paper_runs WHERE ended_at IS NULL AND account = ? ORDER BY id DESC LIMIT 1",
+                      (account,))
     if not run or not _table_ok(c, "paper_trades"):
-        return {"ready": False, "defaults": {"start_usd": getattr(s, "paper_start_usd", 1000.0),
-                                             "position_pct": getattr(s, "paper_position_pct", 10.0),
-                                             "fee_pct": getattr(s, "paper_fee_pct", 1.0)}}
-    return {"ready": True, **PT.summary(db, s, now, run=run)}
+        return {"ready": False, "account": account, "brain": brain,
+                "defaults": {"start_usd": getattr(s, "paper_start_usd", 1000.0),
+                             "position_pct": getattr(s, "paper_position_pct", 10.0),
+                             "fee_pct": getattr(s, "paper_fee_pct", 1.0)}}
+    return {"ready": True, "brain": brain, **PT.summary(db, s, now, run=run, account=account)}
 
 
 def view_calls(c) -> dict:
@@ -579,7 +586,8 @@ class DashboardServer:
                     if u.path == "/api/calls":
                         return self._send(200, view_calls(c))
                     if u.path == "/api/paper":
-                        return self._send(200, view_paper(c, s, now))
+                        acct = (parse_qs(u.query).get("account") or ["calls"])[0]
+                        return self._send(200, view_paper(c, s, now, acct))
                     if u.path == "/api/decisions":
                         return self._send(200, view_decisions(c))
                     if u.path == "/api/funnel":
@@ -654,7 +662,7 @@ class DashboardServer:
                 db = Database(owner.db_path)
                 db.open()
                 try:
-                    run = PT.start_run(db, start, pos, fee)
+                    run = PT.start_run(db, start, pos, fee, account=str(body.get("account") or "calls"))
                 except Exception as e:  # noqa: BLE001
                     return self._send(500, {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"})
                 finally:
