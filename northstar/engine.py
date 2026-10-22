@@ -204,6 +204,14 @@ class Engine:
             self._learned_seen = dict(applied)
             if applied:
                 log.info("learning: applied learned settings %s", applied)
+        try:
+            from . import curve_learn as CL
+            CL.ensure(db)
+            floor = CL.apply_saved(db, s)
+            if floor is not None:
+                log.info("curve learner: runner score floor %.0f (learned)", floor)
+        except Exception:  # noqa: BLE001 - learning must never stop the start
+            log.debug("curve learner start failed", exc_info=True)
         self.stop = asyncio.Event()
         self.queue: asyncio.PriorityQueue = asyncio.PriorityQueue(maxsize=s.max_queue_size)
         self._queued: set[str] = set()
@@ -243,6 +251,14 @@ class Engine:
                  asyncio.create_task(self._loop("db-retention", 3600, self._prune))]
         if getattr(self.s, "paper_enabled", True):
             tasks.append(asyncio.create_task(self._loop("paper-trader", 15, self._paper)))
+        if getattr(self.s, "curve_learn_enabled", True):
+            tasks.append(asyncio.create_task(self._loop("curve-learner", float(self.s.curve_learn_minutes) * 60,
+                                                        self._curve_learn)))
+        if getattr(self.s, "cleanup_enabled", True):
+            tasks.append(asyncio.create_task(self._loop("training-cleanup", 86400, self._cleanup)))
+        self._tasks = tasks
+        if getattr(self.s, "watchdog_enabled", True):
+            tasks.append(asyncio.create_task(self._loop("watchdog", 60, self._watchdog)))
         if self.radar:
             tasks.append(asyncio.create_task(self._loop("surge-radar", self.s.radar_interval_seconds, self._radar)))
         if self.s.early_call_enabled:
@@ -302,9 +318,17 @@ class Engine:
 
     # ---------------------------------------------------------------- loops
     async def _loop(self, name: str, interval: float, fn) -> None:
-        """Run fn, then sleep. Iterations never overlap; exceptions never kill the loop."""
+        """Run fn, then sleep. Iterations never overlap; exceptions never kill the loop.
+        v3.3.0: each iteration's start and end are recorded for the watchdog (self-repair)."""
+        beats = self.__dict__.setdefault("_beats", {})
+        try:
+            asyncio.current_task()._ns_loop = name          # so the watchdog can find this loop's task
+        except (AttributeError, RuntimeError):
+            pass
+        self.__dict__.setdefault("_loop_specs", {})[name] = (interval, fn)
         while not self.stop.is_set():
             started = time.monotonic()
+            beats[name] = {"start": started, "end": None, "interval": interval}
             try:
                 await fn()
             except asyncio.CancelledError:
@@ -312,6 +336,7 @@ class Engine:
             except Exception:
                 self.stats["errors"] += 1
                 log.exception("loop %s iteration failed", name)
+            beats[name]["end"] = time.monotonic()
             remaining = max(1.0, interval - (time.monotonic() - started))
             try:
                 await asyncio.wait_for(self.stop.wait(), timeout=remaining)
@@ -980,6 +1005,56 @@ class Engine:
                 log.info("paper[brain]: bought %s at %.0f%% runner odds", out.mint, 100 * (b.get("p") or 0))
         except Exception:  # noqa: BLE001 - paper trading must never break research
             log.debug("brain paper trade failed for %s", out.mint, exc_info=True)
+
+    # ---------------------------------------------------------------- v3.3.0 always-on learning
+    async def _curve_learn(self) -> None:
+        """Every 30 min: move the runner score floor toward what real curve outcomes reward."""
+        if not getattr(self, "_curve_learn_started", False):
+            self._curve_learn_started = True       # first tick at start: let outcomes arrive first
+            return
+        from . import curve_learn as CL
+        change = await asyncio.to_thread(CL.learn, self.db, self.s)
+        if change and self.s.learning_announce:
+            text = (f"Runner score floor **{change['from']:.0f} → {change['to']:.0f}**, learned from "
+                    f"{change['coins']} curve coins that passed every safety check (estimated per trade "
+                    f"{CL._pct(change['mean_from'])} → {CL._pct(change['mean_to'])}).")
+            try:
+                await self.pub.publish({"title": "🧠 Northstar learned something", "description": text,
+                                        "color": 0x9B59B6}, self.s.discord_warning_channel_id)
+            except Exception:  # noqa: BLE001
+                log.debug("could not announce curve learning", exc_info=True)
+
+    async def _cleanup(self) -> None:
+        """A minute after start, then daily: training data keeps only real, fully observed outcomes."""
+        if not getattr(self, "_cleanup_waited", False):
+            self._cleanup_waited = True
+            await asyncio.sleep(60)
+        from . import cleanup as CU
+        c = await asyncio.to_thread(CU.run, self.db)
+        if any(v for k, v in c.items() if k not in ("examples_left",)):
+            log.info("%s", CU.describe(c))
+
+    async def _watchdog(self) -> None:
+        """Self-repair: restart a background loop whose iteration has hung (never one that is just slow
+        by design: the limit is the larger of `watchdog_stuck_minutes` and 3x the loop's own interval)."""
+        now = time.monotonic()
+        limit_min = float(getattr(self.s, "watchdog_stuck_minutes", 15.0)) * 60
+        for name, b in list(getattr(self, "_beats", {}).items()):
+            if name == "watchdog" or b.get("end") is not None and b["end"] >= b["start"]:
+                continue
+            limit = max(limit_min, 3 * float(b.get("interval") or 0))
+            if now - b["start"] < limit:
+                continue
+            spec = getattr(self, "_loop_specs", {}).get(name)
+            task = next((t for t in getattr(self, "_tasks", []) if getattr(t, "_ns_loop", None) == name), None)
+            if spec is None or task is None:
+                continue
+            log.error("self-repair: loop %s stuck for %.0f min - restarting it", name, (now - b["start"]) / 60)
+            self.stats["self_repairs"] = self.stats.get("self_repairs", 0) + 1
+            task.cancel()
+            new = asyncio.create_task(self._loop(name, spec[0], spec[1]))
+            new._ns_loop = name
+            self._tasks.append(new)
 
     async def _paper(self) -> None:
         from .paper import PaperTrader

@@ -281,7 +281,7 @@ class Settings(BaseSettings):
     # Self-learning (learning.py): records every researched coin, scores decisions on real price paths
     # from CoinGecko, and retunes the selection + plan settings automatically.
     learning_enabled: bool = True
-    learning_interval_hours: float = 6.0
+    learning_interval_hours: float = 1.0    # v3.3.0: was 6; retrain + retune every hour
     learning_min_samples: int = 20
     learning_days: float = 14.0
     learning_announce: bool = False         # post learning changes to Discord (off: they go to the log only)
@@ -339,7 +339,18 @@ class Settings(BaseSettings):
     runner_min_vol_m5: float = 7_500
     runner_min_score: float = 45.0        # v3.2.2: was 60; with no KOL attention a safe, active coin scores ~50-58
     runner_max_per_hour: int = 6
-    runner_launch_max_pages: int = 20      # v3.2.1: read up to 20,000 curve transactions back to the launch
+    runner_launch_max_pages: int = 20
+    # v3.3.0 curve learner (curve_learn.py): learns the runner score floor from real curve outcomes
+    curve_learn_enabled: bool = True
+    curve_learn_minutes: float = 30.0
+    curve_learn_days: float = 7.0
+    curve_learn_min_samples: int = 25
+    curve_learn_min_floor: float = 35.0
+    curve_learn_max_floor: float = 70.0
+    # v3.3.0 self-repair: a background loop stuck this long (and at least 3x its own interval) is restarted
+    watchdog_enabled: bool = True
+    watchdog_stuck_minutes: float = 15.0
+    cleanup_enabled: bool = True      # v3.2.1: read up to 20,000 curve transactions back to the launch
     # v3.0.0 attention: public KOL Telegram channels (comma-separated names or t.me links), read from
     # their public web preview t.me/s/<channel>; crypto news RSS (CoinDesk, Cointelegraph, Decrypt)
     kol_telegram_channels: str = ""

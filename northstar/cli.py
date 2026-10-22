@@ -233,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
     sh.add_argument("--days", type=float, default=7.0)
     sh.add_argument("--policy", default=None)
     sh.add_argument("--json", action="store_true")
+    cl = sub.add_parser("cleanup", help="clean the training data so the learners train on real outcomes only")
+    cl.add_argument("--dry-run", action="store_true", help="only count what would be cleaned")
     cv = sub.add_parser("curve", help="what happened to pump.fun coins in the early band, per entry rule")
     cv.add_argument("--days", type=float, default=7.0)
     cv.add_argument("--json", action="store_true")
@@ -281,14 +283,28 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(sm, indent=2, default=str) if args.json else T.format_summary(sm))
             return 0
         if args.cmd == "curve":
+            from . import curve_learn as CL
             from . import curve_watch as CW
             db = _db(s)
             try:
                 CW.init_schema(db)
                 ev = CW.evaluate(db, args.days)
+                floors = CL.table(db, s, args.days)
             finally:
                 db.close()
-            print(json.dumps(ev, indent=2) if args.json else CW.format_report(ev))
+            if args.json:
+                print(json.dumps({**ev, "runner_floors": floors}, indent=2))
+            else:
+                print(CW.format_report(ev) + "\n\n" + CL.format_table(floors))
+            return 0
+        if args.cmd == "cleanup":
+            from . import cleanup as CU
+            db = _db(s)
+            try:
+                c = CU.run(db, dry_run=args.dry_run)
+            finally:
+                db.close()
+            print(CU.describe(c, args.dry_run))
             return 0
         if args.cmd == "shadow":
             from . import shadow_test as SH

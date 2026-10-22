@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS training_examples (
     runner INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_training_ts ON training_examples(ts);
+-- v3.3.0: examples the cleanup removed (cleanup.py), so harvest never copies them back in
+CREATE TABLE IF NOT EXISTS training_removed (
+    key TEXT PRIMARY KEY,
+    ts REAL NOT NULL,
+    why TEXT
+);
 """
 
 
@@ -141,6 +147,7 @@ def harvest(db, now: Optional[float] = None, limit: int = 5000) -> dict:
         names = list(B.ALL_FEATURES)
         sid = _schema_id(db, names)
         have = {r["key"] for r in db.fetchall("SELECT key FROM training_examples WHERE ts > ?", (now - 60 * 86400,))}
+        have |= {r["key"] for r in db.fetchall("SELECT key FROM training_removed")}
         try:
             shadows = db.fetchall("SELECT id, mint, ts, vector, path FROM shadow_calls WHERE evaluated=1 "
                                   "AND vector IS NOT NULL AND vector != '{}' AND path IS NOT NULL "

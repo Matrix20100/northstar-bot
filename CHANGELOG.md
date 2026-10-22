@@ -3,6 +3,42 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 3.3.0 — 2026-10-22 — always-on learning, clean training data, self-repair
+
+Operator request: clean the database so the AI trains on real data, learn 24/7, change in real
+time, and fix itself.
+
+- **Training cleanup (`cleanup.py`).** Runs a minute after start, then daily. `python main.py
+  cleanup [--dry-run]` runs it by hand.
+  - Training examples:
+    - removes examples with no label after 2 days;
+    - removes examples where 60%+ of the numbers were never measured;
+    - removes repeats of the same coin within 6 hours (one coin researched 40 times an hour
+      counted as 40 coins).
+    - Removed keys are remembered (`training_removed`), so harvest never copies them back.
+  - Curve watch: sets aside coins the radar stopped seeing within 10 minutes of entering the band
+    (their "outcome" was only their entry price), and rows with impossible numbers.
+  - Research history, calls, paper trades and settings are never touched.
+- **Curve learner (`curve_learn.py`).** The runner calls now learn from the coins they are
+  actually made on.
+  - The curve watch stores the runner check's verdict per coin: its score, and whether every
+    safety check passed.
+  - Every 30 minutes the early trade plan is replayed on real 4-hour outcomes for each score
+    floor. `runner_min_score` moves one step (5 points) toward the floor that made the most per
+    trade.
+  - Only coins that passed every safety check count. A new floor needs 25+ coins and must beat
+    the current floor on older AND recent coins. The floor stays within 35-70.
+  - The learned floor is kept across restarts. It is shown on the Learning tab and in
+    `python main.py curve`.
+- **Learning every hour** (`NORTHSTAR_LEARNING_INTERVAL_HOURS`, was 6). Both brains retrain and
+  the settings tuner runs hourly; changes apply live. Measured: about 80 s for the runner brain
+  and 7 s for the rug brain on 6,000 examples, in the background.
+- **Self-repair watchdog.** Every minute it checks the background loops. A loop whose iteration
+  has hung for 15+ minutes (and 3x its own interval) is cancelled and restarted, with an ERROR
+  line in the log.
+- Unchanged: the safety checks themselves. No learner can switch off or loosen a rug check.
+- Tests: `tests/test_learning_v330.py`.
+
 ## 3.2.2 — 2026-10-22 — let safe runners through, show runner calls
 
 Operator: "nothing called out for 5 hours".
