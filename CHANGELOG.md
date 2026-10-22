@@ -3,6 +3,39 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.6.2 — 2026-10-22 — measure the early band (where call bots post)
+
+Operator request: reverse-engineer the "Nexas Alerts" calls and make coin finding better.
+
+- **Nexas, from its posted calls** (20 calls, 16-22 Oct):
+  - every coin is a pump.fun coin 1-27 minutes old, at $14K-$58K market cap (on or just off
+    its curve), with $7.7K-$74K of 5-minute volume;
+  - the 5-minute price change ranges from -85% to +130%, so price direction is not a filter;
+  - "Dev Holding 1.5%" and "Fees 15%" are the same on every call (placeholders, not data);
+  - its "Quality Score" did not line up with results: the 3x calls scored 49-82, and so did
+    the misses;
+  - it posts milestones but never losses.
+
+  In the excerpt, 4 of 17 calls hit 2x or more and 2 more hit 1.5x; the rest posted nothing.
+  Peaks, not exits.
+- **Northstar could not compete there, and could not measure it.**
+  - The curve radar looks at $24K-$50K, but the "already +400% since launch" rule rejects nearly
+    every coin above about $25K. That is the whole Nexas zone.
+  - Curve-stage rejections were never scored, because decision tracking needs a DEX pool.
+- **Curve watch (`curve_watch.py`, table `curve_watch`).**
+  - Every pump.fun coin that enters the $10K-$80K band on its curve is recorded the moment it
+    enters: age, market cap, liquidity, 5-minute volume, buys, sells, price change.
+  - It is then followed for 4 hours, on the curve and after migration: peak, low, the worst
+    drop before the peak, and whether it migrated.
+  - It reuses the curve radar's DexScreener batch, so there are no extra API calls. One small
+    row per coin, kept 21 days.
+- **Rules scored on real outcomes** (`python main.py curve`, and the Pulse tab's "Early band"
+  card): every coin in the band, a Nexas clone, Nexas plus more buys than sells, final stretch
+  $40K+, today's curve radar, and heavy volume. Each shows the share that reached 1.5x, 2x, 3x,
+  a clean 2x (no 0.6x first), the share that fell to 0.3x, and the share that migrated. The
+  early-band rules (radar band, the +400% rule) change only once these numbers exist.
+- Tests: `tests/test_curve_watch.py`.
+
 ## 2.6.1 — 2026-10-22 — two brains with a compact memory, manual untrack, holder-network gate
 
 Operator request: one brain that learns rugs and bad coins, one that learns coins that ran; a

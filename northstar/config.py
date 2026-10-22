@@ -355,6 +355,11 @@ class Settings(BaseSettings):
     curve_radar_hours: float = 3.0          # look at launches from the last N hours
     curve_radar_max_tokens: int = 2400
     curve_radar_min_buys_m5: int = 12
+    # v2.6.2 curve watch (curve_watch.py): outcomes of every pump.fun coin entering the early band
+    curve_watch_enabled: bool = True
+    curve_watch_band_lo: float = 10_000.0
+    curve_watch_band_hi: float = 80_000.0
+    curve_watch_hours: float = 4.0
     # ---------------------------------------------------------------- AI narrative judge (Claude)
     ai_enabled: bool = True                 # active only when a key is set (or provider=local)
     # anthropic | groq | gemini | openrouter | cerebras | mistral | github | local | custom

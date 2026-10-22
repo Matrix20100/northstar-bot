@@ -113,6 +113,13 @@ class CurveRadar:
             "AND mint NOT IN (SELECT mint FROM early_calls) ORDER BY discovered_at DESC LIMIT ?",
             (now - self.s.curve_radar_hours * 3600, self.s.curve_radar_max_tokens))
         mints = [r["mint"] for r in rows]
+        from . import curve_watch as CW
+        watching = getattr(self.s, "curve_watch_enabled", True)
+        if watching:
+            # coins inside their outcome window stay in the batch after they leave the launch list
+            known = set(mints)
+            mints += [m for m in CW.open_mints(self.db, now, float(getattr(self.s, "curve_watch_hours", 4.0)))
+                      if m not in known]
         if not mints:
             return []
         try:
@@ -120,6 +127,13 @@ class CurveRadar:
         except Exception as e:  # noqa: BLE001
             log.info("curve radar: DexScreener batch failed: %s", e)
             return []
+        if watching:
+            by_mint: dict[str, list] = {}
+            for p in pairs:
+                by_mint.setdefault(p.base_mint, []).append(p)
+            res = CW.observe(self.db, by_mint, now, self.s)
+            if res.get("entered") or res.get("closed"):
+                log.info("curve watch: %s", res)
         best: dict[str, object] = {}
         for p in pairs:
             if p.base_mint in best and (best[p.base_mint].liquidity_usd or 0) >= (p.liquidity_usd or 0):
