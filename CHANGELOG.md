@@ -3,6 +3,17 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.5.10 — 2026-10-22 — rugged calls are closed
+
+- **Rug close for calls (`monitor.py`).** Calls were tracked for 72 hours whatever happened. Now,
+  once a verified price read puts a call at or under `NORTHSTAR_CALLOUT_RUG_CLOSE_X` (0.3x) of its
+  call market cap:
+  - one "RUGGED" warning is posted;
+  - the call is CLOSED and no longer tracked.
+
+  This matches the v2.5.8 rule for early watches. 0 turns it off.
+- Tests: `test_alerts_monitoring.py` (rugged call closed once; a 0.4x dip stays open).
+
 ## 2.5.9 — 2026-10-22 — rug filters, tracked wallets, honest "watched" count
 
 Operator request: track my wallets and see if they are in a coin; Axiom-style filtering; reject

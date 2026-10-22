@@ -156,7 +156,19 @@ class Monitor:
                              a["id"], channel=s.discord_warning_channel_id)
         await self._trade_plan(a, merged, mult, warnings, new_warnings, now)
         upd["warnings"] = warnings
-        if now - a["created_at"] > s.max_tracking_hours * 3600:
+        rug_x = float(getattr(s, "callout_rug_close_x", 0.3) or 0)
+        rugged = rug_x > 0 and mult is not None and 0 < mult <= rug_x
+        if rugged and "RUGGED" not in warnings:
+            # v2.5.10: a call that trades at or under 0.3x of its call (a verified price read) is a
+            # rug: say so once and stop tracking it, instead of following it for 72 hours
+            detail = (f"Now {mult:.2f}x of the call ({(mult - 1) * 100:.0f}%). Marked rugged; "
+                      "tracking ended.")
+            warnings.append("RUGGED")
+            upd["warnings"] = warnings
+            self.db.add_alert_event(a["id"], "warning", {"kind": "RUGGED", "detail": detail})
+            await self._send(warning_embed(merged, "RUGGED", detail, critical=True), a["id"],
+                             channel=s.discord_warning_channel_id)
+        if rugged or now - a["created_at"] > s.max_tracking_hours * 3600:
             upd["state"] = "CLOSED"
             upd["closed_at"] = now
             merged["state"] = "CLOSED"

@@ -361,6 +361,7 @@ class Settings(BaseSettings):
     liquidity_collapse_pct: float = 50.0
     severe_drawdown_pct: float = 50.0
     max_tracking_hours: float = 72.0
+    callout_rug_close_x: float = 0.3       # v2.5.10: a call at or under this x of its call market cap is closed as rugged (0 = off)
     early_watch_rug_close_x: float = 0.3   # end an early watch once it trades at or under this x of the call price (0 = off)
     embed_edit_min_seconds: int = 300
 
@@ -410,7 +411,7 @@ class Settings(BaseSettings):
     def _non_negative_int(cls, v: int) -> int:
         return max(0, int(v))
 
-    @field_validator("early_watch_rug_close_x")
+    @field_validator("early_watch_rug_close_x", "callout_rug_close_x")
     @classmethod
     def _rug_close(cls, v: float) -> float:
         # 0 (or negative) = off; never at or above the call price, which would close every watch
