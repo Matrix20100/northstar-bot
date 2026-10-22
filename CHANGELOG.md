@@ -3,6 +3,21 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 3.3.1 — 2026-10-23 — stop re-checking dead coins every hour
+
+From the live log: 157 "Curve trade sample" lookups in 2 minutes, nearly all finding no trades at
+all.
+
+- **Coins the curve radar found are no longer re-checked hourly forever.** A coin with no pool and
+  no trades has nothing to judge. Before, a launch-only coin waited for the radar, but one the radar
+  had ever found was put back on a 1-hour timer. That covers thousands of coins, nearly all dead,
+  at about one RPC call a second. Now it waits for the radar, which re-queues it the moment it
+  trades in the band again. Coins a DexScreener feed or a migration found keep their timer. The
+  backlog clears itself within an hour of the update.
+- **A sample with nothing in its window is logged at DEBUG.** It filled the log. Samples that found
+  trades or hit an error are still logged.
+- Test: `tests/test_engine.py`.
+
 ## 3.3.0 — 2026-10-22 — always-on learning, clean training data, self-repair
 
 Operator request: clean the database so the AI trains on real data, learn 24/7, change in real

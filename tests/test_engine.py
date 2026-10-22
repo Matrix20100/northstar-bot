@@ -59,3 +59,22 @@ async def test_engine_publishes_nothing_when_nothing_qualifies(settings, db):
     assert eng.stats["researched"] >= 1
     assert pub.sent == [], "zero alerts is better than manufacturing confidence"
     assert db.get_candidate(MINT)["state"] in ("WATCHLIST", "REJECTED")
+
+
+async def test_a_dead_coin_the_radar_found_waits_for_the_radar_instead_of_hourly_rechecks(settings, db):
+    """v3.3.1: every coin the curve radar ever found was re-checked hourly forever (about one RPC
+    call a second on the live bot). With nothing to judge it now waits for the radar again;
+    a coin a DexScreener feed found keeps its timer."""
+    import time
+    from conftest import addr
+    p = strong_providers()
+    p.dex.pairs = []                                    # no pool, no trades: NOT_READY
+    eng = Engine(settings, db, p, MemoryPublisher())
+    radar_coin, feed_coin = addr("radarcoin"), addr("feedcoin")
+    db.upsert_discovery(radar_coin, "curve_radar", 9.0, "R", "R", {})
+    db.upsert_discovery(feed_coin, "dexscreener_profile", 1.0, "F", "F", {})
+    for m in (radar_coin, feed_coin):
+        await eng.process(m)
+    assert eng.stats.get("not_ready") == 2
+    assert db.get_candidate(radar_coin)["next_research_at"] is None
+    assert db.get_candidate(feed_coin)["next_research_at"] > time.time() + settings.rejected_recheck_seconds - 60
