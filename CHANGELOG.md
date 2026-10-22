@@ -3,6 +3,32 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.5.7 — 2026-10-22 — the start of a coin must be organic
+
+Operator request: no obvious rugs on the watch list. The examples were coins whose chart started
+with a giant jump or a few huge steps, and coins that had already rugged but stayed watched.
+
+- **Launch-shape check (`analysis/launch.py`, gate `launch_shape`).** It reads 1-minute candles
+  from the coin's earliest pool, the pump.fun curve when listed, from creation onwards, in one
+  GeckoTerminal call. The gate FAILS on:
+  - an **instant jump**: 6x or more in the first 2 minutes of trading (`NORTHSTAR_LAUNCH_MAX_FIRST_JUMP_X`);
+  - a **staircase**: 85% or more of a 3x+ rise made in 3 one-minute candles, with trades in under
+    40% of the first 30 minutes;
+  - an **already dumped** coin: price at or under 35% of its high since launch
+    (`NORTHSTAR_LAUNCH_MAX_DRAWDOWN_X`).
+
+  A FAIL rejects the coin as a risk threshold, so it is not watched and gets no second look. No
+  candles means UNKNOWN: recorded, never taken as organic, and not blocking on its own. Every
+  report stores the launch metrics (`report.launch`), so the thresholds can be measured against
+  outcomes and tightened.
+- **The watch list is bounded.** A watched coin is re-checked at most
+  `NORTHSTAR_WATCHLIST_MAX_RECHECKS` (12) times, about 2 hours, then leaves the list (STALE). A
+  surge or a new listing brings it back. A watched coin that dumps meanwhile is rejected at its
+  next look by the launch-shape check.
+- **Not verified against history.** The stored database has no launch candles, so these
+  thresholds come from the chart shapes, not from measured outcomes. They are set wide to catch
+  only the obvious cases.
+
 ## 2.5.6 — 2026-10-22 — the brain learns clean runners; no learning posts
 
 Operator request: better learning, and no "learned something" posts in Discord.

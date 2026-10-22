@@ -90,6 +90,12 @@ class Settings(BaseSettings):
     rejected_recheck_seconds: int = 3600  # only re-researched if market data changed
     # v2.5.5 (operator rule): a rejected coin is re-checked only when it has good numbers, a good
     # narrative and no high holder concentration (tracking_policy.py), and at most this many times
+    # v2.5.7 launch shape (analysis/launch.py): reject (and stop watching) coins whose start was an
+    # instant jump, a few giant coordinated buys, or that have already been dumped
+    launch_check_enabled: bool = True
+    launch_max_first_jump_x: float = 6.0    # price multiple reached in the first 2 trading minutes
+    launch_max_drawdown_x: float = 0.35     # price at or under this share of its high since launch = dumped
+    watchlist_max_rechecks: int = 12        # a watched coin is re-checked at most this many times
     rejected_max_rechecks: int = 6
     second_chance_min_liquidity_usd: float = 35_000.0  # "strong liquidity" for a re-check (rug rate fell above ~$33K on 21 Oct paths)
     insufficient_max_rechecks: int = 8      # missing data is retried, but not forever
