@@ -365,7 +365,9 @@ class Engine:
         now = time.time()
         if now - getattr(self, "_learning_pruned", 0) > 6 * 3600:
             self._learning_pruned = now
-            removed = await asyncio.to_thread(self.learning.prune, self.db, now)
+            # learning rows are kept as long as the learner and the brain read them (v2.5.5; was 45 days)
+            keep = max(float(self.s.learning_days), float(self.s.brain_days), 7.0)
+            removed = await asyncio.to_thread(self.learning.prune, self.db, now, keep)
             if any(removed.values()):
                 log.info("learning: removed old learning rows %s", removed)
         n = await self.learning.evaluate_due(self.db, self.p.coingecko, limit=20)

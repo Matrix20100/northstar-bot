@@ -142,3 +142,23 @@ def test_never_researched_coins_expire_and_new_information_brings_them_back(db):
     c = db.get_candidate(old)
     assert c["state"] == "DISCOVERED" and c["next_research_at"] is not None
     assert db.expire_discovered(0, now) == 0
+
+
+def test_finished_unfollowed_coins_are_forgotten_and_followed_ones_kept(db):
+    now = time.time()
+    old = now - 10 * 86400
+    keep_alert, keep_open, keep_recheck, forget_stale, forget_rej, recent = (addr(n) for n in
+        ("alert", "open", "recheck", "stale", "rej", "recent"))
+    for m in (keep_alert, keep_open, keep_recheck, forget_stale, forget_rej, recent):
+        db.upsert_discovery(m, "dexscreener_profile", 1.0, payload={"m": m})
+    db.execute("UPDATE candidates SET state='REJECTED', next_research_at=NULL, updated_at=?", (old,))
+    db.execute("UPDATE candidates SET state='STALE' WHERE mint=?", (forget_stale,))
+    db.execute("UPDATE candidates SET next_research_at=? WHERE mint=?", (now + 60, keep_recheck))
+    db.execute("UPDATE candidates SET updated_at=? WHERE mint=?", (now, recent))
+    db.execute("INSERT INTO alerts(mint, status, state, created_at) VALUES (?,?,?,?)", (keep_alert, "SENT", "OPEN", old))
+    db.execute("INSERT INTO decision_tracking(snapshot_id, mint, action, decided_at, done) VALUES (1,?,?,?,0)",
+               (keep_open, "REJECT", now))
+    assert db.prune_candidates(7, now) == 2
+    left = {r["mint"] for r in db.fetchall("SELECT mint FROM candidates")}
+    assert left == {keep_alert, keep_open, keep_recheck, recent}
+    assert db.prune_candidates(0, now) == 0

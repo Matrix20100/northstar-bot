@@ -679,6 +679,23 @@ class Database:
                 "WHERE state = 'DISCOVERED' AND research_count = 0 AND discovered_at < ?",
                 (time.time(), cutoff)).rowcount
 
+    def prune_candidates(self, days: float, now: Optional[float] = None) -> int:
+        """Forget finished coins nobody follows any more (v2.5.5).
+
+        Only STALE coins and REJECTED / INSUFFICIENT_DATA coins with no re-check scheduled, last
+        touched more than `days` ago, with no callout, early signal or open price tracking. If such
+        a coin shows up again it is simply discovered as new.
+        """
+        if not days or days <= 0:
+            return 0
+        cutoff = (now or time.time()) - days * 86400
+        with self._lock:
+            return self._conn.execute(
+                "DELETE FROM candidates WHERE state IN ('STALE', 'REJECTED', 'INSUFFICIENT_DATA') "
+                "AND next_research_at IS NULL AND updated_at < ? "
+                "AND mint NOT IN (SELECT mint FROM alerts) AND mint NOT IN (SELECT mint FROM early_signals) "
+                "AND mint NOT IN (SELECT mint FROM decision_tracking WHERE done = 0)", (cutoff,)).rowcount
+
     def recover_after_restart(self) -> int:
         """Re-queue candidates left RESEARCHING after a crash."""
         with self._lock:

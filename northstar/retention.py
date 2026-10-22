@@ -199,6 +199,7 @@ def maintain(db, s: Any, now: Optional[float] = None) -> dict:
                                              getattr(s, "snapshot_retention_days", 7.0), now,
                                              curve_retention_hours=getattr(s, "curve_retention_hours", 6.0))),
         ("discovered_expired", lambda: db.expire_discovered(getattr(s, "discovered_max_age_hours", 6.0), now)),
+        ("candidates_forgotten", lambda: db.prune_candidates(getattr(s, "candidate_retention_days", 7.0), now)),
         ("snapshots_compacted", lambda: sum(
             compact_snapshots(db, getattr(s, "snapshot_compact_hours", 24.0), now) for _ in range(5))),
     ):
@@ -259,6 +260,37 @@ def vacuum(path: str, lock_path: Optional[str] = None) -> dict:
     finally:
         if lock_path:
             lk.release()
+
+
+def free_share(path: str) -> tuple[float, int]:
+    """(share of the file that is free pages, free bytes). Read-only."""
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        page = con.execute("PRAGMA page_size").fetchone()[0]
+        total = con.execute("PRAGMA page_count").fetchone()[0] or 1
+        free = con.execute("PRAGMA freelist_count").fetchone()[0]
+    finally:
+        con.close()
+    return free / total, free * page
+
+
+def vacuum_on_start(path: str, min_share: float = 0.2, min_bytes: int = 50_000_000) -> Optional[dict]:
+    """Shrink the file at startup when the retention pass has freed a lot of space.
+
+    Called by `python main.py run` after it holds the instance lock and BEFORE the database is
+    opened for the bot, so nothing else is using it. Skipped (None) when there is little to gain,
+    the file does not exist yet, or there is not enough free disk; never raises.
+    """
+    try:
+        if not os.path.exists(path):
+            return None
+        share, free = free_share(path)
+        if share < min_share or free < min_bytes:
+            return None
+        return _vacuum(path)
+    except Exception as e:  # noqa: BLE001 - a failed shrink must never stop the bot starting
+        log.warning("startup VACUUM skipped: %s", e)
+        return None
 
 
 def _vacuum(path: str) -> dict:

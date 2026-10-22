@@ -93,6 +93,8 @@ class Settings(BaseSettings):
     rejected_max_rechecks: int = 6
     insufficient_max_rechecks: int = 8      # missing data is retried, but not forever
     reject_tracking_sample_pct: float = 10.0  # % of other rejections still price-tracked 24 h (learning)
+    candidate_retention_days: float = 7.0   # finished, unfollowed coins are forgotten after this; 0 = keep
+    db_vacuum_on_start: bool = False        # shrink the file at startup when 20%+ (50 MB+) is free; needs free disk about the size of the data (off: hosting disk limits)
     discovered_max_age_hours: float = 6.0   # never-researched coins drop off the list after this; 0 = keep
     max_queue_size: int = 500
     new_token_initial_delay_seconds: int = 20  # early-stage check; missing data is rechecked
@@ -353,7 +355,8 @@ class Settings(BaseSettings):
     def _rechecks(cls, v: int) -> int:
         return max(0, int(v))
 
-    @field_validator("curve_retention_hours", "snapshot_compact_hours", "discovered_max_age_hours")
+    @field_validator("curve_retention_hours", "snapshot_compact_hours", "discovered_max_age_hours",
+                     "candidate_retention_days")
     @classmethod
     def _retention_hours(cls, v: float) -> float:
         # a negative age means "off", never "delete everything"

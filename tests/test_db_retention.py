@@ -437,3 +437,22 @@ def test_vacuum_refuses_without_enough_free_disk(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="not enough free disk"):
         RT.vacuum(str(tmp_path / "v.db"))
     assert (tmp_path / "v.db").read_bytes() == before
+
+
+def test_startup_vacuum_only_when_worth_it_and_never_raises(tmp_path):
+    from northstar.db import Database
+    p = tmp_path / "s.db"
+    assert RT.vacuum_on_start(str(tmp_path / "missing.db")) is None
+    d = Database(p)
+    d.open()
+    for i in range(4000):
+        d.execute("INSERT INTO curve_snapshots(mint, ts, signature, payload) VALUES (?,?,?,?)",
+                  ("m", 1.0, f"s{i}", "x" * 900))
+    d.execute("DELETE FROM curve_snapshots")
+    d.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    d.close()
+    assert RT.vacuum_on_start(str(p), min_share=0.2, min_bytes=10 ** 12) is None, "too little to gain"
+    r = RT.vacuum_on_start(str(p), min_share=0.2, min_bytes=1)
+    assert r and r["after_bytes"] < r["before_bytes"]
+    assert RT.vacuum_on_start(str(p), min_share=0.2, min_bytes=1) is None, "nothing left to free"
+    assert Settings(_env_file=None).db_vacuum_on_start is False

@@ -31,6 +31,15 @@ changed. Live callouts are not changed.**
   (`NORTHSTAR_REJECT_TRACKING_SAMPLE_PCT`). On the backup's last 24 h that is 723 of 7,766
   rejections instead of all of them. The sample is fixed by mint (a coin is always in or always
   out), so the audit and the learning brain still measure false rejections, on less data.
+- **Size bounds.**
+  - Finished coins nobody follows are forgotten after `NORTHSTAR_CANDIDATE_RETENTION_DAYS` (7).
+    Those are stale coins, and rejected or insufficient-data coins with no re-check scheduled.
+    Coins with a callout, an early signal or open price tracking are always kept.
+  - Learning rows are kept only as long as the learner and the brain read them (21 days instead
+    of 45).
+  - `NORTHSTAR_DB_VACUUM_ON_START` (off by default) shrinks the file at startup once 20% of it
+    is free space. It needs free disk about the size of the remaining data, so on a host with a
+    tight disk limit, shrink a downloaded copy instead (docs/DATABASE.md).
 - **Shadow testing of two safer call profiles**, with no live change:
   - `deep_liquidity`: a call needs $100K+ of liquidity;
   - `deep_liquidity,pool_age_1h`: it also needs a pool that survived its first hour.

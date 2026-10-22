@@ -38,6 +38,15 @@ async def _run(s: Settings) -> int:
     except RuntimeError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
+    if getattr(s, "db_vacuum_on_start", False):
+        # v2.5.5: give space freed by the retention pass back to the disk, once, before the bot
+        # opens the database (we hold the instance lock, so nothing else is using it)
+        from . import retention as RT
+        path = str(Path(s.data_dir) / s.db_filename)
+        r = RT.vacuum_on_start(path)
+        if r:
+            print(f"[northstar] database shrunk: {r['before_bytes'] / 1e6:,.0f} MB -> "
+                  f"{r['after_bytes'] / 1e6:,.0f} MB", flush=True)
     db = _db(s)
     try:
         from .dashboard import attach, start_dashboard
