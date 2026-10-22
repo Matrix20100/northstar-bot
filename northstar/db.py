@@ -374,6 +374,10 @@ class Database:
         )
 
         self._conn.row_factory = sqlite3.Row
+        if not self._conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone():
+            # a brand-new database: let the retention pass give freed space back to the disk
+            # (auto_vacuum can only be chosen before the first table, or by a full VACUUM)
+            self._conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")

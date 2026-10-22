@@ -456,3 +456,129 @@ def test_startup_vacuum_only_when_worth_it_and_never_raises(tmp_path):
     assert r and r["after_bytes"] < r["before_bytes"]
     assert RT.vacuum_on_start(str(p), min_share=0.2, min_bytes=1) is None, "nothing left to free"
     assert Settings(_env_file=None).db_vacuum_on_start is False
+
+
+# ------------------------------------------------------------------ v2.5.5: automatic size control
+def _full_report():
+    from test_unified_engine import report as clean_report
+    from northstar.analysis import unified as U
+    r = clean_report()
+    r["holders"]["holders"] = [{"owner": addr(f"h{i}"), "pct": 1.0 + i} for i in range(20)]
+    r["trades"]["sample"] = [{"sig": f"s{i}", "usd": 10.0 * i} for i in range(30)]
+    r["clusters"]["bubbles"] = [{"id": i, "pct": 0.5} for i in range(15)]
+    r["pre_migration_rpc_diagnostics"] = {"calls": list(range(50))}
+    r["unified"] = U.evaluate(r, Settings(_env_file=None))
+    return r
+
+
+def test_old_analysis_reports_shrink_without_changing_what_learning_reads():
+    from northstar import brain as B
+    from northstar import learning as L
+    from northstar.analysis.verdict import assess
+    r = _full_report()
+    slim = RT.compact_analysis_report(json.loads(json.dumps(r)))
+    assert slim["compacted"] == 2 and len(json.dumps(slim)) < len(json.dumps(r))
+    assert "checks" not in slim["unified"] and "holders" not in slim["holders"] and "sample" not in slim["trades"]
+    assert slim["clusters"] == r["clusters"], "the bubble map feeds the brain: kept whole"
+    assert slim.get("reasons") == r.get("reasons") and slim["gates"] == r["gates"]
+    assert slim["unified"]["decision"] == r["unified"]["decision"] and slim["unified"]["vetoes"] == r["unified"]["vetoes"]
+    assert B.vector(slim, 1.0) == B.vector(r, 1.0)
+    assert assess(slim)["red"] == assess(r)["red"] and assess(slim)["level"] == assess(r)["level"]
+    assert L.features_from(slim, None, None) == L.features_from(r, None, None)
+    assert RT.compact_analysis_report(slim) is None, "idempotent"
+
+
+def test_repeated_snapshots_are_thinned_but_history_and_references_survive(db):
+    from northstar import learning as L
+    L.init_schema(db)
+    now = time.time()
+    old = now - 3 * 86400
+    m = addr("rep")
+    rej = {"reasons": ["REJECT — score 30/100"], "final": {"reason_class": "WEAK_OPPORTUNITY"}}
+    watch = {"reasons": ["WATCH — score 55/100"], "final": {"reason_class": "BELOW_CALL_LINE"}}
+    ids = [_snap(db, m, old + i * 60, rep, action=a) for i, (rep, a) in enumerate(
+        [(rej, "REJECT"), (rej, "REJECT"), (rej, "REJECT"), (watch, "WATCHLIST"), (watch, "WATCHLIST"),
+         (rej, "REJECT"), (rej, "REJECT"), (rej, "REJECT")])]
+    db.execute("INSERT INTO decision_tracking(snapshot_id, mint, action, decided_at) VALUES (?,?,?,?)",
+               (ids[2], m, "REJECT", old))                                    # tracked: kept
+    db.execute("INSERT INTO shadow_calls(mint, ts, features) VALUES (?,?,'{}')", (m, old + 5 * 60 + 5))  # pairs with ids[6]
+    removed = RT.thin_repeated_snapshots(db, 24, now)
+    left = [r["id"] for r in db.fetchall("SELECT id FROM research_snapshots ORDER BY id")]
+    assert left == [ids[0], ids[2], ids[3], ids[5], ids[6], ids[7]] and removed == 2
+    assert RT.thin_repeated_snapshots(db, 24, now) == 0
+    fresh = _snap(db, m, now - 60, rej)                                       # a newer, recent repeat
+    assert RT.thin_repeated_snapshots(db, 24, now) == 1, "the old repeat is no longer the latest"
+    left = [r["id"] for r in db.fetchall("SELECT id FROM research_snapshots ORDER BY id")]
+    assert fresh in left and ids[7] not in left, "recent snapshots are never thinned"
+
+
+def test_callout_price_history_keeps_peaks_lows_and_event_order(db):
+    now = time.time()
+    t0 = now - 3 * 86400
+    aid = db.execute("INSERT INTO alerts(mint, status, state, created_at, entry_price) VALUES (?,?,?,?,1.0)",
+                     (addr("call"), "SENT", "CLOSED", t0))
+    prices = [1.0 + 0.01 * (i % 7) for i in range(300)]
+    prices[40], prices[120], prices[200] = 2.4, 0.55, 0.2                # 2x first, then 0.6x, then 0.3x
+    for i, pr in enumerate(prices):
+        db.execute("INSERT INTO price_history(alert_id, ts, price, status) VALUES (?,?,?,?)",
+                   (aid, t0 + i * 10, pr, "OK"))
+    recent = [db.execute("INSERT INTO price_history(alert_id, ts, price, status) VALUES (?,?,?,?)",
+                         (aid, now - 600 + i, 1.1, "OK")) for i in range(30)]
+    removed = RT.downsample_price_history(db, 24, 5, now)
+    rows = db.fetchall("SELECT ts, price FROM price_history WHERE alert_id=? ORDER BY ts", (aid,))
+    assert removed > 200 and len(rows) < 80
+    seq = [r["price"] for r in rows]
+    assert max(seq) == 2.4 and min(seq) == 0.2
+    assert seq.index(2.4) < seq.index(0.55) < seq.index(0.2), "order of 2x, 0.6x and 0.3x kept"
+    assert len([r for r in rows if r["ts"] >= now - 600]) == 30, "the last 24 h keep every update"
+    assert RT.downsample_price_history(db, 24, 5, now) == 0, "idempotent"
+    assert RT.downsample_price_history(db, 0, 5, now) == 0
+
+
+def test_market_snapshots_keep_the_day_research_reads(db):
+    now = time.time()
+    for age_h in (1, 20, 30, 100):
+        db.execute("INSERT INTO market_snapshots(mint, ts, price_usd) VALUES ('m', ?, 1.0)", (now - age_h * 3600,))
+    assert RT.prune_market_snapshots(db, 10, now) == 2, "never under 25 h, whatever the setting"
+    assert RT.prune_market_snapshots(db, 48, now) == 0
+    assert len(db.market_history("m", now - 24 * 3600)) == 2
+
+
+def test_space_goes_back_to_the_disk_automatically(tmp_path):
+    from northstar.db import Database
+    p = tmp_path / "auto.db"
+    d = Database(p)
+    d.open()
+    assert d.fetchone("PRAGMA auto_vacuum")["auto_vacuum"] == 2, "new databases can shrink themselves"
+    for i in range(3000):
+        d.execute("INSERT INTO curve_snapshots(mint, ts, signature, payload) VALUES (?,?,?,?)",
+                  ("m", 1.0, f"s{i}", "x" * 900))
+    d.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    big = p.stat().st_size
+    res = RT.maintain(d, Settings(_env_file=None))
+    d.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    assert res["curve_events_removed"] == 3000 and res.get("pages_returned_to_disk", 0) > 0
+    assert p.stat().st_size < big / 2
+    d.close()
+
+
+def test_an_old_database_switches_to_automatic_shrinking_after_one_vacuum(tmp_path):
+    import sqlite3
+    from northstar.db import Database
+    p = tmp_path / "old.db"
+    c = sqlite3.connect(p)
+    c.execute("CREATE TABLE alerts (id INTEGER PRIMARY KEY, mint TEXT, status TEXT, state TEXT, created_at REAL)")
+    c.execute("INSERT INTO alerts(mint, status, state, created_at) VALUES ('kept', 'SENT', 'OPEN', 1)")
+    c.commit()
+    c.close()
+    d = Database(p)
+    d.open()
+    assert d.fetchone("PRAGMA auto_vacuum")["auto_vacuum"] == 0
+    assert RT.incremental_vacuum(d) == 0, "nothing to do before the switch"
+    d.close()
+    RT.vacuum(str(p))
+    d = Database(p)
+    d.open()
+    assert d.fetchone("PRAGMA auto_vacuum")["auto_vacuum"] == 2
+    assert d.fetchone("SELECT mint FROM alerts")["mint"] == "kept", "existing records survive"
+    d.close()

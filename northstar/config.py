@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     insufficient_max_rechecks: int = 8      # missing data is retried, but not forever
     reject_tracking_sample_pct: float = 10.0  # % of other rejections still price-tracked 24 h (learning)
     candidate_retention_days: float = 7.0   # finished, unfollowed coins are forgotten after this; 0 = keep
+    price_history_detail_hours: float = 24.0   # every price update of a callout is kept this long ...
+    price_history_bucket_minutes: float = 5.0  # ... then only the high and low of each bucket; 0 = keep all
+    market_snapshot_retention_hours: float = 48.0  # read for the last 24 h only (minimum 25)
+    db_auto_shrink: bool = True             # give freed pages back to the disk each retention pass
     db_vacuum_on_start: bool = False        # shrink the file at startup when 20%+ (50 MB+) is free; needs free disk about the size of the data (off: hosting disk limits)
     discovered_max_age_hours: float = 6.0   # never-researched coins drop off the list after this; 0 = keep
     max_queue_size: int = 500
@@ -357,7 +361,8 @@ class Settings(BaseSettings):
         return max(0, int(v))
 
     @field_validator("curve_retention_hours", "snapshot_compact_hours", "discovered_max_age_hours",
-                     "candidate_retention_days")
+                     "candidate_retention_days", "price_history_detail_hours", "price_history_bucket_minutes",
+                     "market_snapshot_retention_hours")
     @classmethod
     def _retention_hours(cls, v: float) -> float:
         # a negative age means "off", never "delete everything"

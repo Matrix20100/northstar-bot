@@ -40,6 +40,16 @@ changed. Live callouts are not changed.**
   - `NORTHSTAR_DB_VACUUM_ON_START` (off by default) shrinks the file at startup once 20% of it
     is free space. It needs free disk about the size of the remaining data, so on a host with a
     tight disk limit, shrink a downloaded copy instead (docs/DATABASE.md).
+- **Automatic size control**, in the hourly retention pass (docs/DATABASE.md):
+  - analysed research reports lose bulky detail after 24 h;
+  - snapshots that only repeat a coin's previous decision are removed;
+  - callout price updates are thinned to the 5-minute high and low after 24 h;
+  - market snapshots are kept 48 h;
+  - freed space goes back to the disk on its own (incremental auto-vacuum, switched on by one
+    full VACUUM or for new databases).
+
+  On the 22 Oct database (514 MB): 236 MB, with callouts, tracking, outcomes, learning shadows,
+  brain training rows, `audit` output and every callout's peak, low and event order unchanged.
 - **Shadow testing of call profiles chosen from the stored price paths** (no live change):
   - `pool_age_5m`;
   - `liquidity_50k,pool_age_5m`;

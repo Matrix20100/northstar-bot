@@ -21,6 +21,31 @@ The pass never deletes these:
 Deleted rows free space *inside* the file, and SQLite reuses it, so the file stops growing.
 The file itself only gets smaller after a VACUUM.
 
+## Automatic size control (v2.5.5)
+
+The hourly retention pass now also does these:
+
+| What | When | What is kept |
+|---|---|---|
+| Analysed research reports lose bulky detail (per-holder lists, trade samples, the engine's per-check list, explanation text) | after `NORTHSTAR_SNAPSHOT_COMPACT_HOURS` (24) | every number, reason, gate, veto, category score and verdict; the exit check and bubble map whole. Brain inputs, rug-verdict flags, learning features and `audit` output were identical on the 22 Oct database |
+| Snapshots that only repeat the coin's previous decision are deleted | same | the first snapshot of each run of identical decisions, every change, the latest, and every snapshot an alert, price tracking, an outcome, a shadow test or a learning shadow points to |
+| Callout price updates are thinned | after `NORTHSTAR_PRICE_HISTORY_DETAIL_HOURS` (24) | the high and low of every 5-minute bucket, plus the first and last update: peaks, drawdowns and the order of 2x / 0.6x / 0.3x stay readable |
+| Market snapshots are deleted | after `NORTHSTAR_MARKET_SNAPSHOT_RETENTION_HOURS` (48, never under 25) | research reads only the last 24 h |
+| Free space goes back to the disk | every pass (`NORTHSTAR_DB_AUTO_SHRINK`) | nothing deleted; no temporary copy is needed |
+
+**Automatic shrinking needs a one-time switch.** SQLite can return space to the disk only when the
+database uses incremental auto-vacuum, which a database can only be switched to by one full
+VACUUM. New databases start with it on. An existing database needs one of these:
+`python main.py db --apply --vacuum` with the bot stopped, or a shrunk copy (see below). After
+that the file shrinks on its own every hour, without a temporary copy and without stopping the bot.
+
+**On the 22 Oct database (514 MB):**
+- one pass, then the one-time VACUUM, gives 236 MB;
+- callouts, price tracking, outcomes, learning shadows, the brain's training rows and the
+  `audit` output are unchanged;
+- each callout's peak, low and the order of its 2x / 0.6x / 0.3x / 1.3x / 1.5x moves are
+  unchanged, at 5-minute resolution.
+
 ## Before deploying: back up
 
 1. Stop the server on Wispbyte. If it's running, recent writes may still sit in the `-wal` file.
