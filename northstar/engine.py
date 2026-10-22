@@ -241,6 +241,8 @@ class Engine:
                  asyncio.create_task(self._loop("free-channel-delivery", 15, self.alerts.publish_due_free_posts)),
                  asyncio.create_task(self._loop("heartbeat", 300, self._heartbeat)),
                  asyncio.create_task(self._loop("db-retention", 3600, self._prune))]
+        if getattr(self.s, "paper_enabled", True):
+            tasks.append(asyncio.create_task(self._loop("paper-trader", 15, self._paper)))
         if self.radar:
             tasks.append(asyncio.create_task(self._loop("surge-radar", self.s.radar_interval_seconds, self._radar)))
         if self.s.early_call_enabled:
@@ -250,7 +252,7 @@ class Engine:
             if self.curve_radar is not None:
                 tasks.append(asyncio.create_task(self._loop("curve-radar", self.s.curve_radar_seconds,
                                                             self._curve_radar)))
-            if not self.judge.enabled:
+            if not self.judge.enabled and not getattr(self.s, "runner_calls_enabled", True):
                 log.warning("early narrative calls need NORTHSTAR_ANTHROPIC_API_KEY (Claude) - AI judge is off")
         if self.s.learning_enabled:
             tasks.append(asyncio.create_task(self._loop("learning-sync", 60, self._learning_sync)))
@@ -743,6 +745,7 @@ class Engine:
         brain_p = self._apply_brain(out)
         await self._apply_ai_narrative(out)
         self._finalize(out)
+        self._brain_paper(out)
         # candidate state must carry the FINAL values, not the pre-brain/AI ones
         common.update(last_action=out.action.value, last_score=out.score, last_risk=out.risk.value,
                       last_confidence=out.confidence.value, reasons=out.reasons[:20])
@@ -961,6 +964,33 @@ class Engine:
         counts = await self.early_calls.run_once()
         if counts["open"]:
             log.info("early-call tracker: %s", counts)
+
+    def _brain_trader(self):
+        if getattr(self, "brain_paper", None) is None:
+            from .paper import BrainTrader
+            self.brain_paper = BrainTrader(self.s, self.db, getattr(self.p, "dex", None))
+        return self.brain_paper
+
+    def _brain_paper(self, out) -> None:
+        """The learning brain's own paper account: it buys the coins it rates highly (never posts)."""
+        try:
+            res = self._brain_trader().consider(out)
+            if res == "bought":
+                b = out.report.get("brain") or {}
+                log.info("paper[brain]: bought %s at %.0f%% runner odds", out.mint, 100 * (b.get("p") or 0))
+        except Exception:  # noqa: BLE001 - paper trading must never break research
+            log.debug("brain paper trade failed for %s", out.mint, exc_info=True)
+
+    async def _paper(self) -> None:
+        from .paper import PaperTrader
+        if getattr(self, "paper", None) is None:
+            self.paper = PaperTrader(self.s, self.db)
+        counts = self.paper.run_once()
+        if counts["opened"] or counts["closed"]:
+            log.info("paper trader (calls): %s", counts)
+        b = await self._brain_trader().run_once()
+        if b["closed"]:
+            log.info("paper trader (brain): %s", b)
 
     async def _track_early_watch(self) -> None:
         counts = await self.early_tracker.run_once()

@@ -3,6 +3,55 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 3.2.0 — 2026-10-22 — the learning brain paper trades its own picks
+
+Operator request: let the AI learner paper trade.
+
+- **Brain paper account (`paper.py` BrainTrader).** This is a second account, separate from the
+  calls account, with its own starting amount. Simulated only.
+  - Every coin researched with a DEX pool gets the runner brain's odds and the rug brain's odds.
+  - The brain buys when the runner odds are 15%+ (`NORTHSTAR_PAPER_BRAIN_MIN_P`; the base rate is
+    about 5%) and the rug odds are under 30% (`NORTHSTAR_PAPER_BRAIN_MAX_RUG`). It buys at the
+    pool's market cap at that moment.
+  - One position per coin per run, at most 10 open (`NORTHSTAR_PAPER_BRAIN_MAX_OPEN`).
+  - Positions follow the standard trade plan (TP1, TP2, stop, time stop, trailing stop) on
+    DexScreener prices checked every 15 seconds. Anything still open after 24 h
+    (`NORTHSTAR_PAPER_BRAIN_HOLD_HOURS`) is sold at the last price seen.
+  - It never posts anything and has no effect on real calls. It shows whether the brain's picks
+    make money before the brain gets a say.
+- **Paper tab:** a switch between "Bot's calls" and "Brain's picks". Each account has its own
+  starting amount and "Start new run". Brain trades show the odds they were bought at.
+- **`/paper`** shows both accounts.
+- Tests: brain account in `tests/test_paper.py`.
+
+## 3.1.0 — 2026-10-22 — paper trading on every call
+
+Operator request: paper trade every callout, with an editable starting amount.
+
+- **Paper trader (`paper.py`, tables `paper_runs` and `paper_trades`).** Simulated only; nothing signs
+  or sends a transaction. It follows every call posted after the run started: runner calls, VIP
+  calls, rug scalps and manual calls.
+  - Each call buys with a share of the cash left (default 10%), at the call's entry market cap.
+  - It sells exactly when the bot posts a plan event:
+    - TP1 and TP2 sell the plan's share;
+    - trailing stop, stop loss, time stop and exit-now sell the rest.
+
+    Each sell uses the market cap the bot tracked at that moment.
+  - Whatever is left when tracking ends (window over, rugged, message deleted, untracked) is sold
+    at the last market cap seen.
+  - A fee and slippage charge (default 1%) is applied on every buy and every sell. It is an
+    assumption, not a measured value.
+- **Dashboard Paper tab:**
+  - balance, profit/loss, cash, open positions, closed trades;
+  - every trade with its sells and P&L;
+  - a form to set the **starting amount**, size per call and fee. "Start new run" resets the balance
+    to the new amount and keeps earlier runs in history.
+- **`/paper` slash command** in Discord: the same account summary.
+- Settings: `NORTHSTAR_PAPER_ENABLED`, `NORTHSTAR_PAPER_START_USD`, `NORTHSTAR_PAPER_POSITION_PCT`,
+  `NORTHSTAR_PAPER_FEE_PCT` (the first run's values; the dashboard changes them after that).
+- The startup warning about the missing AI key now only appears when runner calls are off.
+- Tests: `tests/test_paper.py`.
+
 ## 3.0.0 — 2026-10-22 — runner calls, attention score, compact calls, free = proven wins
 
 Operator report: "Nothing is even being called out." Two causes, both in the code:

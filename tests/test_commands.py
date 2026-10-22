@@ -146,7 +146,7 @@ async def test_every_db_command_acknowledges_before_opening_the_database(cmds, d
         seen.append(it.log[:])
         return real()
     monkeypatch.setattr(cmds, "db", spy)
-    for name in ("scan", "calls", "watchlist", "performance", "northstar_status", "northstar_diagnostics",
+    for name in ("scan", "calls", "watchlist", "performance", "paper", "northstar_status", "northstar_diagnostics",
                  "northstar_scan"):
         it = FakeInteraction()
         await cmds.tree.commands[name].callback(it)

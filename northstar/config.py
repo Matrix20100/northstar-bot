@@ -345,6 +345,18 @@ class Settings(BaseSettings):
     kol_refresh_seconds: float = 120.0
     kol_memory_hours: float = 6.0
     attention_crypto_news: bool = True
+    # v3.1.0 paper trading (paper.py): a simulated account follows every call's plan. These are the
+    # first run's values; the dashboard's Paper tab changes them (a new amount starts a new run).
+    paper_enabled: bool = True
+    paper_start_usd: float = 1000.0
+    paper_position_pct: float = 10.0       # share of the cash left put into each call
+    paper_fee_pct: float = 1.0             # per buy and per sell: fees + slippage (an assumption)
+    # v3.2.0 brain paper account: the learning brain trades its own picks (its own run and amount)
+    paper_brain_enabled: bool = True
+    paper_brain_min_p: float = 0.15        # runner odds needed to buy (the base rate is about 5%)
+    paper_brain_max_rug: float = 0.3       # skip coins whose rug odds are at least this
+    paper_brain_max_open: int = 10
+    paper_brain_hold_hours: float = 24.0
     early_call_min_mc: float = 30_000
     early_call_max_mc: float = 50_000
     early_call_min_ai_score: int = 70

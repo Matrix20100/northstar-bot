@@ -57,7 +57,7 @@ tr.click{cursor:pointer}tr.click:hover{background:#ffffff06}
 .sigbar{position:relative;height:10px;background:#1a1f2b;border-radius:5px}.sigbar i{position:absolute;top:0;height:100%;border-radius:5px}
 .sigbar:after{content:"";position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:#3a4252}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:12.5px}.kv dt{color:var(--muted)}.kv dd{margin:0}
-input[type=search],input[type=password]{background:#0c0f15;border:1px solid #2b313d;color:var(--text);padding:8px 11px;border-radius:9px;font:inherit;width:100%}
+input[type=search],input[type=password],input[type=number]{background:#0c0f15;border:1px solid #2b313d;color:var(--text);padding:8px 11px;border-radius:9px;font:inherit;width:100%}
 .setgroup{margin-bottom:12px}.setgroup summary{cursor:pointer;font-weight:700;padding:8px 2px;color:#dfe4ec}
 .src-learned{color:var(--violet)}.src-env{color:var(--blue)}.src-default{color:var(--muted)}
 .test{display:grid;grid-template-columns:22px minmax(0,200px) 1fr auto;gap:10px;padding:9px 4px;border-bottom:1px solid #1d212a;font-size:13px;align-items:start}
@@ -112,7 +112,7 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
   </form>
   <nav class="tabs" id="tabs">
     <button data-tab="overview" class="on">Overview</button><button data-tab="pulse">Pulse</button><button data-tab="watching">Watching</button>
-    <button data-tab="calls">Calls</button><button data-tab="learning">Learning</button>
+    <button data-tab="calls">Calls</button><button data-tab="paper">Paper</button><button data-tab="learning">Learning</button>
     <button data-tab="settings">Settings</button><button data-tab="selftest">Self-test</button>
   </nav>
 
@@ -165,6 +165,26 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
   <section data-view="calls" class="hide">
     <div class="card"><h2>Calls <span>VIP calls and rug scalps · updates live</span></h2>
       <div class="tablewrap"><table><thead><tr><th>Coin</th><th>Type</th><th>Called at</th><th>Now</th><th>Peak</th><th>Low</th><th>Plan events</th><th>Status</th><th>Called</th></tr></thead><tbody id="calls"></tbody></table></div></div>
+  </section>
+
+  <section data-view="paper" class="hide">
+    <div class="card" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button class="btn primary" data-acct="calls">📣 Bot's calls</button><button class="btn" data-acct="brain">🧠 Brain's picks</button>
+      <span class="sub" id="paperAcctNote"></span></div>
+    <div class="grid g4" style="margin-bottom:14px" id="paperMetrics"></div>
+    <div class="grid g2" style="margin-bottom:14px">
+      <div class="card"><h2>Paper account <span id="paperSub">follows every call's plan · no real trades</span></h2>
+        <form id="paperForm" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+          <label class="muted" style="display:grid;gap:4px;font-size:11px">STARTING AMOUNT ($)<input id="paperStart" type="number" min="1" step="any" required style="width:150px"></label>
+          <label class="muted" style="display:grid;gap:4px;font-size:11px">PER CALL (% OF CASH)<input id="paperPos" type="number" min="0.1" max="100" step="any" required style="width:120px"></label>
+          <label class="muted" style="display:grid;gap:4px;font-size:11px">FEE + SLIPPAGE PER SIDE (%)<input id="paperFee" type="number" min="0" max="20" step="any" required style="width:120px"></label>
+          <button class="btn primary" type="submit">Start new run</button><span id="paperMsg" class="sub"></span>
+        </form>
+        <p class="sub" style="margin:10px 0 0" id="paperHelp">Starting a new run resets the balance to this amount. Earlier runs and their trades are kept below. Each call buys at its entry market cap, then sells exactly when the bot posts TP1, TP2, a stop, a time stop, a trailing stop or an exit-now, at the market cap the bot tracked then. Whatever is left when tracking ends is sold at the last market cap seen.</p></div>
+      <div class="card"><h2>Earlier runs</h2><div class="tablewrap"><table><thead><tr><th>Started</th><th>Start</th><th>End cash</th><th>Trades</th></tr></thead><tbody id="paperRuns"></tbody></table></div></div>
+    </div>
+    <div class="card"><h2>Trades <span>newest first · click a coin for its research</span></h2>
+      <div class="tablewrap"><table><thead><tr><th>Coin</th><th>Call</th><th>Bought at</th><th>Size</th><th>Sells</th><th>Peak</th><th>P&amp;L</th><th>Status</th><th>Opened</th></tr></thead><tbody id="paperTrades"></tbody></table></div></div>
   </section>
 
   <section data-view="learning" class="hide">
@@ -229,7 +249,7 @@ document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>go(b.dataset.
 function go(t){if(!document.querySelector(`[data-view="${t}"]`))t='overview';tab=t;location.hash=t;
  document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
  document.querySelectorAll('[data-view]').forEach(v=>v.classList.toggle('hide',v.dataset.view!==t));refresh()}
-async function refresh(){clearTimeout(timer);try{await status();const f={overview:overview,pulse:pulse,watching:watching,calls:calls,learning:learning,settings:settings,selftest:selftest}[tab];await f();
+async function refresh(){clearTimeout(timer);try{await status();const f={overview:overview,pulse:pulse,watching:watching,calls:calls,paper:paper,learning:learning,settings:settings,selftest:selftest}[tab];await f();
  $('updated').textContent='updated '+new Date().toLocaleTimeString()}catch(e){if(e.message!=='auth')$('updated').textContent='connection problem — retrying'}
  const every=tab==='selftest'&&stRunning?2500:(tab==='settings'?60000:15000);timer=setTimeout(()=>{if(!document.hidden)refresh();else timer=setTimeout(refresh,every)},every)}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!$('app').classList.contains('hide'))refresh()});
@@ -291,6 +311,33 @@ async function calls(){const d=await api('/api/calls');
   return `<tr class="click" data-mint="${esc(c.mint)}"><td>${coin(c.mint,c.symbol,c.name)}</td><td>${c.call_type==='RUG_SCALP'?'<span class="pill bad">☠️ SCALP</span>':'<span class="pill good">VIP</span>'}</td>
   <td class="num">${usd(c.entry_mcap)}</td><td class="num">${usd(c.current_mcap)}<br>${x(nowx)}</td><td class="num">${c.peak_mcap?usd(c.peak_mcap)+'<br>':''}${x(c.max_multiple)}</td><td class="num">${x(c.min_multiple)}</td>
   <td>${ev||'<span class="sub">—</span>'}</td><td>${actPill(c.state||c.status)}</td><td class="sub num">${ago(c.sent_at||c.created_at)}</td></tr>`}).join(''):'<tr><td colspan=9 class="empty">No calls yet</td></tr>'}
+
+let paperFilled=false,paperAcct='calls';
+const ACCT_NOTE={calls:'Follows every call the bot posts, with each call\'s trade plan.',
+ brain:'The learning brain trades its own picks: coins it rates likely to run and unlikely to rug. It never posts anything; this shows whether its picks make money before it gets a say in real calls.'};
+document.querySelectorAll('[data-acct]').forEach(b=>b.onclick=()=>{paperAcct=b.dataset.acct;paperFilled=false;
+ document.querySelectorAll('[data-acct]').forEach(x=>x.classList.toggle('primary',x===b));paper()});
+const signed=v=>v==null||!isFinite(v)?'—':`<span class="${v>=0?'up':'down'}">${v>=0?'+':'−'}$${Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>`;
+const usd2=v=>v==null||!isFinite(v)?'—':(v<0?'−$':'$')+Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const spct=v=>v==null||!isFinite(v)?'':`<span class="${v>=0?'up':'down'}">${v>=0?'+':''}${num(v,1)}%</span>`;
+async function paper(){const d=await api('/api/paper?account='+paperAcct);const run=d.run||d.defaults||{};
+ const bz=d.brain||{};if(paperAcct==='brain')$('paperHelp').textContent='Starting a new run resets the brain\'s balance to this amount. Each pick buys at the pool\'s market cap when the brain rated it, then follows the standard trade plan (TP1, TP2, stop, time stop, trailing stop) on DexScreener prices checked every 15 seconds. Anything still open after the hold time is sold at the last price seen.';else $('paperHelp').textContent='Starting a new run resets the balance to this amount. Earlier runs and their trades are kept below. Each call buys at its entry market cap, then sells exactly when the bot posts TP1, TP2, a stop, a time stop, a trailing stop or an exit-now, at the market cap the bot tracked then. Whatever is left when tracking ends is sold at the last market cap seen.';$('paperAcctNote').textContent=ACCT_NOTE[paperAcct]+(paperAcct==='brain'?` Buys at ${Math.round((bz.min_p||0)*100)}%+ runner odds and under ${Math.round((bz.max_rug||0)*100)}% rug odds · at most ${bz.max_open} open · sold after ${bz.hold_hours} h at the latest.`:'');
+ if(!paperFilled){$('paperStart').value=run.start_usd;$('paperPos').value=run.position_pct;$('paperFee').value=run.fee_pct;paperFilled=true}
+ if(!d.ready){$('paperMetrics').innerHTML='';$('paperSub').textContent='starts with the bot, or press Start new run';$('paperTrades').innerHTML='<tr><td colspan=9 class="empty">No paper run yet</td></tr>';$('paperRuns').innerHTML='';return}
+ $('paperSub').textContent=`run started ${ago(run.started_at)} · ${num(run.position_pct,1)}% per call · ${num(run.fee_pct,2)}% fee per side · no real trades`;
+ const m=(l,v,s)=>`<div class="card metric"><label>${l}</label><strong>${v}</strong><small>${s}</small></div>`;
+ $('paperMetrics').innerHTML=m('Balance',usd2(d.equity),`started with ${usd2(run.start_usd)}`)+m('Profit / loss',signed(d.pnl),spct(d.pnl_pct)+' since the start')
+  +m('Cash',usd2(d.cash),`${num(d.open)} open position${d.open===1?'':'s'} worth ${usd2(d.open_value)}`)
+  +m('Closed trades',num(d.closed),d.closed?`${num(d.wins)} in profit · best ${signed(d.best)} · worst ${signed(d.worst)}`:'none closed yet');
+ $('paperTrades').innerHTML=d.trades.length?d.trades.map(t=>{const sells=(t.fills||[]).filter(f=>f.kind!=='BUY').map(f=>`<span class="pill ${/STOP|DANGER|TIME/.test(f.kind)?'bad':/TP|TRAIL/.test(f.kind)?'good':'dim'}" style="margin:1px" title="${esc(f.sold_pct)}% at ${esc(usd(f.mcap))}">${esc(f.kind==='END'?'END':f.kind)} ${num(f.multiple,2)}x</span>`).join('');
+  return `<tr class="click" data-mint="${esc(t.mint)}"><td>${coin(t.mint,t.symbol)}</td><td><span class="pill ${t.kind==='brain'?'violet':'dim'}">${esc(t.kind||'')}</span>${t.note?`<br><span class="sub">${esc(t.note)}</span>`:''}</td><td class="num">${usd(t.entry_mcap)}</td><td class="num">${t.status==='SKIPPED'?'—':usd(t.cost)}</td>
+  <td>${sells||'<span class="sub">holding</span>'}</td><td class="num">${x(t.peak_x)}</td><td class="num">${t.pnl==null?'—':signed(t.pnl)+'<br>'+spct(t.pnl_pct)}</td>
+  <td>${t.status==='OPEN'?'<span class="pill info">OPEN</span>':t.status==='SKIPPED'?`<span class="pill warn" title="${esc(t.exit)}">SKIPPED</span>`:`<span class="pill dim">${esc(t.exit||'CLOSED')}</span>`}</td><td class="sub num">${ago(t.opened_at)}</td></tr>`}).join(''):'<tr><td colspan=9 class="empty">'+(paperAcct==='brain'?'The brain has not picked a coin since this run started':'No calls since this run started')+'</td></tr>';
+ $('paperRuns').innerHTML=d.past_runs.length?d.past_runs.map(r=>`<tr><td class="sub num">${ago(r.started_at)}</td><td class="num">${usd(r.start_usd)}</td><td class="num">${usd(r.end_cash)}</td><td class="num">${num(r.trades)}</td></tr>`).join(''):'<tr><td colspan=4 class="empty">None</td></tr>'}
+$('paperForm').onsubmit=async e=>{e.preventDefault();$('paperMsg').textContent='';
+ if(!confirm(`Start a new ${paperAcct==='brain'?'brain':'calls'} paper run? The balance resets to the new amount; the current run is kept in history.`))return;
+ const d=await post('/api/paper/start',{account:paperAcct,start_usd:$('paperStart').value,position_pct:$('paperPos').value,fee_pct:$('paperFee').value});
+ $('paperMsg').textContent=d.ok?'New run started':(d.error||'Failed');if(d.ok){paperFilled=false;paper()}};
 
 async function learning(){const d=await api('/api/learning');if(!d.ready){$('brain').innerHTML='<div class="empty">Learning tables not created yet — the bot creates them on start.</div>';return}
  const b=d.brain;$('brainSub').textContent=`learns which coins reach ${d.win_x}x before ${Math.round((d.loss_x-1)*100)}%`;
