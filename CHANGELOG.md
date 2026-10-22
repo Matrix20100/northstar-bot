@@ -3,42 +3,54 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
-## 2.5.4 — 2026-10-22 — database size (not deployed; branch `db-retention`)
+## 2.5.4 — 2026-10-22 — database size and fair outcome tracking
 
-Measured on a copy of the 21 Oct 17:22 database (394 MB). The production database was not touched.
+Measured on a copy of the 21 Oct 17:22 backup (394 MB, v2.4.1 era). The production database was
+not read or changed. Commands, backup and recovery: `docs/DATABASE.md`.
 
-- **Repeat discovery events are counted, not stored again.** 74% of `discovery_events` rows (194,828
-  of 262,785) were exact repeats of the last event for the same coin and feed. A repeat now
-  increments `seen` and updates `last_ts`; a changed payload is still a new row. Existing repeats
-  are merged once, flagged in `meta`. The first launch event and the latest profile, which are
-  the rows readers use, were checked for every coin on the copy and are unchanged.
-- **Bonding-curve events are kept 6 hours** (`NORTHSTAR_CURVE_RETENTION_HOURS`, previously a
-  fixed 7 days). Research reads only the last 5 minutes.
-- **Old prefilter-rejection reports are slimmed** (`NORTHSTAR_SNAPSHOT_COMPACT_HOURS=24`):
-  provider metadata is dropped, while the reasons, the decision and the market numbers are kept.
-  A coin's latest snapshot, alert snapshots and any coin that reached a security check are never
-  touched.
-- **Outcome tracking is polled round-robin** (`NORTHSTAR_TRACKING_POLL_LIMIT=600`). It used to
-  take the 600 oldest open rows every pass. With about 2,600 open rows, decisions from the
-  latest ~12 hours had 0 price checks, which missed the hours when most coins run or rug.
-- Safety review fixes: the one-time merge and the curve cleanup run in short transactions
-  (~2,000 rows each) with a WAL truncate between them. On the copy, other writers waited at most
-  0.18 s and the WAL peaked at 24 MB, against 5.3 s and 146 MB in one transaction. A crash
-  mid-way loses nothing and nothing is counted twice. Compacted reports keep every market key,
-  only without provider metadata, so the brain's feature vectors are unchanged.
-  `--vacuum` refuses while the bot holds its lock or when free disk is too small. Negative
-  retention hours mean off, and the poll limit is clamped to 1–1200 (40 DexScreener requests a pass); SQLite would have read a
-  negative LIMIT as "every row".
-- Final review: called-out coins are price-checked on every pass, then decisions never checked,
-  then the least recently checked. The log warns hourly if open decisions are too many for 60
-  checks a day. The poll limit is capped at 1,200. `python main.py db` says DRY RUN and ignores
-  `--vacuum` without `--apply`. Commands and the Wispbyte shrink procedure are in `docs/DATABASE.md`.
-- `python main.py db` shows space per table and what the retention pass would remove.
-  `--apply` runs the pass; `--vacuum` also shrinks the file and needs the bot stopped.
-- On the copy: 394 MB → 179 MB after the retention pass and VACUUM. Alerts, price history,
-  decision tracking, outcomes, shadows, early signals and snapshot counts were unchanged.
-  `python main.py audit` gave identical output, and the brain's training rows were identical
-  (4,170 rows, 289 runners).
+**Discovery deduplication.** 74% of `discovery_events` rows (194,828 of 262,785) were exact repeats
+of the last event for the same coin and feed. A repeat now increments `seen` and updates `last_ts`
+instead of adding a row; a changed payload is still a new row. Existing repeats are merged once,
+in short batches. The first launch event (creator, curve key) and the latest profile, the two
+rows Northstar reads, were checked for every coin on the copy and are unchanged. Retention uses
+the time a row was last seen.
+
+**Snapshot compaction.** Prefilter-rejection reports older than `NORTHSTAR_SNAPSHOT_COMPACT_HOURS`
+(24) lose the provider metadata around each value. The reasons, the decision and every market
+number stay, so the brain's feature vectors are unchanged. A coin's latest snapshot, snapshots an
+alert points to and anything that reached a security check are never compacted.
+
+**Retention.** Bonding-curve events are kept `NORTHSTAR_CURVE_RETENTION_HOURS` (6), down from a
+fixed 7 days; research reads only the last 5 minutes. The discovery and snapshot retention days
+are unchanged (4 and 7).
+
+**Tracking fairness.** The tracker used to price-check the 600 OLDEST open decisions every pass.
+With about 2,600 open, decisions from the latest ~12 hours got no checks at all, and at least 10%
+of finished rows had 0 checks. Each pass now checks called-out coins first, then decisions never
+checked, then the least recently checked, up to `NORTHSTAR_TRACKING_POLL_LIMIT` (600; range
+1–1200). With the backup's 2,100–3,300 open decisions, each gets 120–180 checks a day (30 needed)
+for at most 20 DexScreener requests per 2-minute pass. The log warns hourly when coverage would
+drop below 60 checks a day.
+
+**Database safety.**
+- **Short transactions.** The one-time merge and the curve cleanup run in batches of about
+  2,000 rows, with the WAL truncated between them. One big transaction had held the database
+  for 5.3 s and grown the WAL by 146 MB.
+- **Interruptions.** Stopping part-way loses nothing and counts nothing twice; the merge is
+  marked done only after its last batch.
+- **`python main.py db` is a dry run by default.** `--apply` runs the pass. `--apply --vacuum`
+  also shrinks the file, and refuses while the bot holds its lock or when free disk is under
+  about 1.1 times the database size.
+- **Setting bounds.** Negative retention hours mean off. The poll limit is clamped, because
+  SQLite reads a negative LIMIT as "every row".
+
+**Result on the copy.** 394 MB → 179 MB after the pass and VACUUM. These were identical before and
+after:
+- alerts, price history, decision tracking, outcomes, shadows, early signals, snapshot and
+  candidate counts;
+- every stored reason;
+- the brain's inputs and training rows (4,170 rows, 289 runners);
+- `python main.py audit` output.
 
 ## 2.5.3 — 2026-10-21 — shadow testing
 

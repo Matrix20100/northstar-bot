@@ -387,3 +387,53 @@ def test_db_command_is_a_dry_run_by_default(tmp_path, monkeypatch, capsys):
     assert d.fetchone("SELECT COUNT(*) n FROM discovery_events")["n"] == 3, "dry run changed nothing"
     d.close()
     get_settings.cache_clear()
+
+
+# ------------------------------------------------------------------ release: protected data, disk guard
+def test_retention_never_touches_callout_or_learning_data(db):
+    """Aggressive settings, everything old: callouts, outcomes and learning rows all survive."""
+    from northstar import learning as L
+    L.init_schema(db)
+    old = time.time() - 60 * 86400
+    m = addr("called")
+    sid = _snap(db, m, old, PREFILTER)
+    _snap(db, addr("other"), old, PREFILTER)
+    _snap(db, addr("other"), old + 1, PREFILTER)
+    aid = db.execute("INSERT INTO alerts(mint, status, state, created_at, snapshot_id) VALUES (?,?,?,?,?)",
+                     (m, "SENT", "OPEN", old, sid))
+    db.execute("INSERT INTO price_history(alert_id, ts, price, status) VALUES (?,?,?,?)", (aid, old, 1.0, "OK"))
+    db.execute("INSERT INTO decision_tracking(snapshot_id, mint, action, decided_at, entry_price, max_price, "
+               "min_price, samples, done, brain_vector) VALUES (?,?,?,?,1,2.5,0.9,300,1,'{}')",
+               (sid, m, "AUTO_POST", old))
+    db.execute("INSERT INTO outcomes(snapshot_id, horizon, mint, action, decided_at, due_at, status) "
+               "VALUES (?,?,?,?,?,?,?)", (sid, "24h", m, "AUTO_POST", old, old + 86400, "OBSERVED"))
+    db.execute("INSERT INTO shadow_calls(mint, ts, features, evaluated, path, label) VALUES (?,?,'{}',1,'[]','RUNNER')",
+               (m, time.time() - 86400))
+    db.create_or_update_early_signal(m, 100.0, 80.0, {"mint": m})
+    _raw(db, m, "pumpportal_new", old, {"traderPublicKey": "dev"})
+    protected = ("alerts", "price_history", "decision_tracking", "outcomes", "shadow_calls", "early_signals")
+    before = {t: db.fetchall(f"SELECT * FROM {t}") for t in protected}
+    s = Settings(_env_file=None, discovery_retention_days=1, snapshot_retention_days=1,
+                 curve_retention_hours=1, snapshot_compact_hours=1)
+    RT.maintain(db, s)
+    assert {t: db.fetchall(f"SELECT * FROM {t}") for t in protected} == before
+    snap = db.fetchone("SELECT report FROM research_snapshots WHERE id=?", (sid,))
+    assert json.loads(snap["report"]) == PREFILTER, "the callout's snapshot is kept whole"
+    assert db.fetchone("SELECT COUNT(*) n FROM discovery_events WHERE mint=?", (m,))["n"] == 1, \
+        "launch event of a called coin is kept (creator, curve key)"
+
+
+def test_vacuum_refuses_without_enough_free_disk(tmp_path, monkeypatch):
+    import collections
+    import shutil
+    import pytest
+    from northstar.db import Database
+    d = Database(tmp_path / "v.db")
+    d.open()
+    d.close()
+    Usage = collections.namedtuple("Usage", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: Usage(10, 10, 1))
+    before = (tmp_path / "v.db").read_bytes()
+    with pytest.raises(RuntimeError, match="not enough free disk"):
+        RT.vacuum(str(tmp_path / "v.db"))
+    assert (tmp_path / "v.db").read_bytes() == before

@@ -91,5 +91,8 @@ Do not enable the metered stream unless you accept the cost. Verify current term
 | `EARLY_WATCH_REFRESH_SECONDS` | 120 | How often open early-watch posts are re-read from the bonding curve and edited. |
 | `DISCOVERY_RETENTION_DAYS` | 4 | Discovery events older than this are deleted unless the mint has an alert or early-watch record. 0 keeps everything (~70 MB/day). |
 | `SNAPSHOT_RETENTION_DAYS` | 7 | Research snapshots older than this are deleted unless an alert, a pending outcome or open tracking needs them; the latest snapshot per mint is always kept. |
+| `CURVE_RETENTION_HOURS` | 6 | Bonding-curve trade events older than this are deleted (research reads only the last 5 minutes). 0 = keep the old 7-day backstop only. Negative = 0. |
+| `SNAPSHOT_COMPACT_HOURS` | 24 | Prefilter-rejection reports older than this lose their provider metadata; reasons, decision and every market number are kept. 0 = off. Negative = 0. |
+| `TRACKING_POLL_LIMIT` | 600 | Open decisions price-checked per outcome pass (called coins first, then never-checked, then least recently checked). 1–1200; 0 or negative = 600. See docs/DATABASE.md. |
 
 At startup Northstar logs `CONFIGURATION PROBLEM:` for settings that make posting impossible (narrative threshold above 25, weights not summing to 100, scores above 100). `python -m northstar health` reports the same list.
