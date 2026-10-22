@@ -96,6 +96,22 @@ class Settings(BaseSettings):
     launch_max_first_jump_x: float = 6.0    # price multiple reached in the first 2 trading minutes
     launch_max_drawdown_x: float = 0.35     # price at or under this share of its high since launch = dumped
     watchlist_max_rechecks: int = 12        # a watched coin is re-checked at most this many times
+    # v2.5.9 rug filters (operator request 22 Oct). Each is a risk threshold: a FAIL rejects the coin.
+    launch_trades_enabled: bool = True       # read the first trades on the pump.fun curve (launch_trades.py)
+    launch_trades_first_n: int = 40          # first transactions decoded
+    launch_trades_max_pages: int = 5         # 1,000 signatures a page; older launches are INCOMPLETE
+    launch_early_seconds: float = 10.0       # "the very start": buys within this many seconds of creation
+    launch_max_bundle_pct: float = 10.0      # % of supply bought by other wallets in the creation block
+    launch_max_early_buy_pct: float = 25.0   # % of supply bought by other wallets in the first seconds
+    launch_max_opening_pct: float = 35.0     # dev + early buyers together
+    creator_max_prior_launches: int = 5      # other pump.fun launches by the same creator; 0 = off
+    creator_max_prior_migrations: int = 2    # other coins by the creator that migrated; 0 = off
+    creator_history_blocks: bool = False     # off: on 22 Oct data (183 coins) creator history did NOT separate rugs; recorded and shown only
+    max_sniper_held_pct: float = 15.0        # % of supply the launch snipers/bundlers still hold; 0 = off
+    micro_trade_sol: float = 0.01            # a trade below this many SOL is "tiny"
+    micro_insider_min_trades: int = 3        # tiny trades by top holders / bundlers / snipers that fail; 0 = off
+    tracked_wallets_file: str = "data/tracked_wallets.json"  # Axiom wallet-tracker export (or one address a line)
+    tracked_wallets_enabled: bool = True
     rejected_max_rechecks: int = 6
     second_chance_min_liquidity_usd: float = 35_000.0  # "strong liquidity" for a re-check (rug rate fell above ~$33K on 21 Oct paths)
     insufficient_max_rechecks: int = 8      # missing data is retried, but not forever
@@ -107,6 +123,7 @@ class Settings(BaseSettings):
     db_auto_shrink: bool = True             # give freed pages back to the disk each retention pass
     db_vacuum_on_start: bool = False        # shrink the file at startup when 20%+ (50 MB+) is free; needs free disk about the size of the data (off: hosting disk limits)
     discovered_max_age_hours: float = 6.0   # never-researched coins drop off the list after this; 0 = keep
+    discovered_launch_max_age_minutes: float = 30.0  # launch-feed-only coins nobody scheduled leave the list sooner; 0 = off
     max_queue_size: int = 500
     new_token_initial_delay_seconds: int = 20  # early-stage check; missing data is rechecked
     # Pump.fun emits hundreds of launches an hour and almost all of them die within minutes with
@@ -375,6 +392,23 @@ class Settings(BaseSettings):
     def _retention_hours(cls, v: float) -> float:
         # a negative age means "off", never "delete everything"
         return max(0.0, float(v))
+
+    @field_validator("launch_max_bundle_pct", "launch_max_early_buy_pct", "launch_max_opening_pct",
+                     "max_sniper_held_pct", "micro_trade_sol", "launch_early_seconds",
+                     "discovered_launch_max_age_minutes")
+    @classmethod
+    def _non_negative(cls, v: float) -> float:
+        return max(0.0, float(v))
+
+    @field_validator("launch_trades_first_n", "launch_trades_max_pages")
+    @classmethod
+    def _launch_budget(cls, v: int) -> int:
+        return min(200, max(1, int(v)))
+
+    @field_validator("creator_max_prior_launches", "creator_max_prior_migrations", "micro_insider_min_trades")
+    @classmethod
+    def _non_negative_int(cls, v: int) -> int:
+        return max(0, int(v))
 
     @field_validator("early_watch_rug_close_x")
     @classmethod

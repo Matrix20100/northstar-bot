@@ -86,3 +86,20 @@ def parse_metaplex_metadata(data: bytes) -> Optional[dict]:
         return out
     except (IndexError, ValueError):
         return None
+
+
+ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+
+
+def associated_token_address(owner: str, mint: str, token_program: str = TOKEN_PROGRAM_ID) -> Optional[str]:
+    """The owner's associated token account for `mint` (where wallets and apps keep a token).
+    A wallet can hold a token in another account, so a missing ATA is "not found here", never
+    proof of zero; every account is read on-chain before a balance is reported."""
+    try:
+        found = find_program_address([b58decode(owner), b58decode(token_program), b58decode(mint)],
+                                     ASSOCIATED_TOKEN_PROGRAM)
+    except ValueError:
+        return None
+    return found[0] if found else None

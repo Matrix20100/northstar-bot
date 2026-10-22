@@ -3,6 +3,61 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 2.5.9 — 2026-10-22 — rug filters, tracked wallets, honest "watched" count
+
+Operator request: track my wallets and see if they are in a coin; Axiom-style filtering; reject
+coins with a giant jump in buys at the very start; look at how many coins the creator launched and
+how many migrated; look for tiny buys and sells by bundlers or top-10 holders in the live trades.
+
+- **Tracked wallets (`analysis/holdings.py`).** The bot reads a wallet list from
+  `NORTHSTAR_TRACKED_WALLETS_FILE` (default `data/tracked_wallets.json`): an Axiom wallet-tracker
+  export, or one address per line.
+  - On every full analysis, and on every early-watch candidate, it reads each wallet's token
+    account for the coin on-chain: 100 per call, 15 calls for 1,436 wallets.
+  - The report and the Discord post show who holds the coin and what share of supply, plus who
+    held it and has sold out.
+  - The derived account addresses matched 1,191 of 1,199 real holder accounts in the 22 Oct
+    database. The other 8 are pool vaults.
+  - Recorded and shown only; it does not change the score. There is no outcome data on these
+    wallets yet.
+- **Launch buys (`analysis/launch_trades.py`, gate `launch_buys`).** Reads the coin's first 40
+  trades on its pump.fun bonding curve, back to the create transaction, with the verified
+  TradeEvent decoder. This works for migrated coins too: v2.5.7's chart check could not see a
+  migrated coin's launch.
+  - **FAILS on any of:**
+    - other wallets bought 10%+ of supply in the creation block (bundled);
+    - other wallets bought 25%+ in the first 10 seconds (sniped);
+    - dev plus early buyers bought 35%+.
+  - **UNKNOWN** when the launch is more than 5,000 transactions back or unreadable.
+  - Read once per coin.
+- **Snipers still holding (gate `sniper_holdings`).** The first-seconds buyers' current balances,
+  read on-chain. FAIL at 15%+ of supply. This is Axiom's "snipers H".
+- **Tiny insider trades (`analysis/micro_trades.py`, gate `insider_micro_trades`).**
+  - In the verified live-trade sample, trades under 0.01 SOL count as tiny.
+  - "Insiders" are top-10 holders, launch snipers/bundlers and linked-wallet clusters.
+  - 3 or more tiny trades by insiders FAIL. The overall share of tiny trades is recorded.
+- **Creator history (`creator_stats` table, `analysis/creator.py`).** Every launch and graduation on
+  the PumpPortal feed is counted per creator wallet; at startup it is filled from the stored feed
+  (about 65 hours on the 22 Oct database).
+  - Before this, creator history was UNKNOWN on every coin: RugCheck sent no launch list.
+  - **Not a reject by default.** On the 22 Oct database (183 coins with complete price paths and a
+    known creator, counted point-in-time), coins whose creator had 5+ earlier launches or 2+
+    migrations were bad (rug or pump-then-rug) 41% of the time. All other coins were bad 58% of
+    the time.
+  - Turn it on with `NORTHSTAR_CREATOR_HISTORY_BLOCKS=true`.
+- The new gates are risk thresholds: a FAIL rejects the coin, which is then not watched. Missing
+  data (UNKNOWN) never blocks on its own. Early-watch candidates on the curve go through the same
+  filters before they are posted.
+- **"Coins being watched" is honest now.**
+  - Launches that only the pump.fun feed reported, with no research scheduled, leave the list
+    after 30 minutes. The curve radar still brings them back on real buying.
+  - The dashboard shows three separate numbers: on the watch list, queued for research, and new
+    launches waiting (not watched).
+- The launch-buy, sniper and tiny-trade thresholds are first settings, not measured. The bot had
+  no stored launch trades to test them on. Every report stores the metrics so they can be checked
+  against outcomes.
+- Tests: `tests/test_rug_filters_v259.py` (29).
+
 ## 2.5.8 — 2026-10-22 — rugged early watches are closed, double-warning coins rejected
 
 The first v2.5.7 log showed early-watch posts at 0.11x to 0.15x of their call price still being

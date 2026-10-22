@@ -270,6 +270,15 @@ CREATE TABLE IF NOT EXISTS provider_health (
     status TEXT NOT NULL DEFAULT 'UNKNOWN'
 );
 
+-- v2.5.9: every pump.fun launch and graduation seen on the PumpPortal feed, per creator wallet
+CREATE TABLE IF NOT EXISTS creator_stats (
+    creator TEXT PRIMARY KEY,
+    launches INTEGER NOT NULL DEFAULT 0,
+    migrated INTEGER NOT NULL DEFAULT 0,
+    first_ts REAL,
+    last_ts REAL
+);
+
 CREATE TABLE IF NOT EXISTS creator_cache (
     creator TEXT PRIMARY KEY,
     ts REAL NOT NULL,
@@ -681,6 +690,21 @@ class Database:
             return self._conn.execute(
                 "UPDATE candidates SET state = 'STALE', next_research_at = NULL, updated_at = ? "
                 "WHERE state = 'DISCOVERED' AND research_count = 0 AND discovered_at < ?",
+                (time.time(), cutoff)).rowcount
+
+    def expire_unscheduled_launches(self, max_age_minutes: float, now: Optional[float] = None) -> int:
+        """Launch-feed-only coins with no research scheduled leave the list after `max_age_minutes`
+        (v2.5.9). They were never "watched": they wait for the curve radar, which still scans STALE
+        launches and brings one back the moment it shows real buying (a new curve_radar event
+        revives it). The dashboard counted ~4,300 of them as "coins being watched"."""
+        if not max_age_minutes or max_age_minutes <= 0:
+            return 0
+        cutoff = (now or time.time()) - max_age_minutes * 60
+        with self._lock:
+            return self._conn.execute(
+                "UPDATE candidates SET state = 'STALE', updated_at = ? "
+                "WHERE state = 'DISCOVERED' AND research_count = 0 AND next_research_at IS NULL "
+                "AND discovered_at < ? AND sources = '[\"pumpportal_new\"]'",
                 (time.time(), cutoff)).rowcount
 
     def prune_candidates(self, days: float, now: Optional[float] = None) -> int:
@@ -1746,6 +1770,81 @@ class Database:
             return 0
 
         return row["budget_used"]
+
+    # ------------------------------------------------------------- creator stats (v2.5.9)
+
+    def record_creator_launch(self, creator: str, ts: Optional[float] = None) -> None:
+        ts = ts or time.time()
+        self.execute(
+            "INSERT INTO creator_stats(creator, launches, migrated, first_ts, last_ts) VALUES (?, 1, 0, ?, ?) "
+            "ON CONFLICT(creator) DO UPDATE SET launches = launches + 1, last_ts = MAX(last_ts, excluded.last_ts)",
+            (creator, ts, ts))
+
+    def record_creator_migration(self, creator: str, ts: Optional[float] = None) -> None:
+        ts = ts or time.time()
+        self.execute(
+            "INSERT INTO creator_stats(creator, launches, migrated, first_ts, last_ts) VALUES (?, 0, 1, ?, ?) "
+            "ON CONFLICT(creator) DO UPDATE SET migrated = migrated + 1, last_ts = MAX(last_ts, excluded.last_ts)",
+            (creator, ts, ts))
+
+    def creator_stats(self, creator: str) -> Optional[dict]:
+        return self.fetchone("SELECT * FROM creator_stats WHERE creator = ?", (creator,))
+
+    def has_discovery_source(self, mint: str, source: str) -> bool:
+        return self.fetchone("SELECT 1 AS x FROM discovery_events WHERE mint = ? AND source = ? LIMIT 1",
+                             (mint, source)) is not None
+
+    def launch_creator(self, mint: str) -> Optional[str]:
+        """The creator wallet from the coin's pump.fun launch event, if the feed saw it."""
+        row = self.fetchone("SELECT payload FROM discovery_events WHERE mint = ? AND source = 'pumpportal_new' "
+                            "ORDER BY ts LIMIT 1", (mint,))
+        if not row:
+            return None
+        try:
+            return json.loads(row["payload"]).get("traderPublicKey")
+        except (TypeError, ValueError, AttributeError):
+            return None
+
+    def backfill_creator_stats(self) -> int:
+        """Once: build creator_stats from the launch and migration events still in discovery_events."""
+        if self.fetchone("SELECT value FROM meta WHERE key = 'creator_stats_backfilled'"):
+            return 0
+        launches: dict[str, list] = {}
+        migrated: set[str] = {r["mint"] for r in self.fetchall(
+            "SELECT DISTINCT mint FROM discovery_events WHERE source = 'pumpportal_migration'")}
+        for r in self.fetchall("SELECT mint, MIN(ts) AS ts, payload FROM discovery_events "
+                               "WHERE source = 'pumpportal_new' GROUP BY mint"):
+            try:
+                c = json.loads(r["payload"]).get("traderPublicKey")
+            except (TypeError, ValueError, AttributeError):
+                c = None
+            if c:
+                launches.setdefault(c, []).append((r["mint"], r["ts"]))
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                for c, rows in launches.items():
+                    ts = [t for _, t in rows]
+                    self._conn.execute(
+                        "INSERT OR REPLACE INTO creator_stats(creator, launches, migrated, first_ts, last_ts) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (c, len(rows), sum(1 for m, _ in rows if m in migrated), min(ts), max(ts)))
+                self._conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('creator_stats_backfilled', ?)",
+                                   (str(time.time()),))
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        return len(launches)
+
+    def prune_creator_stats(self, single_days: float = 3.0, any_days: float = 30.0,
+                            now: Optional[float] = None) -> int:
+        """One-off creators are forgotten after `single_days`; everyone after `any_days` of silence."""
+        now = now or time.time()
+        with self._lock:
+            return self._conn.execute(
+                "DELETE FROM creator_stats WHERE (launches <= 1 AND migrated = 0 AND last_ts < ?) OR last_ts < ?",
+                (now - single_days * 86400, now - any_days * 86400)).rowcount
 
     # ------------------------------------------------------------- creator cache
 

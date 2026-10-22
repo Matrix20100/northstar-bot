@@ -46,6 +46,19 @@ that the file shrinks on its own every hour, without a temporary copy and withou
 - each callout's peak, low and the order of its 2x / 0.6x / 0.3x / 1.3x / 1.5x moves are
   unchanged, at 5-minute resolution.
 
+## Launch feed and creator history (v2.5.9)
+
+- `creator_stats` holds one row per pump.fun creator wallet: launches and graduations seen on the
+  PumpPortal feed. It is filled from the stored launch events once at startup, then live.
+  - Creators with one launch are forgotten after 3 days without a new one.
+  - Every creator is forgotten after 30 days of silence.
+  - Expect a few MB.
+- Launches that only the pump.fun feed reported, with no research scheduled, become STALE after
+  `NORTHSTAR_DISCOVERED_LAUNCH_MAX_AGE_MINUTES` (30) instead of 6 hours. The curve radar still scans
+  them and brings one back when it shows real buying.
+  - On the 22 Oct database this takes the dashboard's "watched" list from 1,208 to 71:
+    14 on the watch list, 46 queued, about 11 new launches waiting.
+
 ## Before deploying: back up
 
 1. Stop the server on Wispbyte. If it's running, recent writes may still sit in the `-wal` file.
