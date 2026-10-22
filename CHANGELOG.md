@@ -21,6 +21,14 @@ with a giant jump or a few huge steps, and coins that had already rugged but sta
   candles means UNKNOWN: recorded, never taken as organic, and not blocking on its own. Every
   report stores the launch metrics (`report.launch`), so the thresholds can be measured against
   outcomes and tightened.
+- **Launch rules only on verified launch history.**
+  - The instant-jump and staircase rules apply only when the candles come from the pool the coin
+    started on (its pump.fun curve, or an AMM pool it launched on directly) and the first candle
+    is within 3 minutes of that pool's creation.
+  - Anything else is INCOMPLETE: a chart source that indexed the pool late, or a pump.fun coin
+    seen only on its post-migration pool. For those, only the drawdown from the highest price
+    seen can fail the coin, and a clean-looking partial chart is UNKNOWN, not organic.
+  - Early-watch coins on the bonding curve get the same check, on the curve's own candles.
 - **The watch list is bounded.** A watched coin is re-checked at most
   `NORTHSTAR_WATCHLIST_MAX_RECHECKS` (12) times, about 2 hours, then leaves the list (STALE). A
   surge or a new listing brings it back. A watched coin that dumps meanwhile is rejected at its
