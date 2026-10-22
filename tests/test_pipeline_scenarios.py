@@ -418,3 +418,46 @@ def test_pump_fun_curve_account_parser_validates_owner_discriminator_and_units()
     assert Researcher._parse_pump_curve_account({**account, "owner": "not-pump"}) is None
     bad = {"owner": PUMP_FUN_PROGRAM, "data": [base64.b64encode(b"wrong-layout" + raw[8:]).decode(), "base64"]}
     assert Researcher._parse_pump_curve_account(bad) is None
+
+
+async def test_a_coin_whose_best_pair_is_its_own_pump_curve_gets_the_curve_research(settings, db, monkeypatch):
+    """v3.2.1: DexScreener lists the bonding curve itself as a "pumpfun" pair. Such a coin has not
+    migrated, so it must get the curve research (and runner check), not the DEX-pool rules."""
+    p = strong_providers()
+    p.dex.pairs = [make_pair(dex_id="pumpfun", liquidity_usd=5_395.0, market_cap=6_700.0, fdv=6_700.0)]
+    p.rpc.holders = [(addr("curve"), 82.0)] + [(addr(f"early{i}"), 0.9) for i in range(19)]
+    db.upsert_discovery(MINT, "curve_radar", 9.0, name="Early Frog", symbol="EFROG", payload={})
+    r = Researcher(settings, db, p)
+
+    async def on_curve(mint, report):
+        return addr("curve"), {"complete": False, "market_cap_sol": 30.0}
+    monkeypatch.setattr(r, "_probe_curve", on_curve)
+    out = await r.research(MINT, db.get_candidate(MINT))
+    assert out.report["lifecycle"] == "PRE_MIGRATION_BONDING_CURVE"
+    assert not any("gate failed: liquidity" in x for x in out.reasons)
+
+    async def finished(mint, report):
+        return addr("curve"), {"complete": True, "market_cap_sol": 400.0}
+    r2 = Researcher(settings, db, p)
+    monkeypatch.setattr(r2, "_probe_curve", finished)
+    out2 = await r2.research(MINT, db.get_candidate(MINT), force=True)
+    assert out2.report.get("lifecycle") != "PRE_MIGRATION_BONDING_CURVE"
+
+
+async def test_runner_candidates_read_further_back_to_the_launch(settings):
+    from northstar.analysis import launch_trades as LT
+
+    class Rpc:
+        def __init__(self):
+            self.calls = 0
+
+        async def get_signatures(self, addr_, limit=1000, before=None):
+            self.calls += 1
+            return [{"signature": f"s{self.calls}-{i}"} for i in range(1000)]     # always a full page
+
+    rpc = Rpc()
+    lb = await LT.analyze(rpc, MINT, addr("curve"), None, settings)
+    assert lb.status == "INCOMPLETE" and rpc.calls == settings.launch_trades_max_pages
+    rpc2 = Rpc()
+    lb2 = await LT.analyze(rpc2, MINT, addr("curve"), None, settings, max_pages=20)
+    assert rpc2.calls == 20 and "20,000" in lb2.reasons[0]

@@ -3,6 +3,46 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 3.2.2 — 2026-10-22 — let safe runners through, show runner calls
+
+Operator: "nothing called out for 5 hours".
+
+- **The v3.2.1 curve-routing fix is included.** It was pushed after PR #12 had been merged, so it
+  never went live.
+- **Runner score floor 60 → 45.** The score is momentum 45 + safety 30 + attention 25. With no
+  KOL channels set, attention is usually 0. A safe coin with ordinary momentum (a quarter of its
+  market cap traded in 5 minutes, 4 buys for every 3 sells) scores about 50-58, so 60 blocked
+  coins that had passed every safety check. The live coin `8HUGj6…` scored exactly 60.
+  - Every safety rule still applies: each required check must PASS, and any FAIL blocks.
+  - 45 still rejects weak flow, for example flat buys at $85K with falling price.
+  - It is a setting (`NORTHSTAR_RUNNER_MIN_SCORE`). The curve watch shows how coins at each
+    level did.
+- **Runner summary in the log every 5 minutes:** how many coins reached the runner check, how many
+  were called, the best score, and the most common blockers. The next "why nothing?" can be
+  answered from one line.
+- **The dashboard counts runner calls.** "Calls (24h)", "open" and the Calls tab only read the old
+  calls table, so runner calls would have shown 0. They are now included, marked 🎯 RUNNER.
+- Unchanged on purpose: the "price sources disagree" check that rejected $KIMCHI. On your history,
+  coins rejected for it rugged 64% of the time (23 of 36).
+
+## 3.2.1 — 2026-10-22 — curve coins reach the runner check
+
+From the first 10 minutes of v3.0.0 live: the curve radar found coins, but most never reached the
+runner-call check.
+
+- **Curve coins were researched as if they had migrated.** DexScreener lists a pump.fun coin's own
+  bonding curve as a "pumpfun" pair. When it gave a liquidity figure for it, research treated the
+  coin as a DEX-pool coin. It then failed the $7,500 pool liquidity gate (a curve's "liquidity" is
+  a few thousand dollars) and never got the runner check: `2bkP52…` and `5wgCSX…` in the log.
+  Now a coin whose best pair is its own unfinished curve always gets the curve research. That
+  research checks the curve on-chain, so a completed curve still goes the pool way.
+- **Busy coins could never pass the launch-buys check.** It reads the curve's transactions back to
+  the launch, and stopped after 5,000. A coin with real volume at $40K often has more, so the
+  check stayed UNKNOWN and blocked the call: `8HUGj6…` in the log (which was also correctly
+  blocked for having dumped to 16% of its high). Runner candidates now read up to 20,000 back
+  (`NORTHSTAR_RUNNER_LAUNCH_MAX_PAGES`, 1,000 per page). Unreachable still means UNKNOWN, never a pass.
+- Tests in `tests/test_pipeline_scenarios.py`.
+
 ## 3.2.0 — 2026-10-22 — the learning brain paper trades its own picks
 
 Operator request: let the AI learner paper trade.
