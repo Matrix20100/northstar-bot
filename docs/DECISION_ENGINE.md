@@ -192,6 +192,7 @@ own tracked history, one row per mint, report-as-stored. On the 19 Oct 2026 data
 | `NORTHSTAR_U_W_SAFETY` … `NORTHSTAR_U_W_NARRATIVE` | 18/20/16/10/20/16 | category weights, must sum to 100 |
 | `NORTHSTAR_U_STRONG_MIN` | 68 | score needed for STRONG OPPORTUNITY |
 | `NORTHSTAR_U_WATCH_MIN` | 48 | below this it is not worth watching |
+| `NORTHSTAR_U_REJECT_DOUBLE_WARNING` | true | two or more serious warnings reject the coin instead of watching it as CAUTION (v2.5.8) |
 | `NORTHSTAR_U_MIN_COMPLETENESS` | 0.55 | evidence needed before a call is possible |
 | `NORTHSTAR_U_MODEL_TILT` | 12 | most the learning brain may move the score |
 | `NORTHSTAR_U_NARRATIVE_CAP` | 10 (v2.4: 20) | at most this many of the points a STRONG call needs may come from narrative |

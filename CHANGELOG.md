@@ -3,7 +3,7 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
-## 2.5.8 — 2026-10-22 — rugged early watches are closed
+## 2.5.8 — 2026-10-22 — rugged early watches are closed, double-warning coins rejected
 
 The first v2.5.7 log showed early-watch posts at 0.11x to 0.15x of their call price still being
 tracked and edited every cycle. They would have stayed open for up to 72 hours, and the edits
@@ -14,7 +14,15 @@ caused Discord rate-limit (429) warnings.
   rug) of its call price, the post is edited once to "🪦 Rugged … removed from the watch,
   tracking ended" and the watch is CLOSED. The stop-loss message still posts first. A failed or
   missing read never closes a watch; 0 turns the rule off. The value is clamped to 0–0.9.
-- Tests: `tests/test_early_tracker.py::RugClose`.
+- **Two or more serious warnings → REJECT, not watch (`analysis/unified.py`).** The same log
+  had coins on the watch list as CAUTION with two serious warnings, some with a score under the
+  48 watch line. Examples: "one wallet holds 13.7% (crashed 92% of 157 times)", brand-new wallets
+  holding 16.5%, a copycat ticker. The engine's own measurement says two serious warnings behave
+  like HIGH RISK (95% crashed). Such a coin is now rejected (reason class SERIOUS_WARNINGS) and is
+  not watched. A coin with one serious warning can still be watched, never called.
+  `NORTHSTAR_U_REJECT_DOUBLE_WARNING=false` restores the old behaviour.
+- Tests: `tests/test_early_tracker.py::RugClose`; `tests/test_unified_engine.py` updated for the
+  double-warning rule.
 
 ## 2.5.7 — 2026-10-22 — the start of a coin must be organic
 

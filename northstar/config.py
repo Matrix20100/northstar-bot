@@ -200,6 +200,7 @@ class Settings(BaseSettings):
     u_w_narrative: float = 16       # attention, catalysts, AI narrative read
     u_strong_min: float = 68.0      # STRONG OPPORTUNITY needs at least this
     u_watch_min: float = 48.0       # below this it is not worth watching
+    u_reject_double_warning: bool = True  # v2.5.9: two or more serious warnings -> REJECT, never watched
     u_min_completeness: float = 0.55  # below this the decision cannot be STRONG
     u_model_tilt: float = 12.0      # most the learning brain may move the score, either way
     # at most this many of the points a STRONG call needs may come from narrative. v2.4 shipped
