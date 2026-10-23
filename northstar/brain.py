@@ -270,6 +270,37 @@ def vector(report: dict, ts: Optional[float] = None) -> dict:
 RUNNER, RUG, FLAT, AMBIGUOUS, INCOMPLETE = "RUNNER", "RUG", "FLAT", "AMBIGUOUS", "INCOMPLETE"
 RUG_X = 0.3
 ESCAPE_X = 1.3
+# v4.3.0 operator: "at 2k market cap or 5k [a coin] should be read as dead/rugged and learned from".
+# A coin that traded at DEAD_MIN_ENTRY_X times DEAD_MCAP or more and then falls to DEAD_MCAP or lower
+# is dead, whatever multiple that is. Brand-new pump.fun coins start near $5K, so the rule only applies
+# to a coin that was judged at $10K+ (with the default $5K): back at launch value means everyone left.
+# Set from `dead_mcap_usd` (0 = off). The multiple rule (0.3x) still applies on top.
+DEAD_MCAP = 5_000.0
+DEAD_MIN_ENTRY_X = 2.0
+DEAD_MAX_LINE = 0.5
+
+
+def rug_line(entry_mcap, dead_mcap: Optional[float] = None) -> float:
+    """The multiple of the entry market cap at or under which a coin counts as rugged/dead."""
+    dead = DEAD_MCAP if dead_mcap is None else float(dead_mcap or 0)
+    try:
+        entry = float(entry_mcap or 0)
+    except (TypeError, ValueError):
+        entry = 0.0
+    if dead <= 0 or entry < DEAD_MIN_ENTRY_X * dead:
+        return RUG_X
+    return max(RUG_X, min(DEAD_MAX_LINE, dead / entry))
+
+
+def is_dead(mcap, entry_mcap, dead_mcap: Optional[float] = None) -> bool:
+    """True when a coin judged at `entry_mcap` now trades at or under its dead line."""
+    try:
+        mc, entry = float(mcap or 0), float(entry_mcap or 0)
+    except (TypeError, ValueError):
+        return False
+    if mc <= 0 or entry <= 0:
+        return False
+    return mc / entry <= rug_line(entry, dead_mcap)
 PATH_COMPLETE_MINUTES = 120.0   # a path with no decisive event must reach this far to count as FLAT
 TRACK_MIN_SAMPLES = 30          # 24h tracking rows need this many price polls to count as complete
 
@@ -512,13 +543,13 @@ def training_rows(db, days: float, now: float, win_x: float = WIN_X, loss_x: flo
         if stored:
             return stored
     rows, shadow_times = [], {}
-    for r in db.fetchall("SELECT id, mint, ts, vector, path FROM shadow_calls WHERE evaluated=1 AND vector IS NOT NULL "
-                         "AND vector != '{}' AND ts > ? ORDER BY ts", (now - days * 86400,)):
+    for r in db.fetchall("SELECT id, mint, ts, vector, path, entry_mcap FROM shadow_calls WHERE evaluated=1 "
+                         "AND vector IS NOT NULL AND vector != '{}' AND ts > ? ORDER BY ts", (now - days * 86400,)):
         try:
             v, path = json.loads(r["vector"]), json.loads(r["path"])
         except (TypeError, ValueError):
             continue
-        y = clean_outcome(path, win_x, loss_x)       # v2.5.6: a pump-then-rug is not a win
+        y = clean_outcome(path, win_x, loss_x, rug_line(r.get("entry_mcap")))   # v2.5.6 / v4.3.0: pump-then-die is not a win
         if y is None:
             continue
         rows.append({"id": r["id"], "ts": r["ts"], "v": v, "y": y, "src": "path"})

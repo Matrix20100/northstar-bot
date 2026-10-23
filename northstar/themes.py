@@ -22,6 +22,8 @@ import re
 import time
 from typing import Optional
 
+from . import curve_watch as CW
+
 THEMES: dict[str, tuple[str, ...]] = {
     "animal": ("dog", "doge", "shib", "inu", "cat", "kitty", "frog", "pepe", "monkey", "ape", "chimp", "bear",
                "bull", "pig", "hamster", "penguin", "duck", "goat", "fish", "whale", "shark", "wolf", "fox",
@@ -90,7 +92,7 @@ def theme_stats(db, days: float = 7.0, now: Optional[float] = None) -> dict:
         if not n:
             return {"n": 0}
         return {"n": n, "hit_2x": round(100 * sum((r["peak_mc"] or 0) / r["entry_mc"] >= 2 for r in rs) / n, 1),
-                "fell_0_3x": round(100 * sum((r["low_mc"] or r["entry_mc"]) / r["entry_mc"] <= 0.3 for r in rs) / n, 1)}
+                "fell_0_3x": round(100 * sum(CW.fell(r) for r in rs) / n, 1)}
 
     by: dict[str, list] = {}
     for r in rows:

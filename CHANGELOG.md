@@ -3,6 +3,36 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v4.4.0 - Uxento Vision forwarder
+
+`tools/vision-forwarder`: a Chrome extension that forwards every post shown in your Uxento Vision
+panels (X Tracker, Fomo Trades, Fomo Thesis and any panel added later) to a Discord webhook. The bot
+reads that channel through the existing tracker feed (`NORTHSTAR_TWITTER_FEED_CHANNEL_IDS`), so a
+posted contract address is researched at once and accounts, tickers and words feed attention. No
+new pipeline, no change to scoring. See `tools/vision-forwarder/README.md` for why it reads the page
+(Vision's X Tracker data is encrypted in transit; Uxento has no API) and how to install it.
+
+- Duplicate-proof (20,000 remembered post IDs), first-run backlog skipped, catch-up after Chrome was
+  closed, Discord rate limits and outages retried, refused posts kept and retryable, no @mentions.
+- `tests/test_vision_forwarder.py`: the bot's Discord reader parses forwarded posts (CA, account,
+  ticker) and researches the CA. Extension tests: `node --test tools/vision-forwarder/test/`.
+
+## v4.3.0 - Dead coins are read as rugs, closed and learned from
+
+A coin that was judged or called at $10K+ and falls to $5K or lower (`dead_mcap_usd`, editable on the
+dashboard under Self-learning, 0 = off) is dead, whatever multiple that is. The 0.3x rule still
+applies on top. Coins judged near launch value (under $10K) are not affected: pump.fun coins start
+around $5K.
+
+- Runner calls close as soon as the coin is dead instead of staying OPEN for 24 hours. Nothing is
+  posted (only good news goes out); "DEAD" is recorded.
+- VIP and scalp calls close as rugged the same way.
+- Paper trading sells what is left at the dead price (exit "coin died"), on both accounts.
+- Learning: the rug brain, the runner brain and the 24h labels use the dead line. A 2x that then died
+  is a loss, not a runner. Coins already in training memory are relabelled once.
+- Curve watch: a dead coin finishes tracking and counts as "fell to 0.3x" in the curve learner,
+  blocked-rule and narrative tables.
+
 ## v4.2.1 - Learning tab shows the real numbers
 
 - Rug brain and training memory showed "not trained yet" / "0 coins" on the dashboard although the

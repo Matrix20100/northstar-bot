@@ -110,8 +110,9 @@ def unpack(blob: bytes, names: list[str]) -> dict:
 
 
 # ----------------------------------------------------------------------------- labels
-def path_labels(path: list) -> Optional[tuple[float, float, Optional[int], Optional[int]]]:
-    """(peak_x, low_x, rug, runner) from a minute path; None when unusable."""
+def path_labels(path: list, rug_x: float = RUG_X) -> Optional[tuple[float, float, Optional[int], Optional[int]]]:
+    """(peak_x, low_x, rug, runner) from a minute path; None when unusable. `rug_x`: the coin's dead
+    line (brain.rug_line), 0.3x by default."""
     if not path:
         return None
     try:
@@ -120,8 +121,8 @@ def path_labels(path: list) -> Optional[tuple[float, float, Optional[int], Optio
         minutes = float(path[-1][0])
     except (TypeError, ValueError, IndexError):
         return None
-    rug = 1 if low <= RUG_X else (0 if minutes >= 120 else None)
-    runner = B.clean_outcome(path)
+    rug = 1 if low <= rug_x else (0 if minutes >= 120 else None)
+    runner = B.clean_outcome(path, rug_x=rug_x)
     return peak, low, rug, runner
 
 
@@ -137,6 +138,41 @@ def tracking_labels(r: dict) -> Optional[tuple[float, Optional[float], Optional[
     return peak, low, rug, runner
 
 
+def relabel_dead(db, now: Optional[float] = None) -> int:
+    """v4.3.0: examples stored before the dead-coin rule are labelled again with it: a coin judged at
+    $10K+ whose low reached $5K (dead_mcap_usd) is a rug, and a 2x that then died is not a runner.
+    Runs once per dead-line setting (remembered in `meta`). Returns the examples changed."""
+    key, val = "training_dead_relabel", f"{B.DEAD_MCAP:g}"
+    try:
+        init_schema(db)
+        done = db.fetchone("SELECT value FROM meta WHERE key = ?", (key,))
+        if done and done["value"] == val:
+            return 0
+        changed = 0
+        try:
+            rows = db.fetchall("SELECT t.key, t.low_x, t.rug, t.runner, s.entry_mcap FROM training_examples t "
+                               "JOIN shadow_calls s ON s.id = t.rid WHERE t.src = 'path' AND t.low_x IS NOT NULL")
+        except Exception:  # noqa: BLE001 - no shadow table
+            rows = []
+        for r in rows:
+            if r["low_x"] > B.rug_line(r["entry_mcap"]):
+                continue
+            # runner = 1 means 2x before any 0.6x dip, so a low at the dead line (<= 0.5x) came after it
+            if r["rug"] != 1 or r["runner"] == 1:
+                db.execute("UPDATE training_examples SET rug = 1, runner = CASE WHEN runner = 1 THEN 0 ELSE runner "
+                           "END WHERE key = ?", (r["key"],))
+                changed += 1
+        db.execute("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                   (key, val))
+        if changed:
+            log.info("training store: %d stored coin(s) relabelled as dead/rugged (fell to $%s or lower)", changed,
+                     f"{B.DEAD_MCAP:,.0f}")
+        return changed
+    except Exception:  # noqa: BLE001 - learning must never break the bot
+        log.warning("dead-coin relabel failed", exc_info=True)
+        return 0
+
+
 # ----------------------------------------------------------------------------- harvest
 def harvest(db, now: Optional[float] = None, limit: int = 5000) -> dict:
     """Copy newly finished examples into the store. Idempotent. Never raises."""
@@ -149,7 +185,7 @@ def harvest(db, now: Optional[float] = None, limit: int = 5000) -> dict:
         have = {r["key"] for r in db.fetchall("SELECT key FROM training_examples WHERE ts > ?", (now - 60 * 86400,))}
         have |= {r["key"] for r in db.fetchall("SELECT key FROM training_removed")}
         try:
-            shadows = db.fetchall("SELECT id, mint, ts, vector, path FROM shadow_calls WHERE evaluated=1 "
+            shadows = db.fetchall("SELECT id, mint, ts, vector, path, entry_mcap FROM shadow_calls WHERE evaluated=1 "
                                   "AND vector IS NOT NULL AND vector != '{}' AND path IS NOT NULL "
                                   "ORDER BY ts DESC LIMIT ?", (limit,))
         except Exception:  # noqa: BLE001 - learning tables not created yet
@@ -164,7 +200,7 @@ def harvest(db, now: Optional[float] = None, limit: int = 5000) -> dict:
                 v, path = json.loads(r["vector"]), json.loads(r["path"])
             except (TypeError, ValueError):
                 continue
-            lab = path_labels(path)
+            lab = path_labels(path, B.rug_line(r.get("entry_mcap")))
             if not v or lab is None or (lab[2] is None and lab[3] is None):
                 continue
             db.execute("INSERT OR IGNORE INTO training_examples(key, rid, mint, ts, src, schema, feats, peak_x, low_x, "
@@ -197,6 +233,7 @@ def harvest(db, now: Optional[float] = None, limit: int = 5000) -> dict:
             out["tracking"] += 1
     except Exception:  # noqa: BLE001 - learning must never break the bot
         log.warning("training store harvest failed", exc_info=True)
+    relabel_dead(db, now)                  # v4.3.0, once per dead-line setting (logs what it changed)
     return out
 
 

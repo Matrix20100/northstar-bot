@@ -233,6 +233,8 @@ class Engine:
                 log.info("learning: applied learned settings %s", applied)
         # v4.1.0: values set on the dashboard beat .env, defaults and learned values
         self._operator_keys: set = set()
+        from . import brain as _B
+        _B.DEAD_MCAP = float(getattr(s, "dead_mcap_usd", _B.DEAD_MCAP) or 0)     # v4.3.0
         try:
             from . import operator_settings as OS
             applied_op = OS.apply(db, s)

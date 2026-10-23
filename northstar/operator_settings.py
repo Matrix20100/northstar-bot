@@ -89,6 +89,15 @@ def keys(db) -> set[str]:
         return set()
 
 
+def sync_globals(s) -> None:
+    """Module-level values some settings drive (v4.3.0: the dead-coin market cap)."""
+    from . import brain as B
+    try:
+        B.DEAD_MCAP = float(getattr(s, "dead_mcap_usd", B.DEAD_MCAP) or 0)
+    except (TypeError, ValueError):
+        pass
+
+
 def apply(db, s) -> dict:
     """At start: put back every dashboard value. Returns {key: value}. Invalid rows are skipped."""
     init_schema(db)
@@ -101,6 +110,7 @@ def apply(db, s) -> dict:
             continue
         setattr(s, r["key"], v)
         out[r["key"]] = v
+    sync_globals(s)
     return out
 
 
@@ -110,6 +120,7 @@ def set_value(db, s, key: str, raw: Any, now: Optional[float] = None) -> Any:
     db.execute("INSERT INTO operator_settings(key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE "
                "SET value = excluded.value, updated_at = excluded.updated_at", (key, _json(v), now or time.time()))
     setattr(s, key, v)
+    sync_globals(s)
     log.info("dashboard: %s set to %r", key, v)
     return v
 
@@ -122,5 +133,6 @@ def reset(db, s, key: str) -> Any:
     db.execute("DELETE FROM operator_settings WHERE key = ?", (key,))
     v = getattr(type(s)(), key)               # .env, else default
     setattr(s, key, v)
+    sync_globals(s)
     log.info("dashboard: %s reset to %r", key, v)
     return v

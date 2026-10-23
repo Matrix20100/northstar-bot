@@ -17,6 +17,10 @@ into a Discord channel the operator already has. Northstar's own Discord bot rea
   * a contract address posted in the feed is researched at once (it skips the queue, like a radar
     surge). Every safety check still applies.
 
+v4.4.0: Uxento Vision posts reach this channel through the Northstar Vision Forwarder Chrome extension
+(tools/vision-forwarder): a webhook embed per post, with the X account in the embed author URL and contract
+addresses in the text, which `parse()` already reads.
+
 Needs: the Northstar bot in that Discord server with View Channel + Read Message History on the
 channel, and "Message Content Intent" switched on for the bot (Discord Developer Portal -> Bot ->
 Privileged Gateway Intents). Without it Discord hands bots empty message text; the feed reports that.

@@ -163,6 +163,9 @@ class Monitor:
         upd["warnings"] = warnings
         rug_x = float(getattr(s, "callout_rug_close_x", 0.3) or 0)
         rugged = rug_x > 0 and mult is not None and 0 < mult <= rug_x
+        from . import brain as B
+        if not rugged and mult and a.get("entry_mcap") and B.is_dead(mult * a["entry_mcap"], a["entry_mcap"]):
+            rugged = True                     # v4.3.0: back at $5K (dead_mcap_usd) or lower = dead
         if rugged and "RUGGED" not in warnings:
             # v2.5.10: a call that trades at or under 0.3x of its call (a verified price read) is a
             # rug: say so once and stop tracking it, instead of following it for 72 hours
