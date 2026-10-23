@@ -356,7 +356,9 @@ class Settings(BaseSettings):
     runner_target_calls_per_hour: int = 2     # v4.2.0: behind this pace the score bar is lowered a little ...
     runner_pacing_max_relief: float = 5.0     # ... by at most this many points (never under curve_learn_min_floor)
     runner_reject_bundle_pct: float = 40.0  # v4.0.1: a bundle this big rejects outright (milder ones cost points)
-    runner_reject_dev_pct: float = 20.0     # v4.0.1: a dev holding or buying this much rejects outright
+    runner_reject_dev_pct: float = 20.0
+    runner_reject_crashed_x: float = 0.2    # v4.2.0: already at or under this share of its high -> reject
+    runner_reject_problem_count: int = 3    # v4.2.0: this many serious problems at once -> reject (0 = off)     # v4.0.1: a dev holding or buying this much rejects outright
     runner_max_rechecks: int = 5           # v4.0.0: a near-miss is rescanned this many times (5 over ~15 min)
     runner_recheck_seconds: float = 60.0   # first rescan after 1 min, then 2, 4, 8 ...
     runner_recheck_max_seconds: float = 600.0   # ... never more than 10 min apart

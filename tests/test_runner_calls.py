@@ -74,11 +74,14 @@ def test_blockers_are_candidate_rules_and_traps_only(db):
     r["gates"] = [g for g in r["gates"] if g["name"] != "mint_authority"]
     assert any("trap check: mint authority" in x for x in RN.blockers(r, m, s))
     assert "trap check: rug check RUG LIKELY" in RN.blockers(report(verdict={"level": "RUG LIKELY"}), m, s)
-    # no longer blocks: bundled launch, failed wallet network, bad chart, HIGH RISK
+    # no longer blocks on its own: a failed launch check, failed wallet network, bad chart, HIGH RISK
     r = report(launch={"verdict": "INSTANT_JUMP", "reasons": ["jumped"]}, verdict={"level": "HIGH RISK"})
     r["gates"] = [g for g in r["gates"] if g["name"] != "launch_buys"] + [
         {"name": "launch_buys", "status": "FAIL"}, {"name": "wallet_network", "status": "FAIL"}]
-    assert RN.blockers(r, m, s) == []
+    for one in ({"launch": {"verdict": "INSTANT_JUMP", "reasons": ["jumped"]}}, {"verdict": {"level": "HIGH RISK"}}):
+        assert RN.blockers(report(**one), m, s) == []
+    # ... but v4.2.0: three serious problems at once (wallet network + jumped + HIGH RISK) reject
+    assert [b for b in RN.blockers(r, m, s) if b.startswith("extreme: 3 serious problems")]
 
 
 def test_score_parts_penalties_and_attention_weight():
@@ -438,3 +441,24 @@ def test_pacing_lowers_the_bar_a_little_when_behind_two_calls_an_hour(db):
     trap["gates"][0]["status"] = "FAIL"
     radar(db, mint=addr("trap"))
     assert asyncio.run(c.consider(out(trap))) is None
+
+
+def test_several_problems_at_once_or_a_crash_reject(db):
+    """v4.2.0: from the live log, $CITY (20% bundle + insiders faking activity + crashed to 14% of its
+    high) scored 46 under pure penalties and would have been called. One or two problems cost points;
+    three at once, or a crash to a fifth of the high, reject."""
+    s = Settings(_env_file=None)
+    m = {"market_cap": 40_000, "vol_m5": 12_000, "buys_m5": 80, "sells_m5": 60, "age_min": 12}
+    three = report(launch_buys={"verdict": "BUNDLED", "bundle_pct": 29.0, "early_buy_pct": 40.0, "sniper_held_pct": 12.0},
+                   launch={"verdict": "INSTANT_JUMP", "reasons": ["jumped 7.2x"]})
+    assert RN.problems(three) == ["29% bundled", "40% sniped at launch", "launch jumped"]
+    assert any(b.startswith("extreme: 3 serious problems") for b in RN.blockers(three, m, s))
+    two = report(launch_buys={"verdict": "BUNDLED", "bundle_pct": 29.0, "early_buy_pct": 20.0, "sniper_held_pct": 2.0},
+                 launch={"verdict": "INSTANT_JUMP", "reasons": ["jumped"]})
+    assert not [b for b in RN.blockers(two, m, s) if b.startswith("extreme")]        # two: points only
+    crashed = report(launch={"verdict": "DUMPED", "now_vs_ath": 0.14, "ath_x": 5.0, "reasons": ["dumped"]})
+    assert any("crashed to 14% of its high" in b for b in RN.blockers(crashed, m, s))
+    pulled = report(launch={"verdict": "DUMPED", "now_vs_ath": 0.32, "ath_x": 5.0, "reasons": ["dumped"]})
+    assert not [b for b in RN.blockers(pulled, m, s) if b.startswith("extreme")]     # a pullback, not a crash
+    off = Settings(_env_file=None, runner_reject_problem_count=0, runner_reject_crashed_x=0)
+    assert not [b for b in RN.blockers(three, m, off) if b.startswith("extreme")]

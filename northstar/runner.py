@@ -143,6 +143,48 @@ def extreme(report: dict, s) -> list[str]:
     dev = max(float(lb.get("dev_buy_pct") or 0), float(h.get("creator_pct") or 0))
     if dev_max and dev >= dev_max:
         out.append(f"extreme: the dev holds or bought {dev:.0f}% of supply (reject at {dev_max:.0f}%)")
+    # v4.2.0: a coin already crashed to a fifth of its high has been dumped on, whatever else it shows
+    crash = float(getattr(s, "runner_reject_crashed_x", 0.2) or 0)
+    lp = report.get("launch") or {}
+    nva = lp.get("now_vs_ath")
+    if crash and isinstance(nva, (int, float)) and (lp.get("ath_x") or 0) >= 2 and nva <= crash:
+        out.append(f"extreme: already crashed to {nva * 100:.0f}% of its high (reject at {crash * 100:.0f}%)")
+    # v4.2.0: "don't reject for 1 thing" - one or two problems cost points; several at once reject
+    many = int(getattr(s, "runner_reject_problem_count", 3) or 0)
+    probs = problems(report)
+    if many and len(probs) >= many:
+        out.append(f"extreme: {len(probs)} serious problems at once ({'; '.join(probs[:4])})")
+    return out
+
+
+def problems(report: dict) -> list[str]:
+    """The serious problems a coin shows (each also a score penalty). v4.2.0: `runner_reject_problem_count`
+    of them together reject the coin."""
+    lb = report.get("launch_buys") or {}
+    h = report.get("holders") or {}
+    gates = {g.get("name"): g for g in report.get("gates") or [] if isinstance(g, dict)}
+    out = []
+    if (lb.get("bundle_pct") or 0) >= 15:
+        out.append(f"{lb['bundle_pct']:.0f}% bundled")
+    if (lb.get("early_buy_pct") or 0) >= 35:
+        out.append(f"{lb['early_buy_pct']:.0f}% sniped at launch")
+    if (lb.get("sniper_held_pct") or 0) >= 15:
+        out.append(f"snipers still hold {lb['sniper_held_pct']:.0f}%")
+    if (h.get("top10_adj") or 0) >= 35:
+        out.append(f"top 10 hold {h['top10_adj']:.0f}%")
+    if (h.get("creator_pct") or 0) >= 10:
+        out.append(f"dev holds {h['creator_pct']:.0f}%")
+    if (gates.get("insider_micro_trades") or {}).get("status") == "FAIL":
+        out.append("insiders faking activity")
+    if (gates.get("wallet_network") or {}).get("status") == "FAIL":
+        out.append("fresh / linked wallets hold a lot")
+    v = (report.get("launch") or {}).get("verdict")
+    if v in ("INSTANT_JUMP", "STAIRCASE", "DUMPED"):
+        out.append({"INSTANT_JUMP": "launch jumped", "STAIRCASE": "staircase chart", "DUMPED": "already dumped"}[v])
+    if (report.get("verdict") or {}).get("level") == "HIGH RISK":
+        out.append("rug check HIGH RISK")
+    if ((report.get("pre_migration") or {}).get("socials") or {}).get("recycled"):
+        out.append("recycled socials")
     return out
 
 

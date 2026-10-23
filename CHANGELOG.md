@@ -33,6 +33,14 @@ twice an hour". J7 / uxento post into the operator's Discord; no paid AI.
   lowered by 2.5 points per missing call (at most 5; never under the curve learner's minimum of
   35). Traps and extreme cases are never relaxed. Settings: `NORTHSTAR_RUNNER_TARGET_CALLS_PER_HOUR`,
   `NORTHSTAR_RUNNER_PACING_MAX_RELIEF`.
+- **Several problems at once still reject.** Checked against the live log: under 4.0's pure
+  penalties, $CITY (20% bundle + insiders faking activity + crashed to 14% of its high) scored 46
+  and would have been called. Now:
+  - **one or two** serious problems cost points, as asked ("don't reject for 1 thing");
+  - **three at once** reject (`NORTHSTAR_RUNNER_REJECT_PROBLEM_COUNT`);
+  - a coin already **crashed to 20% or less of its high** rejects (`NORTHSTAR_RUNNER_REJECT_CRASHED_X`).
+  - Results on this morning's coins: $CITY and $LARPOWEEN (29% bundled, 40% sniped, launch jumped)
+    are rejected; $IMP (sniped, pulled back to 32%) can still be called.
 - **Dashboard:**
   - **Pulse tab: 🐦 Twitter attention:** contracts, tickers and words from the feed in the last hour.
   - **Learning tab: 🧭 Narratives:** each theme's week vs all coins.
