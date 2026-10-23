@@ -492,3 +492,39 @@ def test_gate_holds_a_coin_with_one_serious_red_flag(db):
     assert not ok and "one wallet holds 14.0%" in why
     r["verdict"]["red"] = [{"key": "dev_holds", "level": "medium", "text": "dev holds 3.5%"}]
     assert c.gate(outcome(r))[0], "a medium flag alone still allows the call"
+
+
+def test_tracker_prices_a_curve_call_from_dexscreener_when_the_chain_read_fails(db, monkeypatch):
+    """v3.4.1: the first live runner call was never priced ('read': 0 every cycle): a curve coin the
+    chain read could not price was skipped silently. DexScreener lists the curve as a pumpfun pair."""
+    import logging
+    from northstar.research import Researcher
+    s, pub, c = caller(db)
+    asyncio.run(c.consider(outcome(curve_report())))
+    db.execute("UPDATE early_calls SET created_at=? WHERE mint=?", (NOW, MINT))
+    monkeypatch.setattr(Researcher, "_parse_pump_curve_account", staticmethod(lambda acc: None))
+    curve_pair = make_pair(base_mint=MINT, dex_id="pumpfun", market_cap=60_000.0, fdv=60_000.0, liquidity_usd=20_000.0)
+    st = Settings(_env_file=None, runner_calls_enabled=False, discord_channel_id=111, discord_free_channel_id=222,
+                  embed_edit_min_seconds=0)
+
+    class Dex:
+        async def tokens_batch(self, mints):
+            return [curve_pair]
+    tr = EC.EarlyCallTracker(st, db, pub, FakeRpc(0.0), Dex(), FakeSol())
+    seen = []
+
+    class Grab(logging.Handler):
+        def emit(self, rec):
+            seen.append(rec)
+    h = Grab(level=logging.WARNING)
+    lg = logging.getLogger("northstar.early_calls")
+    lg.addHandler(h)
+    try:
+        counts = asyncio.run(tr.run_once(NOW + 30))
+        asyncio.run(tr.run_once(NOW + 60))
+    finally:
+        lg.removeHandler(h)
+    r = db.fetchone("SELECT * FROM early_calls WHERE mint=?", (MINT,))
+    assert counts["read"] == 1 and r["current_mcap"] == 60_000 and r["phase"] == "CURVE"
+    warnings = [x for x in seen if "could not price" in x.getMessage()]
+    assert len(warnings) == 1 and "did not parse" in warnings[0].getMessage()     # said once, with the reason

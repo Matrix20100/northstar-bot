@@ -3,6 +3,19 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 3.4.1 — 2026-10-23 — the first runner call was never priced
+
+From the overnight log: the bot made its first runner call, but the call tracker reported
+`'open': 1, 'read': 0` every 30 seconds for hours. A curve coin whose bonding-curve account could
+not be read or priced from the chain was skipped silently, with no second source. So the call got
+no live market cap, no TP or stop pings, no 2x proof to the free channel, and no paper result.
+
+- A curve call the chain read cannot price is now read from DexScreener, which lists the bonding
+  curve as a "pumpfun" pair with a market cap. If it has migrated, the deepest pool is used.
+- The reason a read failed is logged once per coin ("curve account did not parse", "no SOL/USD
+  price", ...), so a miss can never be silent again.
+- Test: `tests/test_early_calls.py` (fails on the old tracker).
+
 ## 3.4.0 — 2026-10-23 — blocked coins: a few rechecks for high scorers, then dropped
 
 Operator request: "High scoring coins should be tracked a few times again and if they don't pass
