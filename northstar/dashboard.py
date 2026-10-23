@@ -117,21 +117,34 @@ def view_status(c, s, now: float) -> dict:
 
 
 def view_watching(c, now: float) -> dict:
+    """v4.5.0 (operator: "stop even allowing rug coins to show up"): only live coins that passed the
+    safety checks. A confirmed rug (state RUGGED) and a coin carrying a rug flag (failed token-safety
+    check, high learned rug odds, extreme runner reject) never appear here, in the surge list, the
+    trending list or the early watches. They are counted, so it is clear how many were kept out."""
+    cols = {r[1] for r in c.execute("PRAGMA table_info(candidates)")}
+    has_flags = "rug_flags" in cols
+    safe = "AND COALESCE(rug_flags, '[]') IN ('[]', '') " if has_flags else ""
+    live = ("SELECT mint FROM candidates WHERE state NOT IN ('RUGGED', 'IGNORED', 'DROPPED', 'STALE') "
+            + ("AND COALESCE(rug_flags, '[]') IN ('[]', '')" if has_flags else ""))
     queue = [dict(r) for r in c.execute(
         "SELECT mint, symbol, name, state, priority, sources, last_score, last_action, next_research_at, "
-        "last_research_at FROM candidates WHERE state IN ('WATCHLIST','QUALIFIED') "
-        "OR (state = 'DISCOVERED' AND next_research_at IS NOT NULL) "
-        "ORDER BY (state = 'DISCOVERED'), priority DESC, COALESCE(next_research_at, 0) LIMIT 80")]
+        "last_research_at, reasons FROM candidates WHERE state IN ('WATCHLIST','QUALIFIED') " + safe +
+        "ORDER BY COALESCE(last_score, 0) DESC, COALESCE(next_research_at, 0) LIMIT 80")]
     for q in queue:
         try:
             q["sources"] = json.loads(q.get("sources") or "[]")
         except ValueError:
             q["sources"] = []
+        try:
+            reasons = [str(x) for x in json.loads(q.pop("reasons") or "[]")]
+        except (TypeError, ValueError):
+            reasons = []
+        q["why"] = "; ".join(reasons[:2])[:220]
     surges = []
     if _table_ok(c, "radar_obs"):
         for r in c.execute("SELECT o.mint, o.ts, o.fired, o.metrics, c.symbol, c.last_action FROM radar_obs o "
-                           "LEFT JOIN candidates c ON c.mint = o.mint WHERE o.ts > ? ORDER BY o.ts DESC LIMIT 60",
-                           (now - 6 * 3600,)):
+                           "JOIN candidates c ON c.mint = o.mint WHERE o.ts > ? AND c.last_research_at IS NOT NULL "
+                           "AND o.mint IN (" + live + ") ORDER BY o.ts DESC LIMIT 60", (now - 6 * 3600,)):
             d = dict(r)
             try:
                 d["metrics"] = json.loads(d["metrics"])
@@ -140,19 +153,33 @@ def view_watching(c, now: float) -> dict:
             surges.append(d)
     early = [dict(r) for r in c.execute(
         "SELECT mint, created_at, updated_at, peak_multiple, min_multiple, score, status, entry_market_cap_sol, "
-        "current_market_cap_sol FROM early_signals ORDER BY created_at DESC LIMIT 30")]
+        "current_market_cap_sol FROM early_signals WHERE mint IN (" + live + ") "
+        "AND NOT (entry_market_cap_sol > 0 AND current_market_cap_sol > 0 "
+        "AND current_market_cap_sol / entry_market_cap_sol <= 0.3) ORDER BY created_at DESC LIMIT 30")]
     eng = LIVE.get("engine")
     trending = list((getattr(getattr(eng, "radar", None), "trending", None) or {}).values())[:30] if eng else []
-    # v2.5.9: only coins Northstar actually follows count as "watched". Launches the feed reported
-    # but nobody scheduled are counted apart (they wait for the curve radar and expire quickly).
+    if trending:
+        hidden = {r[0] for r in c.execute(
+            "SELECT mint FROM candidates WHERE state = 'RUGGED'"
+            + (" OR COALESCE(rug_flags, '[]') NOT IN ('[]', '')" if has_flags else ""))}
+        trending = [t for t in trending if t.get("mint") not in hidden]
     row = c.execute(
-        "SELECT SUM(state IN ('WATCHLIST','QUALIFIED')) AS watched, "
-        "SUM(state = 'DISCOVERED' AND next_research_at IS NOT NULL) AS queued, "
-        "SUM(state = 'DISCOVERED' AND next_research_at IS NULL) AS waiting "
-        "FROM candidates WHERE state IN ('DISCOVERED','WATCHLIST','QUALIFIED')").fetchone()
-    watched, queued, waiting = (int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)) if row else (0, 0, 0)
-    return {"queue": queue, "queue_total": watched + queued, "watched": watched, "queued": queued,
-            "waiting_launches": waiting, "surges": surges, "early": early, "trending": trending}
+        "SELECT SUM(state IN ('WATCHLIST','QUALIFIED')" + (" AND COALESCE(rug_flags, '[]') IN ('[]', '')" if has_flags
+                                                          else "") + ") AS watched, "
+        "SUM(state IN ('DISCOVERED','INSUFFICIENT_DATA','REJECTED','WATCHLIST') AND next_research_at IS NOT NULL "
+        "AND next_research_at <= ?) AS due, "
+        "SUM(state IN ('DISCOVERED','INSUFFICIENT_DATA','REJECTED','WATCHLIST') AND next_research_at IS NOT NULL) "
+        "AS scheduled, "
+        "SUM(state = 'DISCOVERED' AND next_research_at IS NULL) AS waiting, "
+        + ("SUM(state IN ('WATCHLIST','QUALIFIED') AND COALESCE(rug_flags, '[]') NOT IN ('[]', '')) "
+           if has_flags else "0 ") + "AS flagged, "
+        "SUM(state = 'RUGGED' AND updated_at > ?) AS rugs_24h, SUM(state = 'RUGGED') AS rugs_total "
+        "FROM candidates", (now, now - 86400)).fetchone()
+    vals = [int(x or 0) for x in row] if row else [0] * 7
+    watched, due, scheduled, waiting, flagged, rugs_24h, rugs_total = vals
+    return {"queue": queue, "queue_total": watched, "watched": watched, "queued": scheduled, "due": due,
+            "waiting_launches": waiting, "flagged_hidden": flagged, "rugs_blocked_24h": rugs_24h,
+            "rugs_blocked": rugs_total, "surges": surges, "early": early, "trending": trending}
 
 
 PULSE_FINAL_STRETCH_USD = 40_000.0   # a curve coin past this market cap is close to migrating
@@ -227,7 +254,7 @@ def view_pulse(c, now: float, hours: float = 3.0) -> dict:
     rows = [dict(r) for r in c.execute(
         "SELECT s.mint, s.ts, s.action, s.score, s.report FROM research_snapshots s "
         "JOIN (SELECT mint, MAX(id) AS id FROM research_snapshots WHERE ts > ? GROUP BY mint) m ON s.id = m.id "
-        "WHERE s.mint NOT IN (SELECT mint FROM candidates WHERE state = 'IGNORED') "
+        "WHERE s.mint NOT IN (SELECT mint FROM candidates WHERE state IN ('IGNORED', 'RUGGED')) "
         "ORDER BY s.ts DESC LIMIT 300", (now - hours * 3600,))]
     every = [x for x in (_pulse_card(r) for r in rows) if x]
     cards = [x for x in every if not x["prefilter"]]   # dust (no liquidity, no trades) is counted, not shown
@@ -467,7 +494,8 @@ GROUPS = [
     ("Tracked wallets & attention", ("wallet_", "tracked_wallets", "kol_", "attention_")),
     ("Paper trading", ("paper_",)),
     ("Discord & posting", ("discord_", "dry_run", "free_", "vip_", "early_watch", "max_alerts", "alert_", "embed_")),
-    ("Who gets called", ("min_", "max_allowed", "watchlist_", "block_", "require_", "reject_", "max_")),
+    ("Who gets called", ("min_", "max_allowed", "watchlist_", "block_", "require_", "reject_", "max_", "rug_",
+                         "trade_requeue")),
     ("Trade plan (VIP calls)", ("plan_", "trade_plan")),
     ("Rug scalps", ("scalp_",)),
     ("Surge radar", ("radar_",)),

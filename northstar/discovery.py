@@ -113,11 +113,18 @@ class Discovery:
                     self.db.create_or_update_early_signal(mint, cap, float(signal.get("score") or 0), old_report)
                 except (TypeError, ValueError):
                     pass
+            # v4.5.0: a trade only brings a coin's NEXT look forward when one is already scheduled, and at
+            # most once a `trade_requeue_min_seconds`. Before, every trade queued any coin within 2 s,
+            # rejected and dead ones included: ~30,000 "not ready" researches a day, nearly all wasted.
+            # Unscheduled launches wait for the curve radar; confirmed rugs are never touched.
             now = time.time()
+            gap = float(getattr(self.s, "trade_requeue_min_seconds", 60.0) or 0)
             self.db.execute(
-                "UPDATE candidates SET next_research_at=MIN(COALESCE(next_research_at,?),?), updated_at=? "
-                "WHERE mint=? AND state IN ('DISCOVERED','WATCHLIST','INSUFFICIENT_DATA','REJECTED')",
-                (now, now + 2, now, mint))
+                "UPDATE candidates SET next_research_at=MIN(next_research_at,?), updated_at=? "
+                "WHERE mint=? AND state IN ('DISCOVERED','WATCHLIST','INSUFFICIENT_DATA','REJECTED') "
+                "AND next_research_at IS NOT NULL AND next_research_at > ? "
+                "AND COALESCE(last_research_at, 0) < ?",
+                (now + 2, now, mint, now + 2, now - gap))
             return
         self.pumpportal_events[kind if kind in self.pumpportal_events else "new_token"] += 1
         source = "pumpportal_migration" if kind == "migration" else "pumpportal_new"

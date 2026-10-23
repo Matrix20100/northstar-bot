@@ -319,7 +319,8 @@ def test_dashboard_counts_only_followed_coins(db):
     db.execute("UPDATE candidates SET next_research_at = ? WHERE mint = ?", (time.time(), ms[1]))
     w = view_watching(db._conn, time.time())
     assert (w["watched"], w["queued"], w["waiting_launches"]) == (1, 1, 2)
-    assert [q["mint"] for q in w["queue"]] == [ms[0], ms[1]]
+    # v4.5.0: the list shows only coins being watched; queued coins are counted, not listed
+    assert [q["mint"] for q in w["queue"]] == [ms[0]]
 
 
 # ------------------------------------------------------------------ full research

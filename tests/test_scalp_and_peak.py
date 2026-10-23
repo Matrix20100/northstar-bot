@@ -85,6 +85,7 @@ async def test_engine_posts_scalp_instead_of_rejecting(settings, db, monkeypatch
     from conftest import MemoryPublisher
     from northstar.engine import Engine
     settings.scalp_enabled = True                  # off by default since v2.5.2
+    settings.discord_scalp_channel_id = 777        # v4.5.0: scalps post only in their own channel
     from northstar.models import Action, Confidence, RiskLevel
     from northstar.research import Providers, ResearchOutcome
 
@@ -107,9 +108,29 @@ async def test_engine_posts_scalp_instead_of_rejecting(settings, db, monkeypatch
     monkeypatch.setattr(eng.researcher, "research", fake_research)
     await eng.process(MINT)
     assert pub.sent and pub.sent[0][1]["title"].startswith("☠️ $") and "☠️ Rug scalp" in pub.sent[0][1]["description"]
+    assert pub.sent[0][0] == 777, "a rug scalp never goes to the VIP channel"
     a = db.fetchone("SELECT call_type, plan_json FROM alerts WHERE mint=?", (MINT,))
     assert a["call_type"] == "RUG_SCALP" and json.loads(a["plan_json"])["stop"] == 0.85
     assert not db.fetchone("SELECT 1 FROM free_channel_posts"), "scalps never go to the free channel"
+
+
+async def test_scalp_without_its_own_channel_is_not_posted(settings, db, monkeypatch):
+    """v4.5.0: with no NORTHSTAR_DISCORD_SCALP_CHANNEL_ID a scalp is held, never sent to VIP."""
+    from conftest import MemoryPublisher
+    from northstar.alerts import AlertService
+    from northstar.models import Action, Confidence, RiskLevel
+    from northstar.research import ResearchOutcome
+    settings.scalp_enabled = True
+    settings.discord_scalp_channel_id = None
+    report = rug_report("holder_concentration")
+    report.update({"identity": {"symbol": "RUG", "name": "Rug"}, "call_type": "RUG_SCALP"})
+    out = ResearchOutcome(MINT, Action.REJECT, report, "h", make_pair(), risk=RiskLevel.CRITICAL,
+                          confidence=Confidence.LOW)
+    pub = MemoryPublisher()
+    am = AlertService(settings, db, pub, None)
+    assert await am.publish(out) is None and pub.sent == []
+    assert "own channel" in am.last_hold
+    assert any("SCALP_CHANNEL" in p for p in settings.config_problems())
 
 
 async def test_scalp_disabled_means_plain_reject(settings, db, monkeypatch):

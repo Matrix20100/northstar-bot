@@ -155,7 +155,7 @@ class CurveRadar:
             return []
         rows = self.db.fetchall(
             "SELECT mint FROM candidates WHERE discovered_at > ? AND sources LIKE '%pumpportal_new%' "
-            "AND state NOT IN ('PUBLISHED','WARNING','CLOSED','QUALIFIED','IGNORED','DROPPED') "
+            "AND state NOT IN ('PUBLISHED','WARNING','CLOSED','QUALIFIED','IGNORED','DROPPED','RUGGED') "
             "AND mint NOT IN (SELECT mint FROM early_calls) ORDER BY discovered_at DESC LIMIT ?",
             (now - self.s.curve_radar_hours * 3600, self.s.curve_radar_max_tokens))
         mints = [r["mint"] for r in rows]

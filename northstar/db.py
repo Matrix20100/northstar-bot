@@ -359,6 +359,8 @@ class Database:
         # counted (seen, last_ts) instead of stored again; tracking is polled round-robin
         "discovery_events": [("seen", "INTEGER NOT NULL DEFAULT 1"), ("last_ts", "REAL")],
         "decision_tracking": [("last_polled_at", "REAL")],
+        # v4.5.0: highest market cap / liquidity seen (confirmed-rug check) and live rug flags (Watching)
+        "candidates": [("peak_mcap", "REAL"), ("peak_liq", "REAL"), ("rug_flags", "TEXT")],
     }
 
     def _add_missing_columns(self) -> None:
@@ -759,12 +761,18 @@ class Database:
         if not days or days <= 0:
             return 0
         cutoff = (now or time.time()) - days * 86400
+        # v4.5.0: confirmed rugs are remembered at least 30 days, so a feed re-listing a dead coin
+        # finds it blocked instead of researching it as new
+        rug_cutoff = (now or time.time()) - max(days, 30.0) * 86400
         with self._lock:
-            return self._conn.execute(
+            n = self._conn.execute(
                 "DELETE FROM candidates WHERE state IN ('STALE', 'REJECTED', 'INSUFFICIENT_DATA') "
                 "AND next_research_at IS NULL AND updated_at < ? "
                 "AND mint NOT IN (SELECT mint FROM alerts) AND mint NOT IN (SELECT mint FROM early_signals) "
                 "AND mint NOT IN (SELECT mint FROM decision_tracking WHERE done = 0)", (cutoff,)).rowcount
+            n += self._conn.execute("DELETE FROM candidates WHERE state = 'RUGGED' AND updated_at < ? "
+                                    "AND mint NOT IN (SELECT mint FROM alerts)", (rug_cutoff,)).rowcount
+            return n
 
     def recover_after_restart(self) -> int:
         """Re-queue candidates left RESEARCHING after a crash."""

@@ -329,6 +329,14 @@ class Monitor:
                 f"transaction(s) after the callout ({evidence}).")
 
     async def _send(self, embed: dict, alert_id: int, channel: Optional[int] = None) -> None:
+        if channel is None:
+            # v4.5.0: a follow-up goes where its call was posted (a rug scalp's to the scalp channel)
+            a = self.db.get_alert(alert_id) or {}
+            channel = a.get("channel_id") or None
+        elif channel == getattr(self.s, "discord_warning_channel_id", None):
+            a = self.db.get_alert(alert_id) or {}
+            if a.get("call_type") == "RUG_SCALP" and getattr(self.s, "discord_scalp_channel_id", None):
+                channel = self.s.discord_scalp_channel_id
         try:
             await self.pub.publish(embed, channel)
         except PublishError as e:
