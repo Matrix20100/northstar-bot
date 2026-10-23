@@ -66,3 +66,24 @@ def test_forwarded_contract_address_is_researched(db, settings, payloads):
     signals = asyncio.run(feed.poll(1001.0))
     assert [s["mint"] for s in signals] == [MINT]
     assert signals[0]["why"] == "@alice posted its contract address"
+
+
+def test_a_bundle_of_posts_is_read_as_separate_posts(db, settings, payloads):
+    """v4.5.0: the forwarder sends up to 5 posts per message; each embed is its own post."""
+    import asyncio
+    settings.twitter_feed_channel_ids = "555"
+    bundle = {"id": "201", "content": "", "embeds": [p["embeds"][0] for p in payloads], "webhook_id": "123"}
+    assert [mid for mid, _ in SF.split(bundle)] == ["201:0", "201:1", "201:2"]
+
+    async def fetch(url, headers):
+        return 200, ([bundle] if "after=" in url else [{"id": "200", "content": "older", "embeds": []}])
+
+    feed = SF.TwitterFeed(settings, db, "token-not-real", fetch=fetch)
+    asyncio.run(feed.poll(1000.0))
+    signals = asyncio.run(feed.poll(1001.0))
+    rows = db.fetchall("SELECT msg_id, account FROM social_mentions ORDER BY msg_id")
+    assert [(r["msg_id"], r["account"]) for r in rows] == [("201:0", "alice"), ("201:1", None), ("201:2", "dave")]
+    assert [s["mint"] for s in signals] == [MINT]            # the same CA twice in a bundle is researched once
+    # after a restart the feed resumes after the bundle, not before it
+    again = SF.TwitterFeed(settings, db, "token-not-real", fetch=fetch)
+    assert again.last_id["555"] == "201"

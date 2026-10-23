@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Northstar Vision Forwarder",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Forwards every post shown in your Uxento Vision panels to a Discord channel, where the Northstar bot reads it.",
   "permissions": ["storage", "alarms"],
   "host_permissions": ["https://discord.com/api/webhooks/*", "https://discordapp.com/api/webhooks/*",

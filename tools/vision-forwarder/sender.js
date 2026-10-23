@@ -22,7 +22,18 @@
   const MAX_SENT = 20000;
   const MAX_QUEUE = 5000;
   const MAX_FAILED = 500;
-  const BASELINE_MS = 30000;      // first run: history loaded in this window is recorded, not posted
+  const BASELINE_MS = 30000;
+  // operator: "the discord uxento bot cannot keep up, send posts in packages, collect 5 posts in a bundle"
+  const BUNDLE_SIZE = 5;          // posts per Discord message (Discord allows 10 embeds)
+  const BUNDLE_WAIT_MS = 4000;    // wait at most this long for a bundle to fill
+  const BUNDLE_CHARS = 5500;      // Discord's limit is 6,000 characters across all embeds of one message
+
+  function embedChars(e) {
+    let n = (e.title || "").length + (e.description || "").length + ((e.footer || {}).text || "").length
+      + ((e.author || {}).name || "").length;
+    for (const f of e.fields || []) n += (f.name || "").length + (f.value || "").length;
+    return n;
+  }      // first run: history loaded in this window is recorded, not posted
 
   class Sender {
     constructor({ store, fetchFn, now, sleep, lib, log }) {
@@ -78,7 +89,7 @@
           st.stats.baselined += 1;
           continue;
         }
-        st.queue.push({ post, tries: 0, next: 0 });
+        st.queue.push({ post, tries: 0, next: 0, at: this.now() });
         queued.add(post.key);
         added += 1;
       }
@@ -127,15 +138,23 @@
           if (ms > 30000) return sentNow;          // the 1-minute alarm resumes it
           await this.sleep(ms);
         }
-        const res = await this.send(url, item);
+        let bundle = this.pickBundle(url);
+        const age = this.now() - (item.at || 0);
+        if (bundle.length < BUNDLE_SIZE && bundle.length === st.queue.length && !item.single && !item.plain
+            && age < BUNDLE_WAIT_MS) {
+          await this.sleep(BUNDLE_WAIT_MS - age);     // let a few more posts arrive, then send them together
+          bundle = this.pickBundle(url);
+        }
+        const res = await this.send(url, bundle);
         if (res === "ok" || res === "failed") {
-          st.queue.shift();
+          st.queue.splice(0, bundle.length);
           if (res === "ok") {
-            this.markSent(item.post.key);
-            st.stats.forwarded += 1;
+            for (const b of bundle) this.markSent(b.post.key);
+            st.stats.forwarded += bundle.length;
+            st.stats.messages = (st.stats.messages || 0) + 1;
             st.stats.lastOkAt = this.now();
             st.stats.lastError = null;
-            sentNow += 1;
+            sentNow += bundle.length;
           }
         } else if (res === "auth") {
           await this.save(["queue", "sent", "failed", "stats"]);
@@ -146,10 +165,35 @@
       return sentNow;
     }
 
-    // one delivery attempt: "ok" | "retry" | "failed" | "auth"
-    async send(url, item) {
+    // the posts at the head of the queue that go out together: same webhook, up to 5, within the size limit
+    pickBundle(url) {
+      const q = this.state.queue;
+      const first = q[0];
+      if (!first || first.single || first.plain) return [first];
+      const out = [];
+      let chars = 0;
+      for (const it of q) {
+        if (out.length >= BUNDLE_SIZE || it.single || it.plain || this.webhookFor(it.post.feed) !== url) break;
+        const n = embedChars(this.L.buildMessage(it.post).embeds[0]);
+        if (out.length && chars + n > BUNDLE_CHARS) break;
+        out.push(it);
+        chars += n;
+      }
+      return out.length ? out : [first];
+    }
+
+    // one delivery attempt for a bundle (1-5 posts): "ok" | "retry" | "failed" | "auth"
+    async send(url, items) {
       const st = this.state;
-      const payload = item.plain ? this.L.plainMessage(item.post) : this.L.buildMessage(item.post);
+      if (!Array.isArray(items)) items = [items];
+      const item = items[0];
+      let payload;
+      if (items.length > 1) {
+        payload = { username: "Uxento Vision", embeds: items.map((i) => this.L.buildMessage(i.post).embeds[0]),
+                    allowed_mentions: { parse: [] } };
+      } else {
+        payload = item.plain ? this.L.plainMessage(item.post) : this.L.buildMessage(item.post);
+      }
       let r;
       try {
         r = await this.fetch(url + (url.includes("?") ? "&" : "?") + "wait=true", {
@@ -175,6 +219,11 @@
         return "retry";
       }
       if (status === 400) {
+        if (items.length > 1) {
+          for (const i of items) i.single = true;  // one embed in the bundle was refused: send them one by one
+          st.stats.lastError = `Discord refused a bundle (${(body && body.message) || 400}); sending those posts one by one`;
+          return "retry";
+        }
         if (!item.plain) {
           item.plain = true;                       // try again as plain text
           st.stats.lastError = `Discord refused an embed (${(body && body.message) || 400}); resent as text`;
