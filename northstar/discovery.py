@@ -22,7 +22,7 @@ from .net import ProviderError
 log = logging.getLogger("northstar.discovery")
 
 PRIORITY = {"dexscreener_profile": 2.0, "dexscreener_cto": 2.5, "dexscreener_boost": 1.0,
-            "pumpportal_new": 1.0, "pumpportal_migration": 3.0, "wallet_flow": 9.0}
+            "pumpportal_new": 1.0, "pumpportal_migration": 3.0, "wallet_flow": 9.0, "twitter_feed": 9.0}
 
 
 class Discovery:

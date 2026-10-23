@@ -3,6 +3,41 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 4.2.0 — 2026-10-23 — Twitter attention from J7 / uxento, narratives, two calls an hour
+
+Operator: "The bot must have twitter trackers like J7 or uxento to understand exactly where all
+attention is", "narrative must be analyzed and understood", "try and call out a coin at least
+twice an hour". J7 / uxento post into the operator's Discord; no paid AI.
+
+- **Twitter tracker feed (`social_feed.py`).**
+  - Every 20 s the bot reads the Discord channels in `NORTHSTAR_TWITTER_FEED_CHANNEL_IDS` (where
+    J7 / uxento post) through Discord's API with its own token. It parses each post, embeds
+    included, for contract addresses, $TICKERs, the X account, and words. The first read starts
+    from now and never replays the channel's history.
+  - **Research now:** a contract address posted in the feed is researched at once (all safety
+    checks still apply; `NORTHSTAR_TWITTER_FEED_RESEARCH`).
+  - **Attention:** its contract posted by 1 / 2+ accounts = 35 / 50 points; its $TICKER posted =
+    15; its name being a word many tracked tweets use in the last hour = 20.
+  - **Problems are spelled out** in the log and on the dashboard: no access to the channel,
+    wrong id, or "Message Content Intent" switched off (Discord then hands bots empty text).
+- **Narratives (`themes.py`).**
+  - **Theme:** every coin entering the early band is sorted into a theme (animal, politics,
+    celebrity, AI/tech, crypto culture, events/news, food, internet culture, other) and stored
+    with its outcome.
+  - **Learned points:** per theme over the last week, how often coins hit 2x and how often they
+    fell to 0.3x. A theme that beats the average adds up to +15 attention points; one that does
+    worse costs up to 10. A theme needs 15 finished coins before it counts.
+  - **Live matching:** the coin's words are matched against live attention: launch waves, news,
+    Google Trends, trending coins, and the Twitter feed.
+- **Two calls an hour.** With fewer than 2 runner calls in the last hour, the score bar is
+  lowered by 2.5 points per missing call (at most 5; never under the curve learner's minimum of
+  35). Traps and extreme cases are never relaxed. Settings: `NORTHSTAR_RUNNER_TARGET_CALLS_PER_HOUR`,
+  `NORTHSTAR_RUNNER_PACING_MAX_RELIEF`.
+- **Dashboard:**
+  - **Pulse tab: 🐦 Twitter attention:** contracts, tickers and words from the feed in the last hour.
+  - **Learning tab: 🧭 Narratives:** each theme's week vs all coins.
+- Tests: `tests/test_twitter_narrative.py`, pacing in `tests/test_runner_calls.py`.
+
 ## 4.1.0 — 2026-10-23 — change every setting on the dashboard; teach the AI with real coins
 
 Operator: "I must be able to change every setting inside the dashboard", "I want to be manually

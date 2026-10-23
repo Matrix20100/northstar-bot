@@ -176,6 +176,17 @@ class Engine:
         self.early.attention = self.attention
         if self.curve_radar is not None:
             self.curve_radar.attention = self.attention
+        self.attention.db = db                  # v4.2.0: Twitter feed + learned theme numbers in attention
+        self.twitter = None
+        try:
+            from . import social_feed as SF
+            from .analysis.identity import is_valid_mint_format
+            raw_tok = getattr(s, "discord_token", None)
+            tok = (raw_tok.get_secret_value() if hasattr(raw_tok, "get_secret_value") else raw_tok) or None
+            if SF.channels(s):
+                self.twitter = SF.TwitterFeed(s, db, tok, is_mint=is_valid_mint_format)
+        except Exception:  # noqa: BLE001 - optional feature
+            log.warning("Twitter feed could not start", exc_info=True)
         # v3.5.0: tracked wallets' live trades (PumpPortal account stream) -> money flow
         self.wallet_flow = None
         if getattr(s, "wallet_watch_enabled", True) and getattr(s, "tracked_wallets_enabled", True):
@@ -277,6 +288,13 @@ class Engine:
                  asyncio.create_task(self._loop("db-retention", 3600, self._prune))]
         if getattr(self.s, "paper_enabled", True):
             tasks.append(asyncio.create_task(self._loop("paper-trader", 15, self._paper)))
+        if self.twitter is not None:
+            if self.twitter.enabled():
+                tasks.append(asyncio.create_task(self._loop("twitter-feed", float(self.s.twitter_feed_seconds),
+                                                            self._twitter_feed)))
+            else:
+                log.warning("Twitter feed is OFF: reading the J7 / uxento channel needs the Discord bot token "
+                            "(NORTHSTAR_DISCORD_TOKEN)")
         if getattr(self.s, "curve_learn_enabled", True):
             tasks.append(asyncio.create_task(self._loop("curve-learner", float(self.s.curve_learn_minutes) * 60,
                                                         self._curve_learn)))
@@ -1075,16 +1093,28 @@ class Engine:
                      "; ".join(f"{t['symbol'] or t['mint'][:6]} {t['buyers']} buyers {t['net_sol']:+.1f} SOL"
                                for t in top) or "none")
 
+    async def _twitter_feed(self) -> None:
+        """v4.2.0: read the J7 / uxento Discord channel; a posted contract address is researched now."""
+        sigs = await self.twitter.poll()
+        if not getattr(self.s, "twitter_feed_research", True):
+            return
+        for sig in sigs:
+            await self._on_wallet_signal({**sig, "source": "twitter_feed"})
+
     async def _on_wallet_signal(self, sig: dict) -> None:
-        """Tracked wallets piled into a coin: research it now (every safety check still applies)."""
+        """Tracked wallets piled into a coin (or the Twitter feed posted its contract): research it now
+        (every safety check still applies)."""
         mint = sig["mint"]
         cand = self.db.get_candidate(mint)
         if cand and cand["state"] in ("PUBLISHED", "WARNING", "CLOSED", "QUALIFIED", "IGNORED", "DROPPED"):
             return
-        self.stats["wallet_signals"] = self.stats.get("wallet_signals", 0) + 1
-        log.info("wallet flow %s: %s - researching now", mint, sig["why"])
-        self.discovery.ingest(mint, "wallet_flow", payload={"why": sig["why"], "buyers": sig["buyers"],
-                                                            "buy_sol": sig["buy_sol"]})
+        source = sig.get("source") or "wallet_flow"
+        key = "twitter_signals" if source == "twitter_feed" else "wallet_signals"
+        self.stats[key] = self.stats.get(key, 0) + 1
+        log.info("%s %s: %s - researching now", "twitter feed" if source == "twitter_feed" else "wallet flow",
+                 mint, sig["why"])
+        self.discovery.ingest(mint, source, payload={k: sig.get(k) for k in ("why", "buyers", "buy_sol", "account")
+                                                     if sig.get(k) is not None})
         if self.curve_radar is not None:
             await self.curve_radar.snapshot([mint])
         if mint in self._inflight:
@@ -1196,6 +1226,9 @@ class Engine:
         if getattr(self, "wallet_flow", None) is not None:
             from . import wallet_flow as WF
             res["wallet_trades_removed"] = await asyncio.to_thread(WF.prune, self.db)
+        if getattr(self, "twitter", None) is not None:
+            from . import social_feed as SF
+            res["twitter_mentions_removed"] = await asyncio.to_thread(SF.prune, self.db)
         if any(v for v in (res.get("pruned") or {}).values()) \
                 or any(isinstance(v, int) and v for v in res.values()):
             log.info("database retention: %s", res)

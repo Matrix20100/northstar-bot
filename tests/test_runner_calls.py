@@ -415,3 +415,26 @@ def test_extreme_bundles_and_dev_bags_still_reject_outright(db):
                                                  "sniper_held_pct": 2.0})
     assert not [b for b in RN.blockers(ok, {"market_cap": 40_000, "vol_m5": 20_000, "buys_m5": 90, "sells_m5": 30,
                                             "age_min": 10}, s) if b.startswith("extreme")]
+
+
+def test_pacing_lowers_the_bar_a_little_when_behind_two_calls_an_hour(db):
+    """v4.2.0, operator: "try and call out a coin at least twice an hour". Behind pace the bar drops
+    2.5 points per missing call (max 5, never under the learner's minimum floor); traps never relax."""
+    s, pub, c = caller(db, runner_min_score=50, runner_target_calls_per_hour=2, runner_pacing_max_relief=5)
+    assert c.score_bar(time.time()) == (45.0, 5.0)                 # no calls this hour: -5
+    radar(db)
+    assert asyncio.run(c.consider(out(report())))                  # one call made
+    assert c.score_bar(time.time()) == (47.5, 2.5)
+    db.execute("INSERT INTO early_calls(mint, created_at, status, entry_mcap, report) VALUES ('X', ?, 'SENT', 1, '{}')",
+               (time.time(),))
+    assert c.score_bar(time.time()) == (50.0, 0.0)                 # on pace: the normal bar
+    s2, _, c2 = caller(db, runner_min_score=37, curve_learn_min_floor=35, runner_pacing_max_relief=5)
+    db.execute("DELETE FROM early_calls")
+    assert c2.score_bar(time.time())[0] == 35.0                    # never under the minimum floor
+    s3, _, c3 = caller(db, runner_target_calls_per_hour=0)
+    assert c3.score_bar(time.time())[1] == 0.0                     # pacing off
+    # a trap is never paced away
+    trap = report(mint=addr("trap"))
+    trap["gates"][0]["status"] = "FAIL"
+    radar(db, mint=addr("trap"))
+    assert asyncio.run(c.consider(out(trap))) is None

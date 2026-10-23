@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     tracked_wallets_enabled: bool = True
     # v3.5.0 wallet watch (wallet_flow.py): stream what the tracked wallets trade (PumpPortal
     # subscribeAccountTrade; needs NORTHSTAR_PUMPPORTAL_API_KEY, metered 0.01 SOL per 10,000 trades)
+    # v4.2.0 Twitter tracker feed (social_feed.py): Discord channel ids where J7 / uxento post their alerts
+    twitter_feed_channel_ids: str = ""
+    twitter_feed_seconds: float = 20.0
+    twitter_feed_research: bool = True         # research a contract address posted in the feed at once
     wallet_watch_enabled: bool = True
     wallet_flow_window_min: float = 30.0       # flow is counted over this window
     wallet_flow_min_buyers: int = 2            # this many different tracked wallets buying -> research now
@@ -349,6 +353,8 @@ class Settings(BaseSettings):
     runner_min_score: float = 45.0        # v3.2.2: was 60; with no KOL attention a safe, active coin scores ~50-58
     runner_max_per_hour: int = 6
     runner_launch_max_pages: int = 20
+    runner_target_calls_per_hour: int = 2     # v4.2.0: behind this pace the score bar is lowered a little ...
+    runner_pacing_max_relief: float = 5.0     # ... by at most this many points (never under curve_learn_min_floor)
     runner_reject_bundle_pct: float = 40.0  # v4.0.1: a bundle this big rejects outright (milder ones cost points)
     runner_reject_dev_pct: float = 20.0     # v4.0.1: a dev holding or buying this much rejects outright
     runner_max_rechecks: int = 5           # v4.0.0: a near-miss is rescanned this many times (5 over ~15 min)

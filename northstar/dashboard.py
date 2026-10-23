@@ -244,6 +244,21 @@ def view_pulse(c, now: float, hours: float = 3.0) -> dict:
     return {"hours": hours, "columns": {k: v[:60] for k, v in cols.items()}, "passed": passed[:40], "funnel": funnel}
 
 
+def view_social(c, s, now: float) -> dict:
+    """v4.2.0: the Twitter tracker feed (last hour) and what each narrative theme did this week."""
+    from . import social_feed as SF
+    from . import themes as TH
+    eng = LIVE.get("engine")
+    tw = getattr(eng, "twitter", None) if eng is not None else None
+    db = _Ro(c)
+    trend = SF.trending(db, now) if _table_ok(c, "social_mentions") else {"messages": 0, "mints": [], "tickers": [],
+                                                                          "terms": [], "accounts": []}
+    themes = TH.theme_stats(db, 7.0, now) if _table_ok(c, "curve_watch") else {"all": {"n": 0}, "themes": {}}
+    return {"channels": SF.channels(s), "token": bool(getattr(s, "discord_token", None)),
+            "status": (tw.status if tw is not None else {}), "trending": trend, "themes": themes,
+            "min_theme_coins": TH.MIN_THEME_COINS}
+
+
 def view_flow(c, s, now: float) -> dict:
     """v3.5.0: what the tracked wallets are buying (last hour), and the wallet watch's state."""
     eng = LIVE.get("engine")
@@ -648,6 +663,8 @@ class DashboardServer:
                         return self._send(200, CW.evaluate(_Ro(c), 7.0, now))
                     if u.path == "/api/calls":
                         return self._send(200, view_calls(c))
+                    if u.path == "/api/social":
+                        return self._send(200, view_social(c, s, now))
                     if u.path == "/api/flow":
                         return self._send(200, view_flow(c, s, now))
                     if u.path == "/api/paper":

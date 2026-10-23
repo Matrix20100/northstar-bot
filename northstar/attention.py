@@ -49,6 +49,10 @@ POINTS = {
     "news": 15, "trends": 20, "wiki": 10, "crypto_news": 15,
     "promotion": 10, "socials": 5,
     "flow_one": 15, "flow_two": 30, "flow_more": 45,   # v3.5.0: 1 / 2 / 3+ tracked wallets BUYING it now
+    # v4.2.0: the operator's Twitter tracker feed (social_feed.py)
+    "twitter_ca_one": 35, "twitter_ca_more": 50,        # its contract address posted by 1 / 2+ X accounts
+    "twitter_ticker": 15,                               # its $TICKER posted
+    "twitter_terms": 20,                                # its name is a word many tracked tweets use right now
 }
 
 
@@ -89,6 +93,7 @@ class Attention:
         self.status: dict[str, dict] = {}
         self._last: dict[str, float] = {}
         self.flow = None          # v3.5.0: wallet_flow.WalletFlow, when the wallet watch runs
+        self.db = None            # v4.2.0: for the Twitter tracker feed and the learned theme numbers
 
     def channels(self) -> list[str]:
         raw = str(getattr(self.s, "kol_telegram_channels", "") or "")
@@ -200,6 +205,29 @@ class Attention:
                 if cn:
                     parts["crypto_news"] = POINTS["crypto_news"]
                     reasons.append(f"crypto news: {cn[0][:80]}")
+            if self.db is not None:
+                from . import social_feed as SF
+                from . import themes as TH
+                cw = TH.words(name, symbol)
+                sa = SF.coin_attention(self.db, mint, symbol, cw, time.time())
+                if sa["ca_posts"]:
+                    n = len(sa["accounts"])
+                    parts["twitter"] = POINTS["twitter_ca_more"] if n >= 2 else POINTS["twitter_ca_one"]
+                    who = ", ".join("@" + a for a in sa["accounts"][:3] if a != "?") or "your Twitter tracker"
+                    reasons.insert(0, f"contract posted on Twitter by {who}")
+                elif sa["ticker_posts"]:
+                    parts["twitter"] = POINTS["twitter_ticker"]
+                    reasons.append(f"${(symbol or '').upper()} posted {sa['ticker_posts']}x in your Twitter feed (1h)")
+                if sa["terms"]:
+                    parts["twitter_terms"] = POINTS["twitter_terms"]
+                    w, k = sa["terms"][0]
+                    reasons.append(f"Twitter is talking about \"{w}\" ({k} tracked posts in 1h)")
+                theme = TH.classify(name, symbol, description)
+                tp, why = TH.theme_points(self.db, theme)
+                if tp:
+                    parts["theme"] = tp
+                    reasons.append(why)
+                self._theme = theme
             src = " ".join(json_list(sources))
             if any(x in src for x in ("dexscreener_boost", "dexscreener_cto", "dexscreener_profile")):
                 parts["promotion"] = POINTS["promotion"]
@@ -209,8 +237,10 @@ class Attention:
                 parts["socials"] = POINTS["socials"]
         except Exception:  # noqa: BLE001 - attention is evidence, never a crash
             log.debug("attention score failed for %s", mint, exc_info=True)
-        total = round(min(100.0, sum(parts.values())), 1)
-        return {"score": total, "reasons": reasons[:5], "parts": parts}
+        total = round(max(0.0, min(100.0, sum(parts.values()))), 1)
+        theme = getattr(self, "_theme", None)
+        self._theme = None
+        return {"score": total, "reasons": reasons[:6], "parts": parts, "theme": theme}
 
     def quick(self, mint: str, name: Optional[str], symbol: Optional[str]) -> float:
         """Score from name/ticker/KOL only (no research report), for the curve watch."""

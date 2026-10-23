@@ -267,6 +267,27 @@ class EarlyCaller:
             out.append(f"{age:.0f} min old")
         return out
 
+    def score_bar(self, now: float) -> tuple[float, float]:
+        """v4.2.0 (operator: "try and call out a coin at least twice an hour"): the score a call needs.
+        With fewer than `runner_target_calls_per_hour` calls in the last hour, the bar is lowered by up
+        to `runner_pacing_max_relief` points (2.5 per missing call), never under
+        `curve_learn_min_floor`. Traps and extreme cases are never relaxed; they are not part of the score."""
+        base = float(getattr(self.s, "runner_min_score", 45))
+        target = int(getattr(self.s, "runner_target_calls_per_hour", 2) or 0)
+        max_relief = float(getattr(self.s, "runner_pacing_max_relief", 5.0) or 0)
+        if not target or not max_relief:
+            return base, 0.0
+        try:
+            n = (self.db.fetchone("SELECT COUNT(*) AS n FROM early_calls WHERE created_at > ?", (now - 3600,))
+                 or {}).get("n", 0)
+        except Exception:  # noqa: BLE001
+            return base, 0.0
+        missing = max(0, target - int(n))
+        relief = min(max_relief, 2.5 * missing)
+        floor = float(getattr(self.s, "curve_learn_min_floor", 35.0))
+        bar = max(min(base, floor), base - relief)
+        return bar, round(base - bar, 1)
+
     def recheck_delay(self, checks: int) -> float:
         """1 min after the first look, then 2, 4, 8 ... capped at `runner_recheck_max_seconds` (10 min)."""
         first = float(getattr(self.s, "runner_recheck_seconds", 60.0))
@@ -296,7 +317,7 @@ class EarlyCaller:
                         "VALUES (?,?,?,?,?,?) ON CONFLICT(mint) DO UPDATE SET checks = excluded.checks, "
                         "last_at = excluded.last_at, best_score = MAX(COALESCE(best_score, 0), excluded.best_score), "
                         "last_block = excluded.last_block", (mint, checks, now, now, score, first[:120]))
-        need = float(getattr(self.s, "runner_min_score", 45))
+        need = float(run.get("bar") or self.score_bar(now)[0])      # the bar this check used (paced)
         margin = float(getattr(self.s, "runner_recheck_margin", 15.0))
         permanent = self.permanent_blockers(report, run.get("metrics"))
         limit = int(getattr(self.s, "runner_max_rechecks", 5))
@@ -403,9 +424,12 @@ class EarlyCaller:
         r["attention"] = att
         sc = RN.score(r, m or {}, att) if m else {"score": 0.0}
         why = RN.blockers(r, m, self.s, now)      # v4.0.0: candidate rules and traps only
-        need = float(getattr(self.s, "runner_min_score", 60))
+        need, relief = self.score_bar(now)
+        sc["bar"], sc["pacing_relief"] = need, relief
         if sc["score"] < need:
-            why.append(f"runner score {sc['score']:.0f} < {need:.0f}")
+            why.append(f"runner score {sc['score']:.0f} < {need:.0f}"
+                       + (f" (bar lowered {relief:.0f} to reach {getattr(self.s, 'runner_target_calls_per_hour', 2)} "
+                          "calls an hour)" if relief else ""))
         cap = int(getattr(self.s, "runner_max_per_hour", 6) or 0)
         if not why and cap:
             n = (self.db.fetchone("SELECT COUNT(*) AS n FROM early_calls WHERE created_at > ?", (now - 3600,)) or {})
