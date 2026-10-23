@@ -3,6 +3,20 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v4.4.0 - Uxento Vision forwarder
+
+`tools/vision-forwarder`: a Chrome extension that forwards every post shown in your Uxento Vision
+panels (X Tracker, Fomo Trades, Fomo Thesis and any panel added later) to a Discord webhook. The bot
+reads that channel through the existing tracker feed (`NORTHSTAR_TWITTER_FEED_CHANNEL_IDS`), so a
+posted contract address is researched at once and accounts, tickers and words feed attention. No
+new pipeline, no change to scoring. See `tools/vision-forwarder/README.md` for why it reads the page
+(Vision's X Tracker data is encrypted in transit; Uxento has no API) and how to install it.
+
+- Duplicate-proof (20,000 remembered post IDs), first-run backlog skipped, catch-up after Chrome was
+  closed, Discord rate limits and outages retried, refused posts kept and retryable, no @mentions.
+- `tests/test_vision_forwarder.py`: the bot's Discord reader parses forwarded posts (CA, account,
+  ticker) and researches the CA. Extension tests: `node --test tools/vision-forwarder/test/`.
+
 ## v4.3.0 - Dead coins are read as rugs, closed and learned from
 
 A coin that was judged or called at $10K+ and falls to $5K or lower (`dead_mcap_usd`, editable on the

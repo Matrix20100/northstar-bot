@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Northstar Vision Forwarder</title>
+<style>
+  :root { color-scheme: dark; --bg: #0f1117; --card: #171a23; --line: #2a2f3d; --text: #e6e8ee; --muted: #8b93a7;
+          --ok: #22c55e; --warn: #eab308; --bad: #ef4444; --accent: #7c5cff; }
+  body { margin: 0; width: 380px; background: var(--bg); color: var(--text); font: 13px/1.45 system-ui, sans-serif; }
+  header { padding: 12px 14px; border-bottom: 1px solid var(--line); font-weight: 600; display: flex; gap: 8px; align-items: center; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  section { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 6px; }
+  .row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+  .row span:first-child { color: var(--muted); }
+  input, textarea { width: 100%; box-sizing: border-box; background: var(--card); color: var(--text); border: 1px solid var(--line);
+                    border-radius: 6px; padding: 6px 8px; font: 12px ui-monospace, monospace; }
+  textarea { height: 54px; resize: vertical; }
+  label { display: block; color: var(--muted); margin: 6px 0 3px; }
+  button { background: var(--accent); color: white; border: 0; border-radius: 6px; padding: 6px 10px; font-weight: 600; cursor: pointer; }
+  button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); }
+  .buttons { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .msg { margin-top: 6px; min-height: 16px; }
+  .bad { color: var(--bad); } .ok { color: var(--ok); } .warn { color: var(--warn); }
+  ul { margin: 4px 0 0; padding-left: 16px; } li { margin: 2px 0; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<header><span class="dot" id="dot"></span>Northstar Vision Forwarder</header>
+<section>
+  <h2>Vision tab</h2>
+  <div id="page" class="muted">Waiting for the Vision tab…</div>
+</section>
+<section>
+  <h2>Forwarding</h2>
+  <div class="row"><span>Forwarded</span><span id="fwd">0</span></div>
+  <div class="row"><span>Waiting to send</span><span id="queued">0</span></div>
+  <div class="row"><span>Refused by Discord</span><span id="failed">0</span></div>
+  <div class="row"><span>Remembered post IDs</span><span id="remembered">0</span></div>
+  <div class="row"><span>Last sent</span><span id="lastok">never</span></div>
+  <div id="err" class="msg bad"></div>
+  <ul id="failedList" class="muted"></ul>
+</section>
+<section>
+  <h2>Discord</h2>
+  <label for="webhook">Webhook URL (every feed)</label>
+  <input id="webhook" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/…">
+  <label for="routes">Per-feed webhooks (optional), one per line: <code>Feed name = URL</code></label>
+  <textarea id="routes" placeholder="Fomo Trades = https://discord.com/api/webhooks/…"></textarea>
+  <label><input id="enabled" type="checkbox" style="width:auto"> Forwarding on</label>
+  <div class="buttons">
+    <button id="save">Save</button>
+    <button id="test" class="ghost">Send test post</button>
+    <button id="retry" class="ghost">Retry failed</button>
+  </div>
+  <div id="msg" class="msg"></div>
+</section>
+<script src="popup.js"></script>
+</body>
+</html>
