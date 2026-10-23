@@ -100,7 +100,7 @@ def observe(db, pairs_by_mint: dict, now: float, s, attention=None) -> dict:
     try:
         init_schema(db)
         rows = {r["mint"]: r for r in db.fetchall(
-            "SELECT mint, entered_at, peak_mc, low_mc, low_before_peak FROM curve_watch WHERE done = 0")}
+            "SELECT mint, entered_at, entry_mc, peak_mc, low_mc, low_before_peak FROM curve_watch WHERE done = 0")}
         for mint, pairs in pairs_by_mint.items():
             caps = [(p.market_cap or p.fdv) for p in pairs if (p.market_cap or p.fdv)]
             if not caps:
@@ -146,6 +146,10 @@ def observe(db, pairs_by_mint: dict, now: float, s, attention=None) -> dict:
                        "migrated = MAX(migrated, ?) WHERE mint = ?",
                        (new_peak, mc, now, min(low, mc), low_before, mc, now, 1 if migrated else 0, mint))
             out["updated"] += 1
+            from . import brain as B
+            if B.is_dead(mc, (rows[mint] or {}).get("entry_mc")):
+                db.execute("UPDATE curve_watch SET done = 1 WHERE mint = ?", (mint,))   # v4.3.0: dead, finished
+                out["dead"] = out.get("dead", 0) + 1
         with db._lock:
             out["closed"] = db._conn.execute("UPDATE curve_watch SET done = 1 WHERE done = 0 AND entered_at < ?",
                                              (now - hours * 3600,)).rowcount
@@ -189,6 +193,15 @@ RULES: dict[str, tuple[str, Callable[[dict], bool]]] = {
 }
 
 
+def fell(r: dict) -> bool:
+    """Fell to 0.3x of its entry, or died (v4.3.0: down to `dead_mcap_usd`, $5K, after entering at $10K+)."""
+    from . import brain as B
+    entry = r.get("entry_mc")
+    if not entry:
+        return False
+    return (r.get("low_mc") or entry) / entry <= B.rug_line(entry)
+
+
 def _rates(rows: list[dict]) -> dict:
     n = len(rows)
     if not n:
@@ -206,7 +219,7 @@ def _rates(rows: list[dict]) -> dict:
             "hit_3x": pct([p >= 3 for p in peaks]),
             # a 2x reached without first dropping to 0.6x: something a holder could actually take
             "clean_2x": pct([p >= 2 and fl > 0.6 for p, fl in zip(peaks, first_lows)]),
-            "fell_to_0_3x": pct([lo <= 0.3 for lo in lows]),
+            "fell_to_0_3x": pct([fell(r) for r in rows]),
             "migrated": pct([bool(r["migrated"]) for r in rows]),
             "median_peak": round(statistics.median(peaks), 2)}
 

@@ -471,7 +471,7 @@ GROUPS = [
     ("Trade plan (VIP calls)", ("plan_", "trade_plan")),
     ("Rug scalps", ("scalp_",)),
     ("Surge radar", ("radar_",)),
-    ("Self-learning & brain", ("learning_", "brain_")),
+    ("Self-learning & brain", ("learning_", "brain_", "dead_")),
     ("Score weights", ("w_",)),
     ("Data sources & keys", ("enable_", "helius", "pumpportal", "coingecko", "geckoterminal", "solana_rpc", "rugcheck",
                              "dexscreener", "rpc_", "http_", "social")),

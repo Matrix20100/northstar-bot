@@ -72,7 +72,7 @@ def training_rows(db, days: float, now: float, rug_x: float = RUG_X, min_path_mi
             return stored
     rows, shadow_times = [], {}
     try:
-        shadows = db.fetchall("SELECT id, mint, ts, vector, path FROM shadow_calls WHERE evaluated=1 "
+        shadows = db.fetchall("SELECT id, mint, ts, vector, path, entry_mcap FROM shadow_calls WHERE evaluated=1 "
                               "AND vector IS NOT NULL AND vector != '{}' AND path IS NOT NULL AND ts > ? ORDER BY ts",
                               (now - days * 86400,))
     except Exception:  # noqa: BLE001 - learning tables not created yet
@@ -86,9 +86,10 @@ def training_rows(db, days: float, now: float, rug_x: float = RUG_X, min_path_mi
         if not v or low is None:
             continue
         lo, minutes = low
-        if lo > rug_x and minutes < min_path_minutes:
+        line = max(rug_x, B.rug_line(r.get("entry_mcap"))) if rug_x == RUG_X else rug_x   # v4.3.0 dead line
+        if lo > line and minutes < min_path_minutes:
             continue                                  # too short to say it did NOT rug
-        rows.append({"id": r["id"], "ts": r["ts"], "v": v, "y": int(lo <= rug_x), "src": "path"})
+        rows.append({"id": r["id"], "ts": r["ts"], "v": v, "y": int(lo <= line), "src": "path"})
         shadow_times.setdefault(r["mint"], []).append(r["ts"])
     try:
         found = db.fetchall(

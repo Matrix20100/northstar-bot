@@ -75,7 +75,8 @@ CREATE INDEX IF NOT EXISTS ix_paper_open ON paper_trades(run_id, status);
 ACCOUNTS = ("calls", "brain")
 SELL_KINDS = ("TP1", "TP2") + tuple(sorted(TP.EXIT_KINDS))
 REASONS = {"TP1": "take profit 1", "TP2": "take profit 2", "TRAIL": "trailing stop", "STOP": "stop loss",
-           "TIME": "time stop", "DANGER": "exit now (danger)", "END": "tracking ended", "HOLD": "hold time over"}
+           "TIME": "time stop", "DANGER": "exit now (danger)", "END": "tracking ended", "HOLD": "hold time over",
+           "DEAD": "coin died ($5K or lower)"}
 MIN_POSITION_USD = 1.0
 # v3.3.2 sanity rails: a coin is only bought with a believable price, and a price that jumps more than
 # MAX_TICK_JUMP x (or falls under 1 / MAX_TICK_JUMP) between two checks 15 s apart is a bad quote,
@@ -311,8 +312,9 @@ class PaperTrader:
         for t in self.db.fetchall("SELECT * FROM paper_trades WHERE run_id = ? AND status = 'OPEN'", (run["id"],)):
             c = calls.get(t["ref"])
             counts["followed"] += 1
-            if _execute(self.db, dict(t), run, (c or {}).get("current"), (c or {}).get("events") or [],
-                        None if (c and c.get("open")) else "END", now):
+            ev = (c or {}).get("events") or []
+            end = "DEAD" if "DEAD" in ev else (None if (c and c.get("open")) else "END")
+            if _execute(self.db, dict(t), run, (c or {}).get("current"), ev, end, now):
                 counts["closed"] += 1
         return counts
 
@@ -429,6 +431,9 @@ class BrainTrader:
                     kinds = [k for k, _ in TP.evaluate(TP.Plan(**plan), mc / t["entry_mcap"], peak / t["entry_mcap"],
                                                        now - t["opened_at"], done, _money)]
             end = "HOLD" if now - t["opened_at"] >= hold else None
+            from . import brain as B
+            if mc and B.is_dead(mc, t["entry_mcap"]):
+                end = "DEAD"                               # v4.3.0: the coin died, sell what is left
             if _execute(self.db, t, run, mc, kinds, end, now):
                 counts["closed"] += 1
         return counts

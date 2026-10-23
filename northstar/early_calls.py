@@ -697,6 +697,18 @@ class EarlyCallTracker:
                 except PublishError as e:
                     log.warning("early-call free copy failed for %s: %s", mint, e)
             closing = now - r["created_at"] > self.s.early_call_track_hours * 3600
+            # v4.3.0: back at $5K (dead_mcap_usd) or lower after a $10K+ call = dead. Close it now (nothing is
+            # posted: only good news goes out) and record DEAD so paper trading sells and the learner knows
+            from . import brain as B
+            low_now = row.get("current_mcap") if mc else None
+            if not closing and low_now and B.is_dead(low_now, r["entry_mcap"]):
+                sent.add("DEAD")
+                fields["plan_sent"] = json.dumps(sorted(sent))
+                status_line = "💀 coin died — tracking ended"
+                closing = True
+                counts["dead"] = counts.get("dead", 0) + 1
+                log.info("early call %s: dead at $%,.0f market cap (called at $%,.0f); closed", mint, low_now,
+                         r["entry_mcap"] or 0)
             if closing:
                 fields.update(status="CLOSED", closed_at=now)
                 counts["closed"] += 1

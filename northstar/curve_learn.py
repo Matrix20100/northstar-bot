@@ -81,8 +81,7 @@ def table(db, s, days: float = 7.0, now: Optional[float] = None) -> dict:
         out.append({"floor": f, "n": len(res),
                     "mean": round(statistics.fmean(res), 4) if res else None,
                     "hit_2x": round(100 * sum(r["peak_mc"] / r["entry_mc"] >= 2 for r in sub) / len(sub), 1) if sub else None,
-                    "fell_0_3x": round(100 * sum((r["low_mc"] or r["entry_mc"]) / r["entry_mc"] <= 0.3 for r in sub)
-                                       / len(sub), 1) if sub else None})
+                    "fell_0_3x": round(100 * sum(CW.fell(r) for r in sub) / len(sub), 1) if sub else None})
     return {"days": days, "safe_coins": len(rows), "floors": out}
 
 
@@ -132,7 +131,7 @@ def blocked_table(db, s, days: float = 7.0, now: Optional[float] = None) -> dict
     for key, sub in sorted(groups.items(), key=lambda kv: -len(kv[1])):
         peaks = [r["peak_mc"] / r["entry_mc"] for r in sub if r.get("entry_mc")]
         firsts = [(r.get("low_before_peak") or r["entry_mc"]) / r["entry_mc"] for r in sub if r.get("entry_mc")]
-        lows = [(r.get("low_mc") or r["entry_mc"]) / r["entry_mc"] for r in sub if r.get("entry_mc")]
+        lows = [CW.fell(r) for r in sub if r.get("entry_mc")]
         res = [x for x in (trade_result(r, s) for r in sub) if x is not None]
         n = len(peaks)
         if not n:
@@ -140,7 +139,7 @@ def blocked_table(db, s, days: float = 7.0, now: Optional[float] = None) -> dict
         out.append({"group": key, "n": n,
                     "hit_2x": round(100 * sum(p >= 2 for p in peaks) / n, 1),
                     "clean_2x": round(100 * sum(p >= 2 and f > 0.6 for p, f in zip(peaks, firsts)) / n, 1),
-                    "fell_0_3x": round(100 * sum(lo <= 0.3 for lo in lows) / n, 1),
+                    "fell_0_3x": round(100 * sum(lows) / n, 1),
                     "mean": round(statistics.fmean(res), 4) if res else None})
     return {"days": days, "groups": out}
 

@@ -446,6 +446,7 @@ class Settings(BaseSettings):
     severe_drawdown_pct: float = 50.0
     max_tracking_hours: float = 72.0
     free_proof_multiple: float = 2.0       # v3.0.0: a call is posted to the free channel once it reaches this
+    dead_mcap_usd: float = 5000.0          # v4.3.0: a coin judged at 2x this or more that falls to this market cap or lower is dead/rugged (0 = off)
     callout_rug_close_x: float = 0.3       # v2.5.10: a call at or under this x of its call market cap is closed as rugged (0 = off)
     early_watch_rug_close_x: float = 0.3   # end an early watch once it trades at or under this x of the call price (0 = off)
     embed_edit_min_seconds: int = 300
@@ -495,6 +496,11 @@ class Settings(BaseSettings):
     @classmethod
     def _non_negative_int(cls, v: int) -> int:
         return max(0, int(v))
+
+    @field_validator("dead_mcap_usd")
+    @classmethod
+    def _dead_mcap(cls, v: float) -> float:
+        return max(0.0, float(v))           # 0 = off
 
     @field_validator("early_watch_rug_close_x", "callout_rug_close_x")
     @classmethod

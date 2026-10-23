@@ -374,7 +374,7 @@ async def evaluate_due(db, cg, limit: int = 20, now: Optional[float] = None) -> 
                        (attempts, -1 if attempts >= 3 else 0, row["id"]))
             continue
         peak_i = max(range(len(path)), key=lambda i: path[i][1])
-        lab = B.label_path(path)          # the shared label (brain.py); win is its binary form
+        lab = B.label_path(path, rug_x=B.rug_line(row["entry_mcap"]))   # shared label; v4.3.0 dead line
         db.execute("UPDATE shadow_calls SET evaluated=1, path=?, peak_x=?, trough_x=?, minutes_to_peak=?, win=?, "
                    "label=? WHERE id=?", (json.dumps(path), path[peak_i][1], min(p[2] for p in path),
                                           path[peak_i][0], B.binary(lab), lab, row["id"]))
