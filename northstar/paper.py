@@ -84,7 +84,14 @@ MIN_POSITION_USD = 1.0
 MIN_ENTRY_MCAP = 5_000.0
 MIN_BRAIN_LIQUIDITY = 10_000.0
 MAX_TICK_JUMP = 20.0
-BRAIN_SKIP_CLASSES = ("PREFILTER", "SAFETY_FAIL")
+BRAIN_SKIP_CLASSES = ("PREFILTER", "SAFETY_FAIL", "RISK_THRESHOLD", "SERIOUS_WARNINGS")
+# v4.5.0 operator: "THE BRAIN CHOSE TO TRADE A COIN THAT WAS SO OBVIOUSLY A RUG, EVEN OUR RISK SYSTEM AGREED.
+# THE AI AND RISK SYSTEM MUST WORK TOGETHER". The risk system now has a veto over the brain's buys:
+# a failed one of these checks, a HIGH/CRITICAL risk level or any rug flag means no buy.
+BRAIN_RISK_GATES = {"launch_buys", "launch_shape", "bundled_supply", "sniper_holdings", "creator_dumping",
+                    "insider_micro_trades", "wallet_network", "holder_concentration", "creator_history",
+                    "launch_bundle"}
+BRAIN_BLOCK_RISK = ("ELEVATED", "CRITICAL")
 
 
 def init_schema(db) -> None:
@@ -343,14 +350,28 @@ class BrainTrader:
         if p is None or pair is None:
             return None
         need = float(getattr(self.s, "paper_brain_min_p", 0.15))
-        if p < need:
-            return f"runner odds {p:.0%} under {need:.0%}"
         rug = (r.get("unified") or {}).get("rug_odds") if isinstance(r.get("unified"), dict) else None
         if rug is None:
             rug = (r.get("rug_model") or {}).get("p")
         max_rug = float(getattr(self.s, "paper_brain_max_rug", 0.3))
         if rug is not None and rug >= max_rug:
             return f"rug odds {rug:.0%} at or over {max_rug:.0%}"
+        # the two brains together: runner odds discounted by the rug brain's odds
+        combined = p * (1 - rug) if rug is not None else p
+        if combined < need:
+            return (f"runner odds {p:.0%} x (1 - rug odds {rug:.0%}) = {combined:.0%} under {need:.0%}"
+                    if rug is not None else f"runner odds {p:.0%} under {need:.0%}")
+        risk = getattr(getattr(out, "risk", None), "value", None) or r.get("risk")
+        if risk in BRAIN_BLOCK_RISK:
+            return f"risk system: {'HIGH' if risk == 'ELEVATED' else risk} risk"
+        failed = [str(g.get("name")) for g in r.get("gates") or []
+                  if isinstance(g, dict) and g.get("status") == "FAIL" and g.get("name") in BRAIN_RISK_GATES]
+        if failed:
+            return "risk system: failed " + ", ".join(f.replace("_", " ") for f in failed[:3])
+        from . import rugs as RG
+        flags = RG.flags(r, self.s)
+        if flags:
+            return "rug flags: " + ", ".join(flags[:3])
         rc = str(((r.get("final") or {}).get("reason_class")) or ((r.get("unified") or {}).get("reason_class") if
                                                                   isinstance(r.get("unified"), dict) else "") or "")
         if rc in BRAIN_SKIP_CLASSES:

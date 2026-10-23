@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     launch_check_enabled: bool = True
     launch_max_first_jump_x: float = 6.0    # price multiple reached in the first 2 trading minutes
     launch_max_drawdown_x: float = 0.35     # price at or under this share of its high since launch = dumped
+    watchlist_max_hours: float = 2.0         # v4.5.0: a coin leaves the watch list after this long without becoming a call
+    watchlist_min_mcap_usd: float = 8000.0   # v4.5.0: a coin under this market cap leaves the watch list (dead or never started)
     watchlist_max_rechecks: int = 12        # a watched coin is re-checked at most this many times
     # v2.5.9 rug filters (operator request 22 Oct). Each is a risk threshold: a FAIL rejects the coin.
     launch_trades_enabled: bool = True       # read the first trades on the pump.fun curve (launch_trades.py)

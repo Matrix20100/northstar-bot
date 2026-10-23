@@ -101,6 +101,8 @@ EXPERIMENTAL_LABELS = {
     "avg_trade_h6": "average trade size (6 h)", "avg_trade_m5": "average trade size (5 min)",
     "buy_share_h6": "share of buys (6 hours)", "market_heat": "market heat (other coins' 1-hour move)",
     "log_tx_h6": "trades in 6 hours",
+    # v4.5.0: the risk system's verdicts, offered to the brain (kept only if they improve accuracy)
+    "rug_odds": "rug brain's odds", "risk_level": "risk system level",
 }
 LABELS.update(EXPERIMENTAL_LABELS)
 ALL_FEATURES = FEATURES + list(EXPERIMENTAL_LABELS)
@@ -245,6 +247,9 @@ def vector(report: dict, ts: Optional[float] = None) -> dict:
                                    and c.get("strength") in ("STRONG", "CONFIRMED"))) if cl.get("bubbles") else None,
         "two_hop": _num(cl.get("two_hop_links")) if cl.get("bubbles") else None,
         "hub_funded": float(len(cl.get("hub_funders") or [])) if cl.get("bubbles") else None,
+        "rug_odds": _num((report.get("unified") or {}).get("rug_odds")) if isinstance(report.get("unified"), dict)
+        else None,
+        "risk_level": {"LOW_DETECTED": 0.0, "MODERATE": 1.0, "ELEVATED": 2.0, "CRITICAL": 3.0}.get(report.get("risk")),
     }
     for name in ("narrative", "demand", "liquidity", "holders", "momentum", "wallet_quality", "evidence"):
         c = comps.get(name) or {}

@@ -360,7 +360,7 @@ class Database:
         "discovery_events": [("seen", "INTEGER NOT NULL DEFAULT 1"), ("last_ts", "REAL")],
         "decision_tracking": [("last_polled_at", "REAL")],
         # v4.5.0: highest market cap / liquidity seen (confirmed-rug check) and live rug flags (Watching)
-        "candidates": [("peak_mcap", "REAL"), ("peak_liq", "REAL"), ("rug_flags", "TEXT")],
+        "candidates": [("peak_mcap", "REAL"), ("peak_liq", "REAL"), ("rug_flags", "TEXT"), ("watch_since", "REAL")],
     }
 
     def _add_missing_columns(self) -> None:
@@ -651,11 +651,30 @@ class Database:
             fields["reasons"] = json.dumps(fields["reasons"])
 
         columns = ", ".join(f"{key} = ?" for key in fields)
+        # v4.5.0: when a coin went on the watch list, so it can be taken off after `watchlist_max_hours`
+        if state == "WATCHLIST" and "watch_since" not in fields:
+            columns += ", watch_since = COALESCE(watch_since, ?)"
+            fields["_ws"] = fields["updated_at"]
+        elif state not in ("WATCHLIST", "RESEARCHING") and "watch_since" not in fields:
+            columns += ", watch_since = NULL"
 
         self.execute(
             f"UPDATE candidates SET {columns} WHERE mint = ?",
             [*fields.values(), mint],
         )
+
+    def expire_watchlist(self, max_hours: float, now: Optional[float] = None) -> int:
+        """v4.5.0: take coins off the watch list after `max_hours` (operator: a coin with score 100 sat on
+        the list for hours at a $5K market cap). A new surge, migration or listing brings one back."""
+        if not max_hours or max_hours <= 0:
+            return 0
+        now = now or time.time()
+        why = json.dumps([f"left the watch list: watched for more than {max_hours:g}h without becoming a call"])
+        with self._lock:
+            return self._conn.execute(
+                "UPDATE candidates SET state = 'STALE', next_research_at = NULL, watch_since = NULL, reasons = ?, "
+                "updated_at = ? WHERE state = 'WATCHLIST' AND COALESCE(watch_since, discovered_at) < ?",
+                (why, now, now - max_hours * 3600)).rowcount
 
     def unschedule_stale_launches(self) -> int:
         """Drop queued pump.fun launches that have never been researched.
