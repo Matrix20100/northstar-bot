@@ -138,6 +138,12 @@ def learn(db, s, now: Optional[float] = None) -> Optional[dict]:
     now = now or time.time()
     if not getattr(s, "curve_learn_enabled", True):
         return None
+    try:                                   # v4.1.0: a floor set on the dashboard is the operator's call
+        from . import operator_settings as OS
+        if "runner_min_score" in OS.keys(db):
+            return None
+    except Exception:  # noqa: BLE001
+        pass
     rows = [dict(r) for r in _rows(db, float(getattr(s, "curve_learn_days", 7.0)), now)]
     need = int(getattr(s, "curve_learn_min_samples", 25))
     if len(rows) < need:
@@ -194,6 +200,12 @@ def apply_saved(db, s) -> Optional[float]:
     """At start: put back the floor the learner chose last time (if learning is on)."""
     if not getattr(s, "curve_learn_enabled", True):
         return None
+    try:
+        from . import operator_settings as OS
+        if "runner_min_score" in OS.keys(db):
+            return None
+    except Exception:  # noqa: BLE001
+        pass
     try:
         row = db.fetchone("SELECT value FROM meta WHERE key = ?", (META_KEY,))
         if not row:

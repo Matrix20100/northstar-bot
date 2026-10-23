@@ -106,7 +106,7 @@ async def test_engine_posts_scalp_instead_of_rejecting(settings, db, monkeypatch
         return out
     monkeypatch.setattr(eng.researcher, "research", fake_research)
     await eng.process(MINT)
-    assert pub.sent and pub.sent[0][1]["title"].startswith("☠️ RUG SCALP")
+    assert pub.sent and pub.sent[0][1]["title"].startswith("☠️ $") and "☠️ Rug scalp" in pub.sent[0][1]["description"]
     a = db.fetchone("SELECT call_type, plan_json FROM alerts WHERE mint=?", (MINT,))
     assert a["call_type"] == "RUG_SCALP" and json.loads(a["plan_json"])["stop"] == 0.85
     assert not db.fetchone("SELECT 1 FROM free_channel_posts"), "scalps never go to the free channel"
@@ -121,7 +121,7 @@ async def test_scalp_disabled_means_plain_reject(settings, db, monkeypatch):
 async def test_embed_shows_and_updates_peak(settings, db):
     settings.embed_edit_min_seconds = 0
     aid, pub, p, out = await published(settings, db)
-    assert pub.sent[0][1]["description"].startswith("**Market Cap**")
+    assert pub.sent[0][1]["description"].startswith("**Callout price:**")
     mon = Monitor(settings, db, pub, p.dex, None)
     p.dex.pairs = [make_pair(price_usd=out.pair.price_usd * 1.8, market_cap=out.pair.market_cap * 1.8)]
     await mon.run_once()
@@ -130,9 +130,9 @@ async def test_embed_shows_and_updates_peak(settings, db):
     a = db.get_alert(aid)
     assert abs(a["peak_mcap"] - out.pair.market_cap * 1.8) < 1 and a["peak_at"]
     lines = pub.edits[-1][1]["description"].split("\n")
-    peak = next(x for x in lines if x.startswith("**Peak**"))
+    peak = next(x for x in lines if x.startswith("**Peak since callout:**"))
     assert money(out.pair.market_cap * 1.8) in peak and "1.80x" in peak
-    assert "1.20x" in next(x for x in lines if x.startswith("**Market Cap**"))
+    assert "1.20x" in next(x for x in lines if x.startswith("**Multiplier:**"))
 
 
 async def test_candle_high_raises_peak_between_checks(settings, db):

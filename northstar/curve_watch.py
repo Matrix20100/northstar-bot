@@ -62,7 +62,7 @@ def init_schema(db) -> None:
         cols = {r[1] for r in db._conn.execute("PRAGMA table_info(curve_watch)").fetchall()}
         for col, decl in (("runner_score", "REAL"), ("runner_safe", "INTEGER"), ("runner_at", "REAL"),
                           ("excluded", "INTEGER NOT NULL DEFAULT 0"), ("runner_block", "TEXT"),
-                          ("bundle_pct", "REAL")):
+                          ("bundle_pct", "REAL"), ("theme", "TEXT")):
             if col not in cols:
                 db._conn.execute(f"ALTER TABLE curve_watch ADD COLUMN {col} {decl}")
 
@@ -124,14 +124,16 @@ def observe(db, pairs_by_mint: dict, now: float, s, attention=None) -> dict:
                         att = attention.quick(mint, main.base_name, main.base_symbol)
                     except Exception:  # noqa: BLE001
                         att = None
+                from . import themes as TH
+                theme = TH.classify(main.base_name, main.base_symbol)     # v4.2.0: what the coin is about
                 db.execute(
                     "INSERT INTO curve_watch(mint, symbol, entered_at, age_min, entry_mc, entry_liq, vol_m5, buys_m5, "
-                    "sells_m5, chg_m5, chg_h1, attention, peak_mc, peak_at, low_mc, low_before_peak, last_mc, last_ts) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "sells_m5, chg_m5, chg_h1, attention, peak_mc, peak_at, low_mc, low_before_peak, last_mc, last_ts, "
+                    "theme) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (mint, main.base_symbol, now, round(age, 1) if age is not None else None, mc, main.liquidity_usd,
                      (main.vol or {}).get("m5"), t5.get("buys"), t5.get("sells"),
                      (main.price_change or {}).get("m5"), (main.price_change or {}).get("h1"), att,
-                     mc, now, mc, mc, mc, now))
+                     mc, now, mc, mc, mc, now, theme))
                 out["entered"] += 1
                 continue
             peak, low = row["peak_mc"] or mc, row["low_mc"] or mc

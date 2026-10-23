@@ -51,7 +51,8 @@ async def test_call_uses_market_cap_at_post_time(settings, db):
     aid = await AlertService(settings, db, pub, p.dex).publish(out)
     assert abs(db.get_alert(aid)["entry_mcap"] - researched_mc * 1.17) < 1
     e = pub.sent[0][1]
-    assert e["description"].split("\n")[0] == f"**Market Cap**: {money(researched_mc * 1.17)}"
+    first = e["description"].split("\n")[0]
+    assert first.startswith("**Callout price:**") and first.endswith(f"{money(researched_mc * 1.17)} MC")
     assert db.fetchone("SELECT report FROM research_snapshots WHERE id=?", (out.snapshot_id,)) is not None
 fmt = money
 
@@ -141,15 +142,15 @@ async def test_monitor_posts_tp_then_exit_once(settings, db):
     await mon.run_once()
     await mon.run_once()
     exits = [e for _, e in pub.sent if e["title"].startswith("🚪 EXIT")]
-    assert len(exits) == 1, "exit posted exactly once"
+    assert exits == [], "v4.0.0: exits are recorded, never posted (only good news)"
     a = db.get_alert(aid)
     assert {"PLAN:TP1", "PLAN:TRAIL"} <= set(json.loads(a["warnings"]))
     assert a["state"] != "WARNING", "plan events are not risk warnings"
-    status = next(x for x in pub.edits[-1][1]["description"].split("\n") if x.startswith("**Plan status**"))
-    assert "trailing stop — exited" in status
+    assert not any("exited" in x for x in pub.edits[-1][1]["description"].split("\n"))
 
 
 async def test_monitor_time_stop(settings, db):
+    settings.post_drawdowns = True                   # the old behaviour, still available as a setting
     aid, pub, p, out = await published(settings, db)
     db.update_alert(aid, sent_at=time.time() - 31 * 60)
     p.dex.pairs = [make_pair(price_usd=out.pair.price_usd * 1.1, market_cap=out.pair.market_cap * 1.1)]
@@ -158,6 +159,7 @@ async def test_monitor_time_stop(settings, db):
 
 
 async def test_monitor_liquidity_collapse_is_an_exit(settings, db):
+    settings.post_drawdowns = True
     aid, pub, p, _ = await published(settings, db)
     p.dex.pairs = [make_pair(liquidity_usd=30_000.0, price_usd=0.0009)]
     await Monitor(settings, db, pub, p.dex, None).run_once()
@@ -210,27 +212,26 @@ def test_momentum_check():
                                                   volume_acceleration=0.1, buy_sell_ratio=0.5).blockers)
 
 
-async def test_v3_no_delayed_free_copy_of_a_fresh_call(settings, db):
+async def test_v4_free_channel_gets_every_call_20_minutes_later_with_milestones_at_once(settings, db):
+    """Operator: "the free channel gets VIP callouts 20 minutes later, with all milestones posting at once"."""
     from northstar.alerts import AlertService
     settings.discord_free_channel_id = 555
-    settings.free_callout_delay_minutes = 0
+    assert Settings(_env_file=None).free_callout_delay_minutes == 20
     aid, pub, p, out = await published(settings, db)
-    await AlertService(settings, db, pub, p.dex).publish_due_free_posts()
-    assert not db.fetchone("SELECT 1 FROM free_channel_posts WHERE alert_id=?", (aid,))
-    assert not any(ch == 555 for ch, _ in pub.sent), "the free channel never gets a fresh call"
-
-
-async def test_v3_free_channel_gets_the_call_once_it_is_proven(settings, db):
-    settings.discord_free_channel_id = 555
-    aid, pub, p, out = await published(settings, db)
+    row = db.fetchone("SELECT due_at FROM free_channel_posts WHERE alert_id=?", (aid,))
+    assert row and abs(row["due_at"] - (time.time() + settings.free_callout_delay_minutes * 60)) < 5
     mon = Monitor(settings, db, pub, p.dex, None)
-    p.dex.pairs = [make_pair(price_usd=out.pair.price_usd * 1.6, market_cap=out.pair.market_cap * 1.6)]
-    await mon.run_once()
-    assert not any(ch == 555 for ch, _ in pub.sent), "1.5x is not a proven win yet"
-    p.dex.pairs = [make_pair(price_usd=out.pair.price_usd * 2.3, market_cap=out.pair.market_cap * 2.3)]
-    await mon.run_once()
+    p.dex.pairs = [make_pair(price_usd=out.pair.price_usd * 3.2, market_cap=out.pair.market_cap * 3.2)]
+    await mon.run_once()                                     # 1.5x, 2x, 3x reached before the copy
+    assert not any(ch == 555 for ch, _ in pub.sent), "nothing in free before the delay"
+    db.execute("UPDATE free_channel_posts SET due_at=? WHERE alert_id=?", (time.time() - 1, aid))
+    await AlertService(settings, db, pub, p.dex).publish_due_free_posts()
     free = [e for ch, e in pub.sent if ch == 555]
-    assert len(free) == 1 and "2" in free[0]["title"]
+    assert len(free) == 1 + len(json.loads(db.get_alert(aid)["milestones_hit"]))   # the call + milestones at once
+    assert free[0]["description"].startswith("**Callout price:**") and "hit" in free[-1]["title"]
+    p.dex.pairs = [make_pair(price_usd=out.pair.price_usd * 5.5, market_cap=out.pair.market_cap * 5.5)]
+    await mon.run_once()                                     # a new milestone after the copy: free too
+    assert any(ch == 555 and "5x" in e["title"] for ch, e in pub.sent)
 
 
 def test_shipped_runner_plan_is_valid():

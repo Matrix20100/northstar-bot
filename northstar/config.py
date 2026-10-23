@@ -26,7 +26,8 @@ class Settings(BaseSettings):
     discord_token: Optional[SecretStr] = None
     discord_channel_id: Optional[int] = None  # legacy/default channel; use as VIP channel
     discord_free_channel_id: Optional[int] = None  # optional public funnel channel
-    free_callout_delay_minutes: int = 15  # VIP gets the call immediately; free receives it later
+    free_callout_delay_minutes: int = 20  # v4.0.0: was 15; free gets every VIP call this much later
+    post_drawdowns: bool = False          # v4.0.0: stop/exit/drawdown messages are recorded, not posted
     free_milestones: str = "2,3,5,10"  # free channel gets selected milestones only
     discord_warning_channel_id: Optional[int] = None  # defaults to main/VIP channel
     dry_run: bool = False  # True = never post; write embeds to data/dry_run_alerts.jsonl
@@ -112,6 +113,18 @@ class Settings(BaseSettings):
     micro_insider_min_trades: int = 3        # tiny trades by top holders / bundlers / snipers that fail; 0 = off
     tracked_wallets_file: str = "data/tracked_wallets.json"  # Axiom wallet-tracker export (or one address a line)
     tracked_wallets_enabled: bool = True
+    # v3.5.0 wallet watch (wallet_flow.py): stream what the tracked wallets trade (PumpPortal
+    # subscribeAccountTrade; needs NORTHSTAR_PUMPPORTAL_API_KEY, metered 0.01 SOL per 10,000 trades)
+    # v4.2.0 Twitter tracker feed (social_feed.py): Discord channel ids where J7 / uxento post their alerts
+    twitter_feed_channel_ids: str = ""
+    twitter_feed_seconds: float = 20.0
+    twitter_feed_research: bool = True         # research a contract address posted in the feed at once
+    wallet_watch_enabled: bool = True
+    wallet_flow_window_min: float = 30.0       # flow is counted over this window
+    wallet_flow_min_buyers: int = 2            # this many different tracked wallets buying -> research now
+    wallet_flow_big_buy_sol: float = 5.0       # or one tracked wallet buying this much SOL in one trade
+    wallet_watch_max_events_day: int = 30000   # about 0.03 SOL a day; paused until 00:00 UTC after this
+    wallet_bot_trades_per_hour: int = 60       # a wallet trading more than this an hour is muted for the day
     rejected_max_rechecks: int = 6
     second_chance_min_liquidity_usd: float = 35_000.0  # "strong liquidity" for a re-check (rug rate fell above ~$33K on 21 Oct paths)
     insufficient_max_rechecks: int = 8      # missing data is retried, but not forever
@@ -138,7 +151,7 @@ class Settings(BaseSettings):
     min_curve_buy_sol_5m: float = 2.0
     min_curve_early_score: float = 75.0
     max_curve_chase_pct: float = 400.0  # early-watch is not offered once the curve is up more than this since launch
-    early_watch_channel: str = "off"  # v3.0.0 default off (runner calls replace them) | vip; free is no longer allowed
+    early_watch_channel: str = "vip"  # v3.0.0 default off (runner calls replace them) | vip; free is no longer allowed
     early_watch_refresh_seconds: int = 30  # how often open early-watch posts are re-read from the bonding curve
     min_verified_swaps: int = 15  # verified PumpSwap swaps needed before post-migration demand counts as VERIFIED
 
@@ -340,8 +353,16 @@ class Settings(BaseSettings):
     runner_min_score: float = 45.0        # v3.2.2: was 60; with no KOL attention a safe, active coin scores ~50-58
     runner_max_per_hour: int = 6
     runner_launch_max_pages: int = 20
-    runner_max_rechecks: int = 3           # v3.4.0: a high scorer that is blocked is checked again this many times
-    runner_recheck_seconds: float = 180.0  # ... this far apart; then it is dropped from tracking
+    runner_target_calls_per_hour: int = 2     # v4.2.0: behind this pace the score bar is lowered a little ...
+    runner_pacing_max_relief: float = 5.0     # ... by at most this many points (never under curve_learn_min_floor)
+    runner_reject_bundle_pct: float = 40.0  # v4.0.1: a bundle this big rejects outright (milder ones cost points)
+    runner_reject_dev_pct: float = 20.0
+    runner_reject_crashed_x: float = 0.2    # v4.2.0: already at or under this share of its high -> reject
+    runner_reject_problem_count: int = 3    # v4.2.0: this many serious problems at once -> reject (0 = off)     # v4.0.1: a dev holding or buying this much rejects outright
+    runner_max_rechecks: int = 5           # v4.0.0: a near-miss is rescanned this many times (5 over ~15 min)
+    runner_recheck_seconds: float = 60.0   # first rescan after 1 min, then 2, 4, 8 ...
+    runner_recheck_max_seconds: float = 600.0   # ... never more than 10 min apart
+    runner_recheck_margin: float = 15.0    # rescanned when the score is within this many points of the floor
     # v3.3.0 curve learner (curve_learn.py): learns the runner score floor from real curve outcomes
     curve_learn_enabled: bool = True
     curve_learn_minutes: float = 30.0

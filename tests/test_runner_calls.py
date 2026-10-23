@@ -60,7 +60,8 @@ def test_radar_metrics_are_read_fresh_only(db):
     assert RN.radar_metrics(db, addr("never")) is None
 
 
-def test_blockers_name_every_reason(db):
+def test_blockers_are_candidate_rules_and_traps_only(db):
+    """v4.0.0: only real traps block; a bundled launch, holders or a bad chart lower the score."""
     s = Settings(_env_file=None)
     m = {"market_cap": 40_000, "vol_m5": 20_000, "buys_m5": 90, "sells_m5": 40, "age_min": 12}
     assert RN.blockers(report(), m, s) == []
@@ -68,37 +69,50 @@ def test_blockers_name_every_reason(db):
     bad = RN.blockers(report(), {**m, "market_cap": 200_000, "vol_m5": 1_000, "sells_m5": 200, "age_min": 90}, s)
     assert any("outside" in x for x in bad) and any("min old" in x for x in bad)
     assert any("5-min volume" in x for x in bad) and any("more sells" in x for x in bad)
-    # unknown is not a pass: a required check that did not run blocks the call
+    # a trap that did not run (unknown) still blocks
     r = report()
-    r["gates"] = [g for g in r["gates"] if g["name"] != "launch_buys"]
-    assert any("launch buys not passed" in x for x in RN.blockers(r, m, s))
-    r = report()
-    r["gates"].append({"name": "wallet_network", "status": "FAIL", "reason": "linked group holds 20%"})
-    assert any("linked group" in x for x in RN.blockers(r, m, s))
-    assert any("launch chart" in x for x in RN.blockers(report(launch={"verdict": "INSTANT_JUMP",
-                                                                       "reasons": ["jumped"]}), m, s))
-    assert "rug check RUG LIKELY" in RN.blockers(report(verdict={"level": "RUG LIKELY"}), m, s)
+    r["gates"] = [g for g in r["gates"] if g["name"] != "mint_authority"]
+    assert any("trap check: mint authority" in x for x in RN.blockers(r, m, s))
+    assert "trap check: rug check RUG LIKELY" in RN.blockers(report(verdict={"level": "RUG LIKELY"}), m, s)
+    # no longer blocks on its own: a failed launch check, failed wallet network, bad chart, HIGH RISK
+    r = report(launch={"verdict": "INSTANT_JUMP", "reasons": ["jumped"]}, verdict={"level": "HIGH RISK"})
+    r["gates"] = [g for g in r["gates"] if g["name"] != "launch_buys"] + [
+        {"name": "launch_buys", "status": "FAIL"}, {"name": "wallet_network", "status": "FAIL"}]
+    for one in ({"launch": {"verdict": "INSTANT_JUMP", "reasons": ["jumped"]}}, {"verdict": {"level": "HIGH RISK"}}):
+        assert RN.blockers(report(**one), m, s) == []
+    # ... but v4.2.0: three serious problems at once (wallet network + jumped + HIGH RISK) reject
+    assert [b for b in RN.blockers(r, m, s) if b.startswith("extreme: 3 serious problems")]
 
 
-def test_score_parts_and_attention_weight():
+def test_score_parts_penalties_and_attention_weight():
     m = {"market_cap": 40_000, "vol_m5": 24_000, "buys_m5": 90, "sells_m5": 40, "chg_m5": 10}
     a = RN.score(report(), m, {"score": 0})
     b = RN.score(report(), m, {"score": 100})
-    assert a["momentum"] == 45.0 and b["attention"] == 25.0 and b["score"] == a["score"] + 25
-    assert 0 < a["safety"] <= 30
+    assert a["momentum"] == 40.0 and b["attention"] == 25.0 and b["score"] == min(100.0, a["score"] + 25)
+    assert a["safety"] == 35.0 and a["penalties"] == []
     weak = RN.score(report(), {**m, "vol_m5": 2_000, "buys_m5": 10, "sells_m5": 20, "chg_m5": -5}, {"score": 0})
     assert weak["momentum"] < 15
+    # problems are scaled penalties, not blocks
+    bundled = report(launch_buys={"verdict": "BUNDLED", "bundle_pct": 30.0, "early_buy_pct": 30.0,
+                                  "sniper_held_pct": 2.0})
+    pb = RN.score(bundled, m, {"score": 0})
+    assert 0 < 35 - pb["safety"] < 12 and any("bundled launch: 30%" in p["why"] for p in pb["penalties"])
+    awful = report(launch_buys={"verdict": "BUNDLED", "bundle_pct": 74.0, "early_buy_pct": 75.0,
+                                "sniper_held_pct": 40.0},
+                   holders={"top10_adj": 46.0, "max_single_adj": 25.0, "creator_pct": 2.0},
+                   launch={"verdict": "DUMPED"}, verdict={"level": "HIGH RISK", "red": []})
+    assert RN.score(awful, m, {"score": 0})["safety"] == 0.0
 
 
-# ----------------------------------------------------------------------------- the caller
 def test_runner_call_posts_compact_embed_without_any_ai(db):
     radar(db)
     s, pub, c = caller(db)
     row = asyncio.run(c.consider(out(report())))
     assert row and row["entry_mcap"] == 40_000 and pub.sent[0][0] == 111       # VIP only
     e = pub.sent[0][1]
-    assert e["title"].startswith("🎯 NORTHSTAR CALL") and "$KIMCHI" in e["title"]
-    assert "**Market Cap**: $40.0K" in e["description"] and "**Score**:" in e["description"]
+    assert e["title"].startswith("🎯 $KIMCHI") and e["author"]["name"].startswith("Northstar Callouts")
+    assert "**Callout price:** $0.0000400 · $40.0K MC" in e["description"]
+    assert "**Callout type:** 🎯 Runner call · score" in e["description"]
     assert e["thumbnail"]["url"] == "https://example.invalid/k.png"
     assert e["_buttons"][0] == {"label": "More info", "custom_id": f"{MORE_INFO_PREFIX}{MINT}"}
     assert not [x for x in pub.sent if x[0] == 222]                             # free gets proof only
@@ -135,7 +149,8 @@ def test_more_info_rebuilds_the_full_research():
     assert embeds and all(isinstance(e, dict) and e.get("title") for e in embeds)
     e = runner_call_embed(r, {"entry_mcap": 40_000, "current_mcap": 90_000, "peak_mcap": 100_000,
                               "sent_at": time.time()})
-    assert "2.25x" in e["description"] and "**Peak**: $100.0K (2.50x)" in e["description"]
+    assert "**Multiplier:** 2.25x" in e["description"]
+    assert "**Peak since callout:** 2.50x ($100.0K MC)" in e["description"]
 
 
 # ----------------------------------------------------------------------------- attention
@@ -207,9 +222,10 @@ def test_a_typical_safe_active_coin_with_no_attention_clears_the_default_score()
     m = {"market_cap": 40_000, "vol_m5": 10_000, "buys_m5": 80, "sells_m5": 60, "chg_m5": 5}
     sc = RN.score(report(), m, {"score": 0})
     assert sc["score"] >= Settings(_env_file=None).runner_min_score
-    weak = RN.score(report(), {**m, "vol_m5": 7_500, "market_cap": 85_000, "buys_m5": 60, "sells_m5": 60,
-                               "chg_m5": -10}, {"score": 0})
-    assert weak["score"] < Settings(_env_file=None).runner_min_score
+    # a heavily rigged launch with ordinary momentum does not
+    rigged = report(launch_buys={"verdict": "BUNDLED", "bundle_pct": 74.0, "early_buy_pct": 75.0,
+                                 "sniper_held_pct": 30.0}, holders={"top10_adj": 46.0, "max_single_adj": 25.0})
+    assert RN.score(rigged, m, {"score": 0})["score"] < Settings(_env_file=None).runner_min_score
 
 
 def test_runner_summary_counts_candidates_and_names_the_blockers(db):
@@ -221,7 +237,7 @@ def test_runner_summary_counts_candidates_and_names_the_blockers(db):
     asyncio.run(c.consider(out(report())))
     line = c.runner_summary()
     assert line.startswith("runner check: 2 coin(s) in the band, 1 called")
-    assert "mint authority not passed x1" in line
+    assert "trap check x1" in line
     assert c.runner_summary() is None                        # reset after each report
 
 
@@ -247,31 +263,39 @@ def blocked(**over):
     return r
 
 
-def test_follow_up_rechecks_a_high_scorer_a_few_times_then_drops_it(db):
-    s, pub, c = caller(db, runner_max_rechecks=3)
+def test_follow_up_rescans_a_near_miss_every_1_to_10_minutes_then_drops_it(db):
+    """v4.0.0: rescans after 1, 2, 4, 8 min (max 10), up to 5 times."""
+    s, pub, c = caller(db)
     r = blocked()
-    r["gates"].append({"name": "holder_concentration", "status": "FAIL", "reason": "top-10 30%"})  # can change
-    r["runner"]["blockers"] = ["holder concentration not passed: top-10 30%"]
-    for i in range(3):
+    r["runner"]["score"] = 40                                   # 5 under the floor: a near miss
+    r["runner"]["blockers"] = ["runner score 40 < 45"]
+    delays = []
+    for i in range(5):
         kind, why = c.follow_up(MINT, r)
-        assert kind == "RECHECK" and f"recheck {i + 1} of 3" in why
+        assert kind == "RECHECK" and f"rescan {i + 1} of 5" in why
+        delays.append(c.recheck_delay(i + 1))
+    assert delays == [60, 120, 240, 480, 600]
     kind, why = c.follow_up(MINT, r)
-    assert kind == "DROP" and "after 3 recheck" in why
-    assert c.runner_stats["rechecks"] == 3 and c.runner_stats["dropped"] == 1
+    assert kind == "DROP" and "after 5 rescan" in why
+    assert c.runner_stats["rechecks"] == 5 and c.runner_stats["dropped"] == 1
 
 
-def test_follow_up_drops_low_scorers_and_coins_that_can_never_pass(db):
+def test_follow_up_drops_far_misses_and_traps(db):
     s, pub, c = caller(db)
     low = blocked()
-    low["runner"]["score"] = 30
+    low["runner"]["score"] = 20                                 # far under the floor
     assert c.follow_up(addr("low"), low)[0] == "DROP"
-    bundled = blocked()
-    bundled["gates"] = [g for g in bundled["gates"] if g["name"] != "launch_buys"] + [
-        {"name": "launch_buys", "status": "FAIL", "reason": "9 wallet(s) bought 20.0% in the creation block"}]
-    kind, why = c.follow_up(addr("bund"), bundled)
-    assert kind == "DROP" and "can never pass: launch buys" in why
-    jumped = blocked(launch={"verdict": "INSTANT_JUMP", "reasons": ["launch jumped 7.2x"]})
-    assert "launch chart" in c.follow_up(addr("jump"), jumped)[1]
+    trap = blocked()
+    trap["gates"] = [g for g in trap["gates"] if g["name"] != "mint_authority"] + [
+        {"name": "mint_authority", "status": "FAIL", "reason": "dev can still mint"}]
+    kind, why = c.follow_up(addr("trap"), trap)
+    assert kind == "DROP" and "can never pass: mint authority" in why
+    rug = blocked(verdict={"level": "RUG LIKELY"})
+    assert "RUG LIKELY" in c.follow_up(addr("rug"), rug)[1]
+    # a bundled launch is no longer permanent: it is a penalty, so a near miss is rescanned
+    bund = blocked()
+    bund["gates"].append({"name": "launch_buys", "status": "FAIL", "reason": "bundled"})
+    assert c.follow_up(addr("bund"), bund)[0] == "RECHECK"
     called = blocked()
     called["runner"]["called"] = True
     assert c.follow_up(addr("ok"), called) is None
@@ -282,17 +306,17 @@ async def test_engine_drops_or_reschedules_and_the_radar_never_brings_a_dropped_
     from conftest import MemoryPublisher as MP, make_pair, strong_providers
     from northstar.engine import Engine
     eng = Engine(settings, db, strong_providers(), MP())
-    hi, bund = addr("hiscore"), addr("bundled")
+    hi, bund = addr("hiscore"), addr("bundled")      # bund: now a coin with a trap
     for m in (hi, bund):
         db.upsert_discovery(m, "pumpportal_new", 1.0, "C", "C", {})
 
     async def fake_research(mint, cand=None, force=False):
         r = blocked(mint=mint)
         if mint == bund:
-            r["gates"] = [g for g in r["gates"] if g["name"] != "launch_buys"] + [
-                {"name": "launch_buys", "status": "FAIL", "reason": "bundled"}]
+            r["gates"] = [g for g in r["gates"] if g["name"] != "freeze_authority"] + [
+                {"name": "freeze_authority", "status": "FAIL", "reason": "dev can freeze wallets"}]
         else:
-            r["gates"].append({"name": "sniper_holdings", "status": "FAIL", "reason": "snipers hold 20%"})
+            r["runner"]["score"] = 40                         # a near miss
         return ResearchOutcome(mint, Action.REJECT, r, pair=None)
 
     async def no_call(out, now=None, sources=None):
@@ -302,7 +326,8 @@ async def test_engine_drops_or_reschedules_and_the_radar_never_brings_a_dropped_
     for m in (hi, bund):
         await eng.process(m)
     a, b = db.get_candidate(hi), db.get_candidate(bund)
-    assert a["state"] == "WATCHLIST" and a["next_research_at"] > time.time() + 100
+    assert a["state"] == "WATCHLIST" and time.time() + 30 < a["next_research_at"] <= time.time() + 61
+    assert hi in eng._rescan                                  # the rescan takes fresh numbers first
     assert b["state"] == "DROPPED" and b["next_research_at"] is None
     assert "dropped from tracking: can never pass" in b["reasons"]
 
@@ -335,3 +360,105 @@ async def test_radar_scans_only_launches_young_enough_to_call(db):
                               txns={"m5": {"buys": 90, "sells": 30}, "h1": {"buys": 1, "sells": 1}}) for m in mints]
     found = await EC.CurveRadar(s, db, Dex()).run_once()
     assert found == [young]
+
+
+# ----------------------------------------------------------------------------- v4.0.0 pulse + no single-reason rejects
+def test_pulse_pattern_rewards_a_first_pump_and_a_first_pullback():
+    now = 10_000.0
+    mk = lambda caps: [(now - 600 + i * 60, c) for i, c in enumerate(caps)]
+    pull = RN.pulse_pattern(mk([20, 24, 30, 36, 30, 26, 24, 27, 29]), now)        # up 1.8x, back to 67%, bouncing
+    assert pull["bonus"] == 10 and "first pullback" in pull["pattern"]
+    pump = RN.pulse_pattern(mk([20, 22, 26, 30, 31]), now)                         # up 1.55x, at the high
+    assert pump["bonus"] == 6 and "first pump" in pump["pattern"]
+    dump = RN.pulse_pattern(mk([40, 50, 45, 30, 22]), now)
+    assert dump["bonus"] == -8
+    assert RN.pulse_pattern(mk([20, 21]), now)["bonus"] == 0                        # too few looks
+    flat = RN.pulse_pattern(mk([20, 21, 20, 21, 20]), now)
+    assert flat["bonus"] == 0 and flat["pattern"] is None
+
+
+def test_the_pulse_bonus_counts_in_the_score():
+    m = {"market_cap": 40_000, "vol_m5": 10_000, "buys_m5": 80, "sells_m5": 60, "chg_m5": 5}
+    base = RN.score(report(), m, {"score": 0})["score"]
+    up = RN.score(report(), {**m, "pulse": {"pattern": "first pullback", "bonus": 10}}, {"score": 0})
+    assert up["score"] == base + 10 and up["pulse"] == 10 and "pulse: first pullback" in up["notes"]
+
+
+def test_a_strong_coin_with_a_moderate_bundle_is_now_called(db):
+    """Operator: "I don't want all coins to reject simply cause of 1 thing". A 20% bundle used to block
+    outright; now it costs a few safety points and a strong coin is still called."""
+    radar(db)
+    s, pub, c = caller(db)
+    r = report(launch_buys={"verdict": "BUNDLED", "bundle_pct": 20.0, "early_buy_pct": 22.0,
+                            "sniper_held_pct": 4.0})
+    r["gates"] = [g for g in r["gates"] if g["name"] != "launch_buys"] + [
+        {"name": "launch_buys", "status": "FAIL", "reason": "4 wallet(s) bought 20.0% in the creation block"}]
+    row = asyncio.run(c.consider(out(r)))
+    assert row is not None and r["runner"]["called"]
+    assert any("bundled launch: 20%" in p["why"] for p in r["runner"]["penalties"])
+
+
+def test_extreme_bundles_and_dev_bags_still_reject_outright(db):
+    """v4.0.1, operator: "traps + extreme only". A 40%+ bundle or a dev holding/buying 20%+ rejects
+    however strong the rest is, and the coin is dropped at once (it can never clear)."""
+    s, pub, c = caller(db)
+    big = report(launch_buys={"verdict": "BUNDLED", "bundle_pct": 45.0, "early_buy_pct": 50.0, "sniper_held_pct": 2.0})
+    radar(db)
+    assert asyncio.run(c.consider(out(big))) is None
+    assert any(b.startswith("extreme: 45% bought in the creation block") for b in big["runner"]["blockers"])
+    kind, why = c.follow_up(MINT, big)
+    assert kind == "DROP" and "extreme" in why
+    dev = report(mint=addr("devbag"), launch_buys={"verdict": "SNIPED", "bundle_pct": 0.1, "early_buy_pct": 1.0,
+                                                   "dev_buy_pct": 53.0, "sniper_held_pct": 1.0})
+    radar(db, mint=addr("devbag"))
+    assert asyncio.run(c.consider(out(dev))) is None
+    assert any("dev holds or bought 53%" in b for b in dev["runner"]["blockers"])
+    # just under the limits: a penalty, not a reject
+    ok = report(mint=addr("under"), launch_buys={"verdict": "BUNDLED", "bundle_pct": 39.0, "early_buy_pct": 20.0,
+                                                 "sniper_held_pct": 2.0})
+    assert not [b for b in RN.blockers(ok, {"market_cap": 40_000, "vol_m5": 20_000, "buys_m5": 90, "sells_m5": 30,
+                                            "age_min": 10}, s) if b.startswith("extreme")]
+
+
+def test_pacing_lowers_the_bar_a_little_when_behind_two_calls_an_hour(db):
+    """v4.2.0, operator: "try and call out a coin at least twice an hour". Behind pace the bar drops
+    2.5 points per missing call (max 5, never under the learner's minimum floor); traps never relax."""
+    s, pub, c = caller(db, runner_min_score=50, runner_target_calls_per_hour=2, runner_pacing_max_relief=5)
+    assert c.score_bar(time.time()) == (45.0, 5.0)                 # no calls this hour: -5
+    radar(db)
+    assert asyncio.run(c.consider(out(report())))                  # one call made
+    assert c.score_bar(time.time()) == (47.5, 2.5)
+    db.execute("INSERT INTO early_calls(mint, created_at, status, entry_mcap, report) VALUES ('X', ?, 'SENT', 1, '{}')",
+               (time.time(),))
+    assert c.score_bar(time.time()) == (50.0, 0.0)                 # on pace: the normal bar
+    s2, _, c2 = caller(db, runner_min_score=37, curve_learn_min_floor=35, runner_pacing_max_relief=5)
+    db.execute("DELETE FROM early_calls")
+    assert c2.score_bar(time.time())[0] == 35.0                    # never under the minimum floor
+    s3, _, c3 = caller(db, runner_target_calls_per_hour=0)
+    assert c3.score_bar(time.time())[1] == 0.0                     # pacing off
+    # a trap is never paced away
+    trap = report(mint=addr("trap"))
+    trap["gates"][0]["status"] = "FAIL"
+    radar(db, mint=addr("trap"))
+    assert asyncio.run(c.consider(out(trap))) is None
+
+
+def test_several_problems_at_once_or_a_crash_reject(db):
+    """v4.2.0: from the live log, $CITY (20% bundle + insiders faking activity + crashed to 14% of its
+    high) scored 46 under pure penalties and would have been called. One or two problems cost points;
+    three at once, or a crash to a fifth of the high, reject."""
+    s = Settings(_env_file=None)
+    m = {"market_cap": 40_000, "vol_m5": 12_000, "buys_m5": 80, "sells_m5": 60, "age_min": 12}
+    three = report(launch_buys={"verdict": "BUNDLED", "bundle_pct": 29.0, "early_buy_pct": 40.0, "sniper_held_pct": 12.0},
+                   launch={"verdict": "INSTANT_JUMP", "reasons": ["jumped 7.2x"]})
+    assert RN.problems(three) == ["29% bundled", "40% sniped at launch", "launch jumped"]
+    assert any(b.startswith("extreme: 3 serious problems") for b in RN.blockers(three, m, s))
+    two = report(launch_buys={"verdict": "BUNDLED", "bundle_pct": 29.0, "early_buy_pct": 20.0, "sniper_held_pct": 2.0},
+                 launch={"verdict": "INSTANT_JUMP", "reasons": ["jumped"]})
+    assert not [b for b in RN.blockers(two, m, s) if b.startswith("extreme")]        # two: points only
+    crashed = report(launch={"verdict": "DUMPED", "now_vs_ath": 0.14, "ath_x": 5.0, "reasons": ["dumped"]})
+    assert any("crashed to 14% of its high" in b for b in RN.blockers(crashed, m, s))
+    pulled = report(launch={"verdict": "DUMPED", "now_vs_ath": 0.32, "ath_x": 5.0, "reasons": ["dumped"]})
+    assert not [b for b in RN.blockers(pulled, m, s) if b.startswith("extreme")]     # a pullback, not a crash
+    off = Settings(_env_file=None, runner_reject_problem_count=0, runner_reject_crashed_x=0)
+    assert not [b for b in RN.blockers(three, m, off) if b.startswith("extreme")]

@@ -247,8 +247,12 @@ def examples(db, label: str, limit: int = B.MAX_ROWS) -> list[dict]:
     try:
         init_schema(db)
         schemas = _schemas(db)
-        rows = db.fetchall(f"SELECT rid, ts, src, schema, feats, {label} AS y FROM training_examples "
-                           f"WHERE {label} IS NOT NULL ORDER BY ts DESC LIMIT ?", (limit,))
+        from . import teach as TE
+        taught = TE.labels(db)                 # v4.1.0: the operator's lessons override measured labels
+        idx = 0 if label == "rug" else 1
+        rows = db.fetchall(f"SELECT rid, mint, ts, src, schema, feats, {label} AS y FROM training_examples "
+                           f"WHERE {label} IS NOT NULL OR mint IN (SELECT mint FROM operator_labels) "
+                           f"ORDER BY ts DESC LIMIT ?", (limit,))
     except Exception:  # noqa: BLE001
         return []
     out = []
@@ -256,7 +260,10 @@ def examples(db, label: str, limit: int = B.MAX_ROWS) -> list[dict]:
         names = schemas.get(r["schema"])
         if not names:
             continue
-        out.append({"id": r["rid"], "ts": r["ts"], "v": unpack(r["feats"], names), "y": int(r["y"]),
+        y = TE.LABELS[taught[r["mint"]]][idx] if r["mint"] in taught else r["y"]
+        if y is None:
+            continue
+        out.append({"id": r["rid"], "ts": r["ts"], "v": unpack(r["feats"], names), "y": int(y),
                     "src": r["src"]})
     return out
 

@@ -44,10 +44,14 @@ def v3_call_embed(report: dict, plan: Optional[list] = None) -> dict:
 
 
 def wants_free_copy(call_type: str, report: dict) -> bool:
-    """v3.0.0: no automatic copies. The free channel only gets proof posts once a call reaches
-    `free_proof_multiple` (monitor.py / early_calls.py). The one exception is a manual call whose
-    caller ticked "also post to the free channel" for that call."""
-    return call_type == "MANUAL" and (report.get("manual") or {}).get("free_copy") is True
+    """v4.0.0 (operator: "the free channel gets VIP callouts 20 minutes later, with all milestones posting
+    at once"): every VIP call gets a delayed free copy, except rug scalps (a minutes-long trade on a rug
+    is useless and dangerous 20 minutes late) and a manual call whose caller unticked the free copy."""
+    if call_type == "RUG_SCALP":
+        return False
+    if call_type == "MANUAL":
+        return (report.get("manual") or {}).get("free_copy") is not False
+    return True
 
 
 def _legacy_wants_free_copy(call_type: str, report: dict) -> bool:
@@ -355,6 +359,17 @@ class AlertService:
                 sent_at=time.time(),
                 last_error=None,
             )
+            # v4.0.0: the milestones the call already reached go out with it, all at once
+            try:
+                hit = sorted(float(x) for x in json.loads(alert.get("milestones_hit") or "[]"))
+            except (TypeError, ValueError):
+                hit = []
+            from .discord_bot.embeds import milestone_embed
+            for m in hit:
+                try:
+                    await self.pub.publish(milestone_embed(alert, m), row["channel_id"])
+                except PublishError as exc:
+                    log.warning("free-channel milestone %sx failed for alert %s: %s", m, alert_id, exc)
 
             log.info(
                 "published delayed free-channel copy for alert %s "
@@ -579,15 +594,27 @@ class AlertService:
 
         The multiple is observed market-cap change, not an executable trading return.
         """
-        embed = early_watch_embed(report)
         tracking = dict(tracking)
         tracking.setdefault("current_sol_usd", (report.get("pre_migration") or {}).get("sol_usd"))
-        lines = AlertService.early_performance_lines(tracking)
+        # v4.0.0: the same compact layout as every call (operator: "only post embeds like these")
+        from .discord_bot.embeds import compact_call_embed
+        rate_in = tracking.get("entry_sol_usd") or tracking.get("current_sol_usd")
+        rate_now = tracking.get("current_sol_usd") or rate_in
+        e_sol, c_sol = tracking.get("entry_market_cap_sol"), tracking.get("current_market_cap_sol")
+        entry = e_sol * rate_in if e_sol and rate_in else None
+        cur = c_sol * rate_now if c_sol and rate_now else entry
+        peak_x = tracking.get("peak_multiple") or ((c_sol / e_sol) if c_sol and e_sol else 1.0)
         plan = AlertService.early_plan_lines(report, tracking, settings)
-        if plan:
-            lines += [""] + plan
-        embed["description"] = (embed.get("description") or "") + "\n\n" + "\n".join(lines)
-        return embed
+        call = {"entry_mcap": entry, "current_mcap": cur, "peak_mcap": entry * peak_x if entry else None,
+                "sent_at": tracking.get("created_at") or tracking.get("sent_at"),
+                "last_update_at": tracking.get("updated_at"),
+                "status_line": " · ".join(str(x) for x in plan[:2])[:300] if plan else None}
+        if entry is None:
+            embed = early_watch_embed(report)
+            lines = AlertService.early_performance_lines(tracking)
+            embed["description"] = (embed.get("description") or "") + "\n\n" + "\n".join(lines)
+            return embed
+        return compact_call_embed(report, call, kind="early")
 
     @staticmethod
     def early_plan(tracking: dict, settings) -> Optional["TP.Plan"]:

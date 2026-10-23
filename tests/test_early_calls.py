@@ -209,11 +209,10 @@ def test_call_posted_only_on_ai_call_verdict(db):
     row = asyncio.run(c.consider(outcome(curve_report())))
     assert row and row["status"] in ("SENT", "DRY_RUN") and row["entry_mcap"] == 40_000
     embed = pub.sent[0][1]
-    assert embed["title"] == "⚡ EARLY NARRATIVE CALL — $ROADSTER"
+    assert embed["title"] == "⚡ $ROADSTER · Roadster"                 # v4.0.0 compact layout
     assert pub.sent[0][0] == 111                                        # VIP channel
-    names = {f["name"] for f in embed["fields"]}
-    assert {"⚡ Narrative (AI)", "Peak since callout", "📋 Early plan", "🧠 Rug check"} <= names
-    assert "82/100" in next(f["value"] for f in embed["fields"] if f["name"] == "⚡ Narrative (AI)")
+    assert "**Callout type:** ⚡ Narrative call" in embed["description"] and "**Plan**:" in embed["description"]
+    assert embed["_buttons"][0]["label"] == "More info"
     assert asyncio.run(c.consider(outcome(curve_report()))) is None     # never called twice
 
 
@@ -269,31 +268,40 @@ def tracker(db, pub, monkeypatch, cap_sol=300.0, complete=False, pairs=()):
     return s, EC.EarlyCallTracker(s, db, pub, FakeRpc(cap_sol, complete), Dex(), FakeSol())
 
 
-def test_tracker_records_peak_posts_plan_and_free_copy(db, monkeypatch):
+def test_tracker_records_peak_posts_milestones_and_a_delayed_free_copy(db, monkeypatch):
+    """v4.0.0: milestones go to VIP as they happen; the free channel gets the call 20 minutes later
+    with every milestone so far at once; exits are recorded but never posted."""
     s, pub, c = caller(db)
     row = asyncio.run(c.consider(outcome(curve_report())))
     assert row["entry_mcap"] == 40_000
-    # v3: 1.5x is not proof yet -> no free post
     db.execute("UPDATE early_calls SET created_at=?, peak_at=? WHERE mint=?", (NOW, NOW, MINT))
-    st, tr = tracker(db, pub, monkeypatch, cap_sol=300.0)
-    asyncio.run(tr.run_once(NOW))
-    assert not [e for ch, e in pub.sent if ch == 222]
-    # 400 SOL * $200 = $80,000 = 2x -> proven, free copy
+    # 400 SOL * $200 = $80,000 = 2x after 5 minutes: a VIP milestone, nothing in free yet
     st, tr = tracker(db, pub, monkeypatch, cap_sol=400.0)
-    counts = asyncio.run(tr.run_once(NOW + 60))
+    counts = asyncio.run(tr.run_once(NOW + 300))
     r = db.fetchone("SELECT * FROM early_calls WHERE mint=?", (MINT,))
     assert r["current_mcap"] == 80_000 and r["peak_mcap"] == 80_000 and counts["edited"] == 1
-    assert r["free_message_id"] and counts["free_posts"] == 1
+    assert json.loads(r["milestones"]) == [2.0]
+    vip = [e for ch, e in pub.sent if ch == 111]
+    assert any("hit 2x" in e["title"] for e in vip)
+    assert not [e for ch, e in pub.sent if ch == 222] and not r["free_message_id"]
+    # 20 minutes after the call: the free copy and the 2x milestone, at once
+    st, tr = tracker(db, pub, monkeypatch, cap_sol=650.0)              # $130K = 3.25x
+    asyncio.run(tr.run_once(NOW + 20 * 60 + 5))
+    r = db.fetchone("SELECT * FROM early_calls WHERE mint=?", (MINT,))
     free = [e for ch, e in pub.sent if ch == 222]
-    assert free and "UP +100%" in free[0]["title"] and "$40.0K" in free[0]["description"]
-    # a drop keeps the peak and does not repost to free
+    assert r["free_message_id"] and free[0]["description"].startswith("**Callout price:**")
+    assert sorted(e["title"] for e in free[1:]) == sorted(["📈 $ROADSTER hit 2x since the call!",
+                                                            "📈 $ROADSTER hit 3x since the call!"])
+    # a drop keeps the peak, posts nothing (no drawdowns), and the edit shows the live numbers
+    n = len(pub.sent)
     st2, tr2 = tracker(db, pub, monkeypatch, cap_sol=100.0)
-    asyncio.run(tr2.run_once(NOW + 600))
+    asyncio.run(tr2.run_once(NOW + 30 * 60))
     r2 = db.fetchone("SELECT * FROM early_calls WHERE mint=?", (MINT,))
-    assert r2["peak_mcap"] == 80_000 and r2["current_mcap"] == 20_000
-    assert len([e for ch, e in pub.sent if ch == 222]) == 1
-    peak_field = next(f for f in pub.edits[-1][1]["fields"] if f["name"] == "Peak since callout")
-    assert "$80.0K" in peak_field["value"] and "2.00x" in peak_field["value"]
+    assert r2["peak_mcap"] == 130_000 and r2["current_mcap"] == 20_000
+    assert len(pub.sent) == n, "no drawdown or exit post"
+    assert "STOP" in json.loads(r2["plan_sent"]) or "TRAIL" in json.loads(r2["plan_sent"])     # recorded
+    desc = pub.edits[-1][1]["description"]
+    assert "**Peak since callout:** 3.25x" in desc and "exited" not in desc and "stopped" not in desc
 
 
 def test_tracker_follows_the_coin_into_its_pool(db, monkeypatch):

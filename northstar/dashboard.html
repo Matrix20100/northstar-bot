@@ -59,7 +59,7 @@ tr.click{cursor:pointer}tr.click:hover{background:#ffffff06}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:12.5px}.kv dt{color:var(--muted)}.kv dd{margin:0}
 input[type=search],input[type=password],input[type=number]{background:#0c0f15;border:1px solid #2b313d;color:var(--text);padding:8px 11px;border-radius:9px;font:inherit;width:100%}
 .setgroup{margin-bottom:12px}.setgroup summary{cursor:pointer;font-weight:700;padding:8px 2px;color:#dfe4ec}
-.src-learned{color:var(--violet)}.src-env{color:var(--blue)}.src-default{color:var(--muted)}
+.src-learned{color:var(--violet)}.src-dashboard{color:var(--green)}.src-env{color:var(--blue)}.src-default{color:var(--muted)}
 .test{display:grid;grid-template-columns:22px minmax(0,200px) 1fr auto;gap:10px;padding:9px 4px;border-bottom:1px solid #1d212a;font-size:13px;align-items:start}
 .test pre{margin:0;white-space:pre-wrap;font:inherit;color:#c9cfda}
 .icon{font-size:15px;line-height:1.2}
@@ -135,6 +135,8 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
   </section>
 
   <section data-view="pulse" class="hide">
+    <div class="card" style="margin-bottom:12px"><h2>🐦 Twitter attention <span id="socialSub">your J7 / uxento feed, last hour</span></h2><div id="social"></div></div>
+    <div class="card" style="margin-bottom:12px"><h2>💸 Money flow <span id="flowSub">what your tracked wallets are buying, last hour</span></h2><div id="flow"></div></div>
     <div class="card" style="margin-bottom:12px"><h2>Pulse <span id="pulseSub">every coin researched in the last 3 hours, by stage · click a coin for its research</span></h2>
       <div id="pulseFunnel" class="sub"></div></div>
     <div class="pulse">
@@ -198,6 +200,7 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
         <div class="tablewrap"><table><thead><tr><th>Setting</th><th>Now</th><th>Your .env / default</th><th>Range it can try</th></tr></thead><tbody id="tunables"></tbody></table></div></div>
       <div class="card"><h2>Change log <span>every change and why</span></h2><div id="learnLog"></div></div>
     </div>
+    <div class="card" style="margin-top:14px"><h2>🧭 Narratives <span id="themeSub">what each kind of coin did this week (early band)</span></h2><div id="themes"></div></div>
     <div class="card" style="margin-top:14px"><h2>🎯 Curve learner <span id="curveLearnSub">learns the runner-call score floor from what young pump.fun coins really did</span></h2><div id="curveLearn"></div></div>
     <div class="card" style="margin-top:14px"><h2>What predicts a rug <span>learned from the bot's own 24h tracking</span></h2><div id="flagStats"></div></div>
   </section>
@@ -206,7 +209,7 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
     <div class="card" style="margin-bottom:14px"><div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
       <input type="search" id="setSearch" placeholder="Search settings…" style="max-width:340px">
       <span class="pill" style="color:var(--violet)">learned</span><span class="pill" style="color:var(--blue)">from .env</span><span class="pill dim">default</span>
-      <span class="muted" style="font-size:12px">Keys and tokens are never shown here. Change settings in <code>.env</code> and restart.</span></div>
+      <span class="pill" style="color:var(--green)">dashboard</span><span class="muted" style="font-size:12px">Change any setting here: it applies at once (a few apply after a restart) and beats .env and learned values. Keys and tokens are never shown or changeable here.</span></div>
       <div id="setProblems"></div></div>
     <div id="settings"></div>
   </section>
@@ -271,7 +274,23 @@ function pcard(c){const img=c.image&&/^https?:/.test(c.image)?`<img src="${esc(c
 async function curveTable(){try{const d=await api('/api/curve');$('curveSub').textContent=`${num(d.scored)} coins scored · ${num(d.pending)} still being followed · last ${d.days} days`;
  const rows=Object.entries(d.rules||{});const p=v=>v==null?'—':v+'%';
  $('curveRules').innerHTML=rows.length?rows.map(([k,r])=>`<tr><td><b>${esc(k)}</b><br><span class="sub">${esc(r.rule||'')}</span></td><td class="num">${num(r.n||0)}</td><td class="num">${p(r.hit_1_5x)}</td><td class="num">${p(r.hit_2x)}</td><td class="num">${p(r.hit_3x)}</td><td class="num up">${p(r.clean_2x)}</td><td class="num down">${p(r.fell_to_0_3x)}</td><td class="num">${p(r.migrated)}</td></tr>`).join(''):'<tr><td colspan=8 class="empty">No coins scored yet: the first results arrive 4 hours after the bot starts.</td></tr>'}catch(e){if(e.message==='auth')throw e}}
-async function pulse(){curveTable();const d=await api('/api/pulse');const cols=d.columns||{};
+async function socialCard(){try{const d=await api('/api/social');const tr=d.trending||{};
+ let note='';if(!d.channels.length)note='Not set up: put the Discord channel id(s) where J7 / uxento post into NORTHSTAR_TWITTER_FEED_CHANNEL_IDS (Settings tab). The Northstar bot must be in that server and needs "Message Content Intent" switched on in the Discord Developer Portal.';
+ else if(!d.token)note='Needs the Discord bot token (NORTHSTAR_DISCORD_TOKEN).';
+ const errs=Object.entries(d.status||{}).filter(([k,v])=>!v.ok).map(([k,v])=>`channel ${k}: ${v.error}`);
+ const empty=Object.entries(d.status||{}).filter(([k,v])=>v.ok&&v.read&&v.empty_text===v.read).map(([k])=>k);
+ if(errs.length)note=errs.join(' · ');else if(empty.length)note='Messages arrive with no readable text: switch on "Message Content Intent" for the bot (Discord Developer Portal → Bot → Privileged Gateway Intents).';
+ $('socialSub').textContent=d.channels.length?`${num(tr.messages)} tracker posts in the last hour · ${d.channels.length} channel(s)`:'your J7 / uxento feed, last hour';
+ const chip=(a,f)=>a.length?a.map(([k,n])=>`<span class="pill info" style="margin:2px">${f(k)} <b>${n}</b></span>`).join(''):'<span class="sub">none</span>';
+ $('social').innerHTML=(note?`<div class="sub" style="margin-bottom:8px">${esc(note)}</div>`:'')+
+  `<div class="grid g3"><div><div class="sub">Contracts posted</div>${chip(tr.mints||[],k=>esc(short(k)))}</div><div><div class="sub">Tickers</div>${chip(tr.tickers||[],k=>'$'+esc(k))}</div><div><div class="sub">Words many tweets use</div>${chip(tr.terms||[],k=>esc(k))}</div></div>`}catch(e){}}
+async function flowCard(){try{const d=await api('/api/flow');const st=d.status;
+ let note='';if(!d.enabled)note='Wallet watch is switched off (NORTHSTAR_WALLET_WATCH_ENABLED).';
+ else if(!d.api_key)note='Wallet watch is OFF: it needs NORTHSTAR_PUMPPORTAL_API_KEY (a PumpPortal API key whose linked wallet holds at least 0.02 SOL; PumpPortal charges 0.01 SOL per 10,000 trades streamed).';
+ else if(!st)note='Starts with the bot.';
+ $('flowSub').textContent=st?`${num(st.watching)} of ${num(st.wallets)} wallets streamed · ${num(st.muted)} muted as bots · ${num(st.events_today)} / ${num(st.budget)} messages today${st.paused?' · PAUSED (daily budget)':''} · research starts at ${d.min_buyers}+ wallets buying or one ${d.big_buy_sol}+ SOL buy`:'what your tracked wallets are buying, last hour';
+ $('flow').innerHTML=(note?`<div class="sub" style="margin-bottom:8px">${esc(note)}</div>`:'')+(d.top.length?`<div class="tablewrap"><table><thead><tr><th>Coin</th><th>Wallets buying</th><th>Selling</th><th>SOL in</th><th>SOL out</th><th>Net</th><th>Last trade</th></tr></thead><tbody>${d.top.map(r=>`<tr class="click" data-mint="${esc(r.mint)}"><td>${coin(r.mint,r.symbol)}</td><td class="num"><b>${num(r.buyers)}</b></td><td class="num">${num(r.sellers)}</td><td class="num">${num(r.buy_sol,2)}</td><td class="num">${num(r.sell_sol,2)}</td><td class="num"><span class="${r.net_sol>=0?'up':'down'}">${r.net_sol>=0?'+':''}${num(r.net_sol,2)}</span></td><td class="sub num">${ago(r.last_ts)}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">No tracked-wallet trades in the last hour</div>')}catch(e){}}
+async function pulse(){curveTable();flowCard();socialCard();const d=await api('/api/pulse');const cols=d.columns||{};
  const fill=(id,arr,empty)=>{$(id).innerHTML=arr&&arr.length?arr.map(pcard).join(''):`<div class="empty">${empty}</div>`;$(id+'N').textContent=arr?arr.length:0};
  fill('pcNew',cols.new,'No curve coins researched');fill('pcFinal',cols.final,'None close to migrating');fill('pcMig',cols.migrated,'No migrated coins researched');
  fill('pcPass',d.passed,'Nothing passed every filter in this window');
@@ -340,7 +359,10 @@ $('paperForm').onsubmit=async e=>{e.preventDefault();$('paperMsg').textContent='
  const d=await post('/api/paper/start',{account:paperAcct,start_usd:$('paperStart').value,position_pct:$('paperPos').value,fee_pct:$('paperFee').value});
  $('paperMsg').textContent=d.ok?'New run started':(d.error||'Failed');if(d.ok){paperFilled=false;paper()}};
 
-async function learning(){const d=await api('/api/learning');if(!d.ready){$('brain').innerHTML='<div class="empty">Learning tables not created yet — the bot creates them on start.</div>';return}
+async function themesCard(){try{const d=await api('/api/social');const th=d.themes||{},all=th.all||{};const rows=Object.entries(th.themes||{});
+ $('themes').innerHTML=rows.length?`<div class="tablewrap"><table><thead><tr><th>Narrative</th><th>Coins</th><th>Hit 2x</th><th>Fell to 0.3x</th><th>vs all coins</th></tr></thead><tbody>${rows.map(([k,v])=>{const lift=(v.hit_2x||0)-(all.hit_2x||0);
+  return `<tr><td>${esc(k.replace('_',' '))}</td><td class="num">${num(v.n)}${v.n<d.min_theme_coins?' <span class="sub">(too few to count)</span>':''}</td><td class="num">${num(v.hit_2x,1)}%</td><td class="num">${num(v.fell_0_3x,1)}%</td><td class="num"><span class="${lift>=0?'up':'down'}">${lift>=0?'+':''}${num(lift,1)} pts</span></td></tr>`}).join('')}<tr><td><b>all coins</b></td><td class="num">${num(all.n)}</td><td class="num">${num(all.hit_2x,1)}%</td><td class="num">${num(all.fell_0_3x,1)}%</td><td></td></tr></tbody></table></div><p class="sub" style="margin:8px 0 0">A narrative that beats the average earns a coin up to +15 attention points; one that does worse costs up to 10. A narrative needs ${d.min_theme_coins} finished coins before it counts.</p>`:'<div class="empty">No finished coins with a narrative yet (recorded from this version on)</div>'}catch(e){}}
+async function learning(){themesCard();const d=await api('/api/learning');if(!d.ready){$('brain').innerHTML='<div class="empty">Learning tables not created yet — the bot creates them on start.</div>';return}
  const cv=d.curve;if(!cv){$('curveLearn').innerHTML='<div class="empty">No curve outcomes yet.</div>'}else{
   const lc=cv.last_change;$('curveLearnSub').textContent=`floor now ${num(cv.floor)} · ${num(cv.safe_coins)} safe coins in ${cv.days} days`+(lc?` · last change ${num(lc.from)} → ${num(lc.to)} ${ago(lc.at)}`:' · no change yet (needs 25+ coins)');
   const pc=v=>v==null?'—':`<span class="${v>=0?'up':'down'}">${v>=0?'+':''}${num(v*100,1)}%</span>`;
@@ -381,8 +403,17 @@ function drawSettings(){if(!SET)return;const q=$('setSearch').value.trim().toLow
  $('setProblems').innerHTML=(SET.problems||[]).length?`<div style="margin-top:12px">${SET.problems.map(p=>`<div class="reason down">⚠ ${esc(p)}</div>`).join('')}</div>`:'';
  $('settings').innerHTML=SET.groups.map(g=>{const rows=g.settings.filter(s=>!q||s.name.includes(q)||s.env.toLowerCase().includes(q)||String(s.value).toLowerCase().includes(q));if(!rows.length)return'';
   return `<details class="card setgroup" ${q||g.name!=='Timing & storage'?'open':''}><summary>${esc(g.name)} <span class="sub">(${rows.length})</span></summary><div class="tablewrap"><table><thead><tr><th>Setting</th><th>Value</th><th>From</th></tr></thead><tbody>
-  ${rows.map(s=>`<tr><td><b>${esc(s.name)}</b><br><span class="sub">${esc(s.env)}</span></td><td class="num">${s.secret?(s.value==='set'?'<span class="pill good">set</span>':'<span class="pill dim">not set</span>'):`<code>${esc(typeof s.value==='object'&&s.value!==null?JSON.stringify(s.value):fmt(s.value))}</code>`}</td>
-  <td class="src-${s.source==='.env'?'env':s.source}">${esc(s.source)}</td></tr>`).join('')}</tbody></table></div></details>`}).join('')}
+  ${rows.map(s=>{const shown=typeof s.value==='object'&&s.value!==null?JSON.stringify(s.value):(s.value==null?'':String(s.value));
+   const cell=s.secret?(s.value==='set'?'<span class="pill good">set</span>':'<span class="pill dim">not set</span>'):s.editable?
+    `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${typeof s.value==='boolean'?`<select class="setin" data-key="${esc(s.name)}"><option ${s.value?'selected':''}>true</option><option ${s.value?'':'selected'}>false</option></select>`:`<input class="setin" data-key="${esc(s.name)}" value="${esc(shown)}" style="width:${Math.min(320,Math.max(90,shown.length*8+30))}px">`}<button class="btn" data-save="${esc(s.name)}">Save</button>${s.source==='dashboard'?`<button class="btn" data-reset="${esc(s.name)}">Reset</button>`:''}${s.restart?'<span class="pill dim" title="read when the bot starts">after restart</span>':''}<span class="sub" data-msg="${esc(s.name)}"></span></div>`
+    :`<code>${esc(shown)}</code> <span class="sub">(not changeable here)</span>`;
+   return `<tr><td><b>${esc(s.name)}</b><br><span class="sub">${esc(s.env)}</span></td><td class="num">${cell}</td>
+  <td class="src-${s.source==='.env'?'env':s.source}">${esc(s.source)}</td></tr>`}).join('')}</tbody></table></div></details>`}).join('');
+ document.querySelectorAll('[data-save]').forEach(b=>b.onclick=async()=>{const k=b.dataset.save;const inp=document.querySelector(`.setin[data-key="${k}"]`);
+  const r=await post('/api/settings/set',{key:k,value:inp.value});const m=document.querySelector(`[data-msg="${k}"]`);
+  m.textContent=r.ok?(r.restart?'saved · applies after a restart':'saved · live now'):(r.error||'failed');m.className=r.ok?'sub up':'sub down';if(r.ok)settings()});
+ document.querySelectorAll('[data-reset]').forEach(b=>b.onclick=async()=>{const k=b.dataset.reset;const r=await post('/api/settings/reset',{key:k});
+  const m=document.querySelector(`[data-msg="${k}"]`);m.textContent=r.ok?'back to .env / default':(r.error||'failed');if(r.ok)settings()})}
 $('setSearch').oninput=drawSettings;
 
 let stRunning=false;
@@ -401,6 +432,15 @@ document.addEventListener('click',e=>{const tr=e.target.closest('tr[data-mint]')
 $('overlay').onclick=closeDrawer;document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDrawer()});
 function closeDrawer(){$('drawer').classList.remove('on');$('overlay').classList.remove('on')}
 const val=v=>v&&typeof v==='object'&&'value' in v?v.value:v;
+function teachBar(mint,taught){const box=document.createElement('div');box.className='card';box.style.marginBottom='12px';
+ const lab={runner:'👍 runner',rug:'👎 rug',nothing:'😐 went nowhere'};
+ box.innerHTML=`<h2>Teach the AI <span>${taught?'taught: '+esc(lab[taught]||taught):'what really happened to this coin?'}</span></h2>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">${Object.entries(lab).map(([k,v])=>`<button class="btn ${taught===k?'primary':''}" data-teach="${k}">${v}</button>`).join('')}${taught?'<button class="btn" data-teach="clear">Clear lesson</button>':''}<span class="sub" id="teachMsg"></span></div>
+  <p class="sub" style="margin:8px 0 0">Your lesson overrides what the bot measured for this coin, and both brains learn it at their next hourly training.</p>`;
+ const d=$('drawer');d.insertBefore(box,d.children[1]||null);
+ box.querySelectorAll('[data-teach]').forEach(b=>b.onclick=async()=>{const r=await post('/api/teach',{mint,label:b.dataset.teach});
+  $('teachMsg').textContent=r.ok?(r.label?'Taught'+(r.example?'':' (label only: no research numbers yet)'):'Lesson cleared'):(r.error||'Failed');
+  if(r.ok){box.remove();teachBar(mint,r.label)}})}
 async function openToken(mint,pre){$('drawer').classList.add('on');$('overlay').classList.add('on');if(!pre)$('drawer').innerHTML='<div class="empty"><span class="spin"></span> Loading research…</div>';
  try{const t=pre||await api('/api/token?mint='+encodeURIComponent(mint));const r=t.report||{},m=r.market||{},br=r.brain,gates=r.gates||[],sn=t.snapshot||{},pm=r.pre_migration||{};
   const gate=g=>`<div style="display:flex;gap:8px;font-size:12.5px;padding:3px 0"><span>${g.status==='PASS'?'✅':g.status==='FAIL'?'❌':'❔'}</span><span><b>${esc(g.name)}</b> <span class="sub">${esc(g.reason||'')}</span></span></div>`;
@@ -418,7 +458,7 @@ async function openToken(mint,pre){$('drawer').classList.add('on');$('overlay').
   ${verdictCard(r.verdict)}${bubbleCard(r.clusters,mint)}
   <div class="card" style="margin-bottom:12px"><h2>Why this decision</h2>${(t.reasons||[]).map(x=>`<div class="reason">• ${esc(x)}</div>`).join('')||'<div class="sub">—</div>'}</div>
   <div class="card"><h2>Safety checks</h2>${gates.length?gates.map(gate).join(''):'<div class="sub">No checks recorded</div>'}</div>`;
-  drawBubbles(r.clusters);wireCall(t,mint)}
+  drawBubbles(r.clusters);wireCall(t,mint);teachBar(mint,t.taught)}
  catch(e){if(e.message!=='auth')$('drawer').innerHTML=`<div class="empty">Could not load this coin.<br><br><button class="btn" onclick="runResearch('${esc(mint)}')">Research it now</button></div>`}}
 
 /* ---------- manual research and calls ---------- */

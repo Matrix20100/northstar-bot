@@ -3,6 +3,164 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 4.2.0 — 2026-10-23 — Twitter attention from J7 / uxento, narratives, two calls an hour
+
+Operator: "The bot must have twitter trackers like J7 or uxento to understand exactly where all
+attention is", "narrative must be analyzed and understood", "try and call out a coin at least
+twice an hour". J7 / uxento post into the operator's Discord; no paid AI.
+
+- **Twitter tracker feed (`social_feed.py`).**
+  - Every 20 s the bot reads the Discord channels in `NORTHSTAR_TWITTER_FEED_CHANNEL_IDS` (where
+    J7 / uxento post) through Discord's API with its own token. It parses each post, embeds
+    included, for contract addresses, $TICKERs, the X account, and words. The first read starts
+    from now and never replays the channel's history.
+  - **Research now:** a contract address posted in the feed is researched at once (all safety
+    checks still apply; `NORTHSTAR_TWITTER_FEED_RESEARCH`).
+  - **Attention:** its contract posted by 1 / 2+ accounts = 35 / 50 points; its $TICKER posted =
+    15; its name being a word many tracked tweets use in the last hour = 20.
+  - **Problems are spelled out** in the log and on the dashboard: no access to the channel,
+    wrong id, or "Message Content Intent" switched off (Discord then hands bots empty text).
+- **Narratives (`themes.py`).**
+  - **Theme:** every coin entering the early band is sorted into a theme (animal, politics,
+    celebrity, AI/tech, crypto culture, events/news, food, internet culture, other) and stored
+    with its outcome.
+  - **Learned points:** per theme over the last week, how often coins hit 2x and how often they
+    fell to 0.3x. A theme that beats the average adds up to +15 attention points; one that does
+    worse costs up to 10. A theme needs 15 finished coins before it counts.
+  - **Live matching:** the coin's words are matched against live attention: launch waves, news,
+    Google Trends, trending coins, and the Twitter feed.
+- **Two calls an hour.** With fewer than 2 runner calls in the last hour, the score bar is
+  lowered by 2.5 points per missing call (at most 5; never under the curve learner's minimum of
+  35). Traps and extreme cases are never relaxed. Settings: `NORTHSTAR_RUNNER_TARGET_CALLS_PER_HOUR`,
+  `NORTHSTAR_RUNNER_PACING_MAX_RELIEF`.
+- **Several problems at once still reject.** Checked against the live log: under 4.0's pure
+  penalties, $CITY (20% bundle + insiders faking activity + crashed to 14% of its high) scored 46
+  and would have been called. Now:
+  - **one or two** serious problems cost points, as asked ("don't reject for 1 thing");
+  - **three at once** reject (`NORTHSTAR_RUNNER_REJECT_PROBLEM_COUNT`);
+  - a coin already **crashed to 20% or less of its high** rejects (`NORTHSTAR_RUNNER_REJECT_CRASHED_X`).
+  - Results on this morning's coins: $CITY and $LARPOWEEN (29% bundled, 40% sniped, launch jumped)
+    are rejected; $IMP (sniped, pulled back to 32%) can still be called.
+- **Dashboard:**
+  - **Pulse tab: 🐦 Twitter attention:** contracts, tickers and words from the feed in the last hour.
+  - **Learning tab: 🧭 Narratives:** each theme's week vs all coins.
+- Tests: `tests/test_twitter_narrative.py`, pacing in `tests/test_runner_calls.py`.
+
+## 4.1.0 — 2026-10-23 — change every setting on the dashboard; teach the AI with real coins
+
+Operator: "I must be able to change every setting inside the dashboard", "I want to be manually
+able to teach the AI with real coins".
+
+- **Settings tab: every setting is editable** (`operator_settings.py`).
+  - **Validation:** each value is checked exactly like a .env value; a bad value is refused with
+    the reason.
+  - **Live and kept:** a change applies to the running bot at once and is stored, so it survives
+    restarts.
+  - **Priority:** a dashboard value beats .env, the default, and anything the learners tuned.
+    The learners (settings tuner, curve learner) leave a setting you set alone.
+  - **Restart-only settings:** loop timings, feature on/off switches, rate limits and channel ids
+    are read at start; the panel marks them "after restart".
+  - **Reset:** puts a setting back to .env or the default.
+  - **Never editable:** keys, tokens, passwords, and where the bot keeps its data or listens.
+  - **New groups:** "Calls on young coins (Pulse)", "Tracked wallets & attention", "Paper trading".
+- **Teach the AI** (`teach.py`). Every coin's research drawer has 👍 runner / 👎 rug /
+  😐 went nowhere / clear.
+  - A lesson turns the coin's own research numbers into a training example.
+  - It overrides whatever the bot measured for that coin in every training example. A coin you
+    know rugged is never learned as a winner.
+  - Both brains learn it at their next hourly training.
+  - The daily cleanup never removes a lesson.
+- Tests: `tests/test_operator_settings_teach.py`.
+
+## 4.0.1 — 2026-10-23 — extreme cases still reject outright
+
+Operator answer: hard rejects for "traps + extreme only" (4.0.0 had made only real traps reject).
+
+- A runner call is also rejected outright when:
+  - other wallets bought **40%+** of supply in the creation block (`NORTHSTAR_RUNNER_REJECT_BUNDLE_PCT`);
+  - the dev holds or bought **20%+** of supply (`NORTHSTAR_RUNNER_REJECT_DEV_PCT`).
+- These coins are dropped from tracking at once, since they can never clear.
+- Anything below these limits stays a scaled score penalty, as in 4.0.0.
+- Test: `tests/test_runner_calls.py`.
+
+## 4.0.0 — 2026-10-23 — score, don't veto; Pulse rescans; posts in the operator's layout
+
+From the operator's handwritten brief ("Northstar Bot", pages 1-2). Includes 3.5.0 (wallet watch).
+
+**Calls**
+- **Only real traps block a call.**
+  - The traps: mint authority, freeze authority, a restricting token extension (each must RUN and
+    PASS), a RUG LIKELY verdict, a completed curve.
+  - Everything else is a scaled penalty on the 35 safety points: bundled launch (10% up to 50%+),
+    sniped launch, dev buy at launch, snipers still holding, top-10 and largest holder, dev bag,
+    insider tiny trades, fresh or linked wallets, the launch chart, rug-check HIGH RISK / CAUTION
+    and serious red flags, recycled socials, checks that could not run.
+  - One weak signal no longer kills a strong coin; several problems still drop the score under
+    the floor. A 74%-bundled coin with 46% in the top 10 scores 0 safety points.
+- **Score:** momentum 40 + pulse up to +10 + safety 35 + attention 25 (cap 100). The floor stays 45
+  and is learned by the curve learner. The parts and every penalty are stored with the research.
+- **Pulse rescans.**
+  - The curve radar samples every coin's market cap each scan (every 30 s) and reads its
+    15-minute pattern.
+  - A first pullback that bounces (+10), a first pump holding near its high (+6), dumping (-8).
+  - A near miss (within 15 points of the floor, no trap) is researched again after 1, 2, 4, 8 min,
+    at most 10 min apart, up to 5 times, each time with fresh numbers. Then it is dropped.
+
+**Posts**
+- **One layout for every post** (calls, early watches, milestones):
+  - "Northstar Callouts · time", coin image, $TICKER, Callout price, Current price, Multiplier,
+    Peak since callout, Callout type, Links, contract address;
+  - buttons: More info, Axiom, DexScreener;
+  - the title starts with the call type's emoji (☠️ for a rug scalp).
+  - Price is market cap / supply: 1B for pump.fun coins, the coin's own price and market cap for
+    others.
+- **VIP:** calls, early watches (on by default again, in the compact layout), take-profits and
+  milestones (2x, 3x, 5x, 10x) for every call, including runner calls.
+- **Only good news is posted** (`NORTHSTAR_POST_DRAWDOWNS=false`). Stop-loss, time-stop,
+  trailing-stop, exit-now, warning and rugged messages are recorded but never posted to VIP or
+  free. The paper accounts and the learners still use them. They go only to a separate warning
+  channel, if one is set.
+- **Free channel:** every VIP call 20 minutes later (`NORTHSTAR_FREE_CALLOUT_DELAY_MINUTES`), with
+  every milestone reached so far posted at once, then each new milestone as it happens.
+  - Not rug scalps: a minutes-long trade on a rug is useless and dangerous 20 minutes late.
+  - Not a call whose plan already exited.
+
+**Settings:** `NORTHSTAR_POST_DRAWDOWNS`, `NORTHSTAR_FREE_CALLOUT_DELAY_MINUTES=20`,
+`NORTHSTAR_EARLY_WATCH_CHANNEL=vip`, `NORTHSTAR_RUNNER_MAX_RECHECKS=5`,
+`NORTHSTAR_RUNNER_RECHECK_SECONDS=60`, `NORTHSTAR_RUNNER_RECHECK_MAX_SECONDS=600`,
+`NORTHSTAR_RUNNER_RECHECK_MARGIN=15`.
+
+## 3.5.0 — 2026-10-23 — follow the money: what the tracked wallets are buying, live
+
+Operator request: "track what tracked wallets are buying, find where all the attention and money is
+flowing". Before, the 1,436 tracked wallets were only checked while a coin was being researched
+("do any of them hold it?"), so they could never find a coin.
+
+- **Wallet watch (`wallet_flow.py`).**
+  - Every pump.fun and PumpSwap trade the tracked wallets make is streamed from PumpPortal
+    (`subscribeAccountTrade`, on the connection the bot already holds) and stored for 3 days.
+  - Per coin, over the last 30 minutes: how many different tracked wallets bought, SOL in, SOL out.
+- **Research now** when 2+ different tracked wallets buy the same coin within 30 minutes, or one
+  of them buys 5+ SOL in a single trade.
+  - The coin skips the queue like a radar surge, with fresh DexScreener numbers, so the runner
+    check can judge it.
+  - Every safety check still applies.
+  - Dropped, untracked and already-called coins are not brought back.
+- **Attention:** 1 / 2 / 3+ tracked wallets buying right now adds 15 / 30 / 45 attention points,
+  with the reason shown on the call ("3 tracked wallets bought in the last 30 min (4.2 SOL in, 0.5 out)").
+- **Dashboard, Pulse tab: 💸 Money flow card.** The coins your wallets are buying in the last hour,
+  how many wallets, SOL in and out, net, last trade, and the watch's state. Every 30 minutes the
+  log shows the top flow.
+- **Cost control.** PumpPortal meters this stream at 0.01 SOL per 10,000 trades, and it needs an
+  API key whose linked wallet holds at least 0.02 SOL.
+  - Without `NORTHSTAR_PUMPPORTAL_API_KEY` the watch stays off and says so in the log.
+  - A wallet trading more than 60 times an hour trades like a bot: it is muted (unsubscribed)
+    for the day.
+  - After 30,000 messages in a UTC day (about 0.03 SOL), the stream pauses until midnight UTC.
+- Settings: `NORTHSTAR_WALLET_WATCH_ENABLED`, `..._FLOW_WINDOW_MIN`, `..._FLOW_MIN_BUYERS`,
+  `..._FLOW_BIG_BUY_SOL`, `..._WATCH_MAX_EVENTS_DAY`, `..._BOT_TRADES_PER_HOUR`.
+- Tests: `tests/test_wallet_flow.py`.
+
 ## 3.4.2 — 2026-10-23 — scan for callable coins 4x as often
 
 Operator: "research queue should move a lot faster so we can make more calls". The queue was not

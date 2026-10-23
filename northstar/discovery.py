@@ -22,7 +22,7 @@ from .net import ProviderError
 log = logging.getLogger("northstar.discovery")
 
 PRIORITY = {"dexscreener_profile": 2.0, "dexscreener_cto": 2.5, "dexscreener_boost": 1.0,
-            "pumpportal_new": 1.0, "pumpportal_migration": 3.0}
+            "pumpportal_new": 1.0, "pumpportal_migration": 3.0, "wallet_flow": 9.0, "twitter_feed": 9.0}
 
 
 class Discovery:
@@ -32,6 +32,8 @@ class Discovery:
         self.pumpportal_events = {"new_token": 0, "migration": 0, "trade": 0}
         self.pumpportal_new_candidates = 0
         self.pumpportal_duplicate_events = 0
+        self.wallet_flow = None          # v3.5.0: tracked-wallet trades (wallet_flow.py)
+        self.on_wallet_signal = None     # async callback(signal) when tracked wallets pile into a coin
 
     def ingest(self, mint: str, source: str, payload: dict | None = None, name: str | None = None,
                symbol: str | None = None) -> bool:
@@ -92,6 +94,14 @@ class Discovery:
             return
         if kind == "trade":
             self.pumpportal_events["trade"] += 1
+            if self.wallet_flow is not None:
+                try:
+                    sig = self.wallet_flow.observe(msg)
+                except Exception:  # noqa: BLE001 - flow is evidence, never a crash
+                    sig = None
+                    log.debug("wallet flow failed", exc_info=True)
+                if sig and self.on_wallet_signal is not None:
+                    await self.on_wallet_signal(sig)
             self.db.record_curve_snapshot(mint, msg)
             signal = self.db.fetchone("SELECT score, report FROM early_signals WHERE mint=?", (mint,))
             if signal:
