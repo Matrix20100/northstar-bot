@@ -61,18 +61,24 @@ def init_schema(db) -> None:
         # flag for rows whose outcome was never really observed (left out of every count)
         cols = {r[1] for r in db._conn.execute("PRAGMA table_info(curve_watch)").fetchall()}
         for col, decl in (("runner_score", "REAL"), ("runner_safe", "INTEGER"), ("runner_at", "REAL"),
-                          ("excluded", "INTEGER NOT NULL DEFAULT 0")):
+                          ("excluded", "INTEGER NOT NULL DEFAULT 0"), ("runner_block", "TEXT"),
+                          ("bundle_pct", "REAL")):
             if col not in cols:
                 db._conn.execute(f"ALTER TABLE curve_watch ADD COLUMN {col} {decl}")
 
 
-def record_runner(db, mint: str, score: float, safe: bool, now: float) -> None:
+def record_runner(db, mint: str, score: float, safe: bool, now: float, block: Optional[str] = None,
+                  bundle_pct: Optional[float] = None) -> None:
     """Store the runner check's verdict on the coin's curve-watch row: the first check, or the first
-    one where every safety check passed (the moment it could have been called). Never raises."""
+    one where every safety check passed (the moment it could have been called). v3.3.2: also the
+    first safety blocker and the launch bundle share, so the curve report can show what blocked
+    coins really did (were they rugs, or runners the rule cost us?). Never raises."""
     try:
-        db.execute("UPDATE curve_watch SET runner_score = ?, runner_safe = ?, runner_at = ? WHERE mint = ? AND "
+        db.execute("UPDATE curve_watch SET runner_score = ?, runner_safe = ?, runner_at = ?, runner_block = ?, "
+                   "bundle_pct = COALESCE(?, bundle_pct) WHERE mint = ? AND "
                    "(runner_at IS NULL OR (COALESCE(runner_safe, 0) = 0 AND ? = 1))",
-                   (round(float(score), 1), 1 if safe else 0, now, mint, 1 if safe else 0))
+                   (round(float(score), 1), 1 if safe else 0, now, None if safe else (block or "")[:60],
+                    bundle_pct, mint, 1 if safe else 0))
     except Exception:  # noqa: BLE001 - measurement only
         log.debug("curve watch runner record failed for %s", mint, exc_info=True)
 

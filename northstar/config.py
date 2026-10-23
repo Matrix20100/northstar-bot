@@ -340,6 +340,8 @@ class Settings(BaseSettings):
     runner_min_score: float = 45.0        # v3.2.2: was 60; with no KOL attention a safe, active coin scores ~50-58
     runner_max_per_hour: int = 6
     runner_launch_max_pages: int = 20
+    runner_max_rechecks: int = 3           # v3.4.0: a high scorer that is blocked is checked again this many times
+    runner_recheck_seconds: float = 180.0  # ... this far apart; then it is dropped from tracking
     # v3.3.0 curve learner (curve_learn.py): learns the runner score floor from real curve outcomes
     curve_learn_enabled: bool = True
     curve_learn_minutes: float = 30.0

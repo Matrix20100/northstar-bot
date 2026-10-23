@@ -3,6 +3,55 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 3.4.0 — 2026-10-23 — blocked coins: a few rechecks for high scorers, then dropped
+
+Operator request: "High scoring coins should be tracked a few times again and if they don't pass
+delete from tracking."
+
+After a runner check that does not call, every coin now gets one of two outcomes:
+
+- **Recheck:** the runner score is at least the floor (45) and every blocker can still change
+  (holder concentration, dev holding, snipers still holding, insider tiny trades, volume, buys vs
+  sells, a check that could not run). It is researched again in 3 minutes, up to 3 times
+  (`NORTHSTAR_RUNNER_MAX_RECHECKS`, `NORTHSTAR_RUNNER_RECHECK_SECONDS`). If it still does not
+  pass, it is dropped.
+- **Drop now:** the score is under the floor, or a blocker can never clear. That covers a bundled
+  or sniped launch, a 6x+ first-minute jump, a staircase or already-dumped chart, mint or freeze
+  authority, a restricting token extension, recycled socials, past the 45-minute age limit, or a
+  completed curve.
+
+Dropped coins:
+- get state DROPPED and leave the research queue. Neither the radar nor any feed brings them
+  back. "Retrack" in the panel undoes it;
+- are still measured by the curve watch for 4 hours, so the learners see what they did.
+
+Also fixed: the curve radar could queue coins it was only measuring (the curve watch's open
+coins), including untracked ones. It now only queues coins it may research.
+
+The 5-minute runner summary now reads "N in the band, M called, R to recheck, D dropped".
+
+## 3.3.2 — 2026-10-23 — paper sanity rails, and what each safety rule blocks
+
+From the live log:
+
+- **The brain's paper account "bought" a coin for $1.35 billion.** One bad price quote had blown up
+  its balance. Fixes:
+  - **Rails:** the brain never buys a coin that failed the prefilter or a safety check, was rated
+    RUG LIKELY, has under $10K liquidity, or shows an unbelievable entry (market cap under $5K).
+  - **Same pool:** a position is priced from the pool it was bought in, never from another pool
+    with a broken price.
+  - **Bad quotes:** a price that moves more than 20x (up or down) between two checks 15 seconds
+    apart is ignored as a bad quote. This applies to both accounts.
+  - **Repair:** a run with impossible numbers (a trade or balance over 1,000x its start) is closed
+    once at start and a fresh run begins with the same settings. The broken run stays in history.
+- **What each safety rule really blocks.** In the log, all 4 runner candidates were blocked by
+  bundled launches (15-29% bought in the creation block), plus a 7.2x first-minute jump or an
+  already-dumped chart. The runner check now stores each coin's first blocker and its bundle share.
+  `python main.py curve` and the Learning tab then show, per blocker, how often the blocked coins
+  hit 2x, hit a clean 2x, or fell to 0.3x. Any loosening is then based on whether a rule blocks
+  rugs or blocks runners. Nothing is loosened by this change.
+- Tests in `tests/test_paper.py` and `tests/test_learning_v330.py`.
+
 ## 3.3.1 — 2026-10-23 — stop re-checking dead coins every hour
 
 From the live log: 157 "Curve trade sample" lookups in 2 minutes, nearly all finding no trades at

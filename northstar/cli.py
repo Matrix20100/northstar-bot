@@ -290,12 +290,13 @@ def main(argv: list[str] | None = None) -> int:
                 CW.init_schema(db)
                 ev = CW.evaluate(db, args.days)
                 floors = CL.table(db, s, args.days)
+                blocked = CL.blocked_table(db, s, args.days)
             finally:
                 db.close()
             if args.json:
-                print(json.dumps({**ev, "runner_floors": floors}, indent=2))
+                print(json.dumps({**ev, "runner_floors": floors, "runner_blocked": blocked}, indent=2))
             else:
-                print(CW.format_report(ev) + "\n\n" + CL.format_table(floors))
+                print(CW.format_report(ev) + "\n\n" + CL.format_table(floors) + "\n\n" + CL.format_blocked(blocked))
             return 0
         if args.cmd == "cleanup":
             from . import cleanup as CU

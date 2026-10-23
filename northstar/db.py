@@ -732,7 +732,7 @@ class Database:
         now = time.time()
         with self._lock:
             return self._conn.execute("UPDATE candidates SET state = 'DISCOVERED', next_research_at = ?, updated_at = ? "
-                                      "WHERE mint = ? AND state = 'IGNORED'", (now, now, mint)).rowcount > 0
+                                      "WHERE mint = ? AND state IN ('IGNORED', 'DROPPED')", (now, now, mint)).rowcount > 0
 
     def expire_unscheduled_launches(self, max_age_minutes: float, now: Optional[float] = None) -> int:
         """Launch-feed-only coins with no research scheduled leave the list after `max_age_minutes`

@@ -238,3 +238,80 @@ def test_dashboard_counts_and_lists_runner_calls(db):
     calls = _json.loads(cl.req("/api/calls")[1])["calls"]
     assert calls[0]["call_type"] == "RUNNER" and calls[0]["symbol"] == "KIMCHI"
     srv.server.shutdown()
+
+
+# ----------------------------------------------------------------------------- v3.4.0 recheck or drop
+def blocked(**over):
+    r = report(**over)
+    r["runner"] = {"score": 70, "metrics": {"market_cap": 40_000, "age_min": 12}, "blockers": ["x"], "called": False}
+    return r
+
+
+def test_follow_up_rechecks_a_high_scorer_a_few_times_then_drops_it(db):
+    s, pub, c = caller(db, runner_max_rechecks=3)
+    r = blocked()
+    r["gates"].append({"name": "holder_concentration", "status": "FAIL", "reason": "top-10 30%"})  # can change
+    r["runner"]["blockers"] = ["holder concentration not passed: top-10 30%"]
+    for i in range(3):
+        kind, why = c.follow_up(MINT, r)
+        assert kind == "RECHECK" and f"recheck {i + 1} of 3" in why
+    kind, why = c.follow_up(MINT, r)
+    assert kind == "DROP" and "after 3 recheck" in why
+    assert c.runner_stats["rechecks"] == 3 and c.runner_stats["dropped"] == 1
+
+
+def test_follow_up_drops_low_scorers_and_coins_that_can_never_pass(db):
+    s, pub, c = caller(db)
+    low = blocked()
+    low["runner"]["score"] = 30
+    assert c.follow_up(addr("low"), low)[0] == "DROP"
+    bundled = blocked()
+    bundled["gates"] = [g for g in bundled["gates"] if g["name"] != "launch_buys"] + [
+        {"name": "launch_buys", "status": "FAIL", "reason": "9 wallet(s) bought 20.0% in the creation block"}]
+    kind, why = c.follow_up(addr("bund"), bundled)
+    assert kind == "DROP" and "can never pass: launch buys" in why
+    jumped = blocked(launch={"verdict": "INSTANT_JUMP", "reasons": ["launch jumped 7.2x"]})
+    assert "launch chart" in c.follow_up(addr("jump"), jumped)[1]
+    called = blocked()
+    called["runner"]["called"] = True
+    assert c.follow_up(addr("ok"), called) is None
+    assert c.follow_up(addr("none"), report()) is None             # never reached the runner check
+
+
+async def test_engine_drops_or_reschedules_and_the_radar_never_brings_a_dropped_coin_back(settings, db):
+    from conftest import MemoryPublisher as MP, make_pair, strong_providers
+    from northstar.engine import Engine
+    eng = Engine(settings, db, strong_providers(), MP())
+    hi, bund = addr("hiscore"), addr("bundled")
+    for m in (hi, bund):
+        db.upsert_discovery(m, "pumpportal_new", 1.0, "C", "C", {})
+
+    async def fake_research(mint, cand=None, force=False):
+        r = blocked(mint=mint)
+        if mint == bund:
+            r["gates"] = [g for g in r["gates"] if g["name"] != "launch_buys"] + [
+                {"name": "launch_buys", "status": "FAIL", "reason": "bundled"}]
+        else:
+            r["gates"].append({"name": "sniper_holdings", "status": "FAIL", "reason": "snipers hold 20%"})
+        return ResearchOutcome(mint, Action.REJECT, r, pair=None)
+
+    async def no_call(out, now=None, sources=None):
+        return None
+    eng.researcher.research = fake_research
+    eng.early.consider = no_call
+    for m in (hi, bund):
+        await eng.process(m)
+    a, b = db.get_candidate(hi), db.get_candidate(bund)
+    assert a["state"] == "WATCHLIST" and a["next_research_at"] > time.time() + 100
+    assert b["state"] == "DROPPED" and b["next_research_at"] is None
+    assert "dropped from tracking: can never pass" in b["reasons"]
+
+    class Dex:
+        async def tokens_batch(self, mints):
+            return [make_pair(base_mint=m, dex_id="pumpfun", market_cap=40_000.0, fdv=40_000.0,
+                              vol={"m5": 20_000.0, "h1": 1.0, "h6": 1.0, "h24": 1.0},
+                              txns={"m5": {"buys": 90, "sells": 30}, "h1": {"buys": 1, "sells": 1}})
+                    for m in mints]
+    found = await EC.CurveRadar(settings, db, Dex()).run_once()
+    assert bund not in found and hi in found
+    assert db.retrack(bund) and db.get_candidate(bund)["state"] == "DISCOVERED"     # undo from the panel

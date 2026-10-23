@@ -195,3 +195,28 @@ def test_dashboard_learning_tab_shows_the_curve_learner(db):
     assert d["curve"]["safe_coins"] == 3 and d["curve"]["floor"] == 45
     assert next(f for f in d["curve"]["floors"] if f["floor"] == 50)["n"] == 3
     srv.server.shutdown()
+
+
+def test_blocked_coins_report_what_each_rule_cost(db):
+    """v3.3.2: the runner check's first safety blocker is stored per coin, so the curve report shows
+    whether a rule blocks rugs or blocks runners."""
+    now = time.time()
+    for i in range(4):                                           # bundled launches: 3 of 4 rugged
+        coin(db, addr(f"b{i}"), 60, 1.2, 0.25 if i < 3 else 0.9, low_x=0.2 if i < 3 else 0.9, safe=False)
+        db.execute("UPDATE curve_watch SET runner_block='launch buys not passed', bundle_pct=20 WHERE mint=?",
+                   (addr(f"b{i}"),))
+    coin(db, addr("ok"), 60, 3.0, 0.9)
+    t = CL.blocked_table(db, S)
+    g = {x["group"]: x for x in t["groups"]}
+    assert g["launch buys not passed"]["n"] == 4 and g["launch buys not passed"]["fell_0_3x"] == 75.0
+    assert g["passed every safety check"]["hit_2x"] == 100.0
+    assert "launch buys not passed" in CL.format_blocked(t)
+
+
+def test_record_runner_keeps_the_blocker_and_bundle(db):
+    CW.init_schema(db)
+    db.execute("INSERT INTO curve_watch(mint, entered_at, entry_mc, peak_mc, low_mc, low_before_peak, last_mc, last_ts) "
+               "VALUES ('Q', 1, 1, 1, 1, 1, 1, 1)")
+    CW.record_runner(db, "Q", 59, False, 5, block="launch buys not passed", bundle_pct=15.0)
+    r = db.fetchone("SELECT runner_block, bundle_pct FROM curve_watch WHERE mint='Q'")
+    assert (r["runner_block"], r["bundle_pct"]) == ("launch buys not passed", 15.0)

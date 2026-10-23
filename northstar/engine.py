@@ -720,7 +720,7 @@ class Engine:
 
     async def _process(self, mint: str) -> None:
         cand = self.db.get_candidate(mint)
-        if not cand or cand["state"] in ("PUBLISHED", "WARNING", "CLOSED", "QUALIFIED", "STALE", "IGNORED"):
+        if not cand or cand["state"] in ("PUBLISHED", "WARNING", "CLOSED", "QUALIFIED", "STALE", "IGNORED", "DROPPED"):
             return
         prev_state = cand["state"]
         self.db.set_state(mint, "RESEARCHING")
@@ -794,6 +794,28 @@ class Engine:
             if early_called:
                 self.stats["runner_calls"] = self.stats.get("runner_calls", 0) + 1
                 self.db.set_state(mint, "PUBLISHED", next_research_at=None, **common)
+                return
+            # v3.4.0: a high scorer whose blockers can still clear is checked a few more times;
+            # everything else is dropped from tracking (the curve watch keeps measuring it)
+            try:
+                follow = self.early.follow_up(mint, out.report, now)
+            except Exception:  # noqa: BLE001
+                follow = None
+                log.debug("runner follow-up failed for %s", mint, exc_info=True)
+            if follow is not None:
+                kind, why = follow
+                if kind == "RECHECK":
+                    self.stats["runner_rechecks"] = self.stats.get("runner_rechecks", 0) + 1
+                    log.info("runner %s: checking again in %ds (%s)", mint,
+                             int(self.s.runner_recheck_seconds), why)
+                    self.db.set_state(mint, "WATCHLIST", **{**common, "next_research_at":
+                                                             now + float(self.s.runner_recheck_seconds)})
+                else:
+                    self.stats["runner_dropped"] = self.stats.get("runner_dropped", 0) + 1
+                    log.info("runner %s: dropped from tracking (%s)", mint, why)
+                    self.db.set_state(mint, "DROPPED", **{**common, "next_research_at": None,
+                                                          "reasons": [f"dropped from tracking: {why}"]
+                                                          + list(common.get("reasons") or [])[:19]})
                 return
         verdict = None
         if out.action == Action.REJECT and out.pair is not None:
@@ -1061,9 +1083,10 @@ class Engine:
             self._tasks.append(new)
 
     async def _paper(self) -> None:
-        from .paper import PaperTrader
+        from .paper import PaperTrader, repair
         if getattr(self, "paper", None) is None:
             self.paper = PaperTrader(self.s, self.db)
+            repair(self.db, self.s)              # v3.3.2: a run broken by a bad price quote restarts clean
         counts = self.paper.run_once()
         if counts["opened"] or counts["closed"]:
             log.info("paper trader (calls): %s", counts)

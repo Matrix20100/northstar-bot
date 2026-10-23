@@ -399,6 +399,7 @@ def view_learning(c, s, now: float) -> dict:
         try:
             last = db.fetchone("SELECT value FROM meta WHERE key = ?", (CL.META_KEY,))
             curve = {**CL.table(db, s, float(getattr(s, "curve_learn_days", 7.0)), now),
+                     "blocked": CL.blocked_table(db, s, float(getattr(s, "curve_learn_days", 7.0)), now)["groups"],
                      "floor": getattr(s, "runner_min_score", None),
                      "last_change": json.loads(last["value"]) if last else None}
         except Exception:  # noqa: BLE001 - optional card

@@ -77,13 +77,20 @@ SELL_KINDS = ("TP1", "TP2") + tuple(sorted(TP.EXIT_KINDS))
 REASONS = {"TP1": "take profit 1", "TP2": "take profit 2", "TRAIL": "trailing stop", "STOP": "stop loss",
            "TIME": "time stop", "DANGER": "exit now (danger)", "END": "tracking ended", "HOLD": "hold time over"}
 MIN_POSITION_USD = 1.0
+# v3.3.2 sanity rails: a coin is only bought with a believable price, and a price that jumps more than
+# MAX_TICK_JUMP x (or falls under 1 / MAX_TICK_JUMP) between two checks 15 s apart is a bad quote,
+# not a move. The live brain account once "bought" for $1.35 billion after one such quote.
+MIN_ENTRY_MCAP = 5_000.0
+MIN_BRAIN_LIQUIDITY = 10_000.0
+MAX_TICK_JUMP = 20.0
+BRAIN_SKIP_CLASSES = ("PREFILTER", "SAFETY_FAIL")
 
 
 def init_schema(db) -> None:
     with db._lock:
         db._conn.executescript(SCHEMA)
         for table, col, decl in (("paper_runs", "account", "TEXT NOT NULL DEFAULT 'calls'"),
-                                 ("paper_trades", "note", "TEXT")):
+                                 ("paper_trades", "note", "TEXT"), ("paper_trades", "pool", "TEXT")):
             cols = {r[1] for r in db._conn.execute(f"PRAGMA table_info({table})").fetchall()}
             if col not in cols:
                 db._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
@@ -137,20 +144,22 @@ def cash(db, run: dict) -> float:
 
 # ----------------------------------------------------------------------------- shared mechanics
 def _buy(db, run: dict, ref: str, mint: str, symbol, kind: str, entry: float, plan: Optional[dict], now: float,
-         note: Optional[str] = None) -> Optional[str]:
+         note: Optional[str] = None, pool: Optional[str] = None) -> Optional[str]:
     """Open a position. Returns why it could not, or None."""
     if not entry or entry <= 0:
         return "no entry market cap"
+    if entry < MIN_ENTRY_MCAP:
+        return f"entry market cap ${entry:,.0f} is not believable (under ${MIN_ENTRY_MCAP:,.0f})"
     size = cash(db, run) * float(run["position_pct"]) / 100
     if size < MIN_POSITION_USD:
         return f"cash too low for a position (${size:.2f})"
     units = size * (1 - float(run["fee_pct"]) / 100) / entry
     db.execute(
         "INSERT OR IGNORE INTO paper_trades(run_id, ref, mint, symbol, kind, opened_at, entry_mcap, cost_usd, units, "
-        "units_left, last_mcap, peak_mcap, plan, fills, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "units_left, last_mcap, peak_mcap, plan, fills, note, pool) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (run["id"], ref, mint, symbol, kind, now, entry, size, units, units, entry, entry,
          json.dumps(plan) if plan else None,
-         json.dumps([{"kind": "BUY", "at": now, "mcap": entry, "multiple": 1.0, "usd": round(size, 2)}]), note))
+         json.dumps([{"kind": "BUY", "at": now, "mcap": entry, "multiple": 1.0, "usd": round(size, 2)}]), note, pool))
     log.info("paper[%s]: bought $%s for $%.2f at $%.0f market cap", run.get("account", "calls"),
              symbol or mint[:6], size, entry)
     return None
@@ -166,6 +175,11 @@ def _skip(db, run: dict, ref: str, mint: str, symbol, kind: str, entry, why: str
 def _execute(db, row: dict, run: dict, mcap: Optional[float], kinds: list[str], end: Optional[str], now: float) -> bool:
     """Apply sell events to an open position and store it. Returns True when it closed."""
     t = {**row, "fills": json.loads(row["fills"] or "[]"), "done": set(json.loads(row["done"] or "[]"))}
+    ref_mc = t["last_mcap"] or t["entry_mcap"]
+    if mcap and ref_mc and not (ref_mc / MAX_TICK_JUMP <= mcap <= ref_mc * MAX_TICK_JUMP):
+        log.info("paper[%s]: ignored a bad quote for %s ($%.0f after $%.0f)", run.get("account", "calls"),
+                 t.get("symbol") or t["mint"][:6], mcap, ref_mc)
+        mcap, kinds = None, []
     mcap = mcap or t["last_mcap"] or t["entry_mcap"]
     t["last_mcap"] = mcap
     t["peak_mcap"] = max(t["peak_mcap"] or 0, mcap)
@@ -335,6 +349,14 @@ class BrainTrader:
         max_rug = float(getattr(self.s, "paper_brain_max_rug", 0.3))
         if rug is not None and rug >= max_rug:
             return f"rug odds {rug:.0%} at or over {max_rug:.0%}"
+        rc = str(((r.get("final") or {}).get("reason_class")) or ((r.get("unified") or {}).get("reason_class") if
+                                                                  isinstance(r.get("unified"), dict) else "") or "")
+        if rc in BRAIN_SKIP_CLASSES:
+            return f"failed {rc.lower().replace('_', ' ')}"
+        if (r.get("verdict") or {}).get("level") == "RUG LIKELY":
+            return "rug check: RUG LIKELY"
+        if (pair.liquidity_usd or 0) < MIN_BRAIN_LIQUIDITY:
+            return f"liquidity ${pair.liquidity_usd or 0:,.0f} under ${MIN_BRAIN_LIQUIDITY:,.0f}"
         mc = pair.market_cap or pair.fdv
         if not mc:
             return "no market cap"
@@ -354,23 +376,28 @@ class BrainTrader:
             plan = None
         note = f"runner odds {p:.0%}" + (f" · rug odds {rug:.0%}" if rug is not None else "")
         why = _buy(self.db, run, ref, out.mint, pair.base_symbol, "brain", mc, plan.__dict__ if plan else None, now,
-                   note=note)
+                   note=note, pool=pair.pair_address)
         return why or "bought"
 
-    async def _caps(self, mints: list[str]) -> dict[str, float]:
+    async def _caps(self, mints: list[str]) -> tuple[dict[str, float], dict[str, float]]:
+        """(market cap per pool address, market cap of the deepest pool per mint)."""
         if not mints or self.dex is None:
-            return {}
+            return {}, {}
         try:
             pairs = await self.dex.tokens_batch(mints)
         except Exception:  # noqa: BLE001 - prices are retried next cycle
             log.info("paper[brain]: price refresh failed", exc_info=True)
-            return {}
+            return {}, {}
         best: dict = {}
+        by_pool: dict[str, float] = {}
         for p in pairs:
-            if (p.market_cap or p.fdv) and (p.base_mint not in best or (p.liquidity_usd or 0) >
-                                            (best[p.base_mint].liquidity_usd or 0)):
+            if not (p.market_cap or p.fdv):
+                continue
+            if p.pair_address:
+                by_pool[p.pair_address] = p.market_cap or p.fdv
+            if p.base_mint not in best or (p.liquidity_usd or 0) > (best[p.base_mint].liquidity_usd or 0):
                 best[p.base_mint] = p
-        return {m: (p.market_cap or p.fdv) for m, p in best.items()}
+        return by_pool, {m: (p.market_cap or p.fdv) for m, p in best.items()}
 
     async def run_once(self, now: Optional[float] = None) -> dict:
         counts = {"followed": 0, "closed": 0, "priced": 0}
@@ -382,12 +409,17 @@ class BrainTrader:
                                                   (run["id"],))]
         if not rows:
             return counts
-        caps = await self._caps(sorted({t["mint"] for t in rows}))
+        by_pool, caps = await self._caps(sorted({t["mint"] for t in rows}))
         hold = float(getattr(self.s, "paper_brain_hold_hours", 24.0)) * 3600
         for t in rows:
-            mc = caps.get(t["mint"])
+            # the pool it was bought in, so a stray pool with a broken price is never used
+            mc = by_pool.get(t.get("pool") or "") or caps.get(t["mint"])
             counts["followed"] += 1
             kinds: list[str] = []
+            ref_mc = t["last_mcap"] or t["entry_mcap"]
+            if mc and ref_mc and not (ref_mc / MAX_TICK_JUMP <= mc <= ref_mc * MAX_TICK_JUMP):
+                mc = None                                  # a bad quote: _execute logs and ignores it
+                counts["bad_quotes"] = counts.get("bad_quotes", 0) + 1
             if mc:
                 counts["priced"] += 1
                 plan = json.loads(t["plan"]) if t.get("plan") else None
@@ -400,6 +432,29 @@ class BrainTrader:
             if _execute(self.db, t, run, mc, kinds, end, now):
                 counts["closed"] += 1
         return counts
+
+
+def repair(db, s=None, now: Optional[float] = None) -> list[str]:
+    """v3.3.2: a run whose numbers cannot be real (a balance or a trade over 1,000x its start, from a
+    bad quote before the sanity rails) is closed and a fresh run starts with the same settings.
+    The broken run stays in history. Returns the accounts repaired."""
+    now = now or time.time()
+    fixed = []
+    init_schema(db)
+    for acct in ACCOUNTS:
+        run = db.fetchone("SELECT * FROM paper_runs WHERE ended_at IS NULL AND account = ? ORDER BY id DESC LIMIT 1",
+                          (acct,))
+        if not run:
+            continue
+        run = dict(run)
+        bad = db.fetchone("SELECT COUNT(*) AS n FROM paper_trades WHERE run_id = ? AND (cost_usd > ? OR "
+                          "proceeds_usd > cost_usd * 1000 + 1)", (run["id"], run["start_usd"] * 1.0001))["n"]
+        if bad or cash(db, run) > run["start_usd"] * 1000:
+            start_run(db, run["start_usd"], run["position_pct"], run["fee_pct"], now=now, account=acct)
+            log.warning("paper[%s]: the run had impossible numbers (bad price quote); started a fresh run with the "
+                        "same settings. The old run is kept in history.", acct)
+            fixed.append(acct)
+    return fixed
 
 
 # ----------------------------------------------------------------------------- reporting
