@@ -59,7 +59,7 @@ tr.click{cursor:pointer}tr.click:hover{background:#ffffff06}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:12.5px}.kv dt{color:var(--muted)}.kv dd{margin:0}
 input[type=search],input[type=password],input[type=number]{background:#0c0f15;border:1px solid #2b313d;color:var(--text);padding:8px 11px;border-radius:9px;font:inherit;width:100%}
 .setgroup{margin-bottom:12px}.setgroup summary{cursor:pointer;font-weight:700;padding:8px 2px;color:#dfe4ec}
-.src-learned{color:var(--violet)}.src-env{color:var(--blue)}.src-default{color:var(--muted)}
+.src-learned{color:var(--violet)}.src-dashboard{color:var(--green)}.src-env{color:var(--blue)}.src-default{color:var(--muted)}
 .test{display:grid;grid-template-columns:22px minmax(0,200px) 1fr auto;gap:10px;padding:9px 4px;border-bottom:1px solid #1d212a;font-size:13px;align-items:start}
 .test pre{margin:0;white-space:pre-wrap;font:inherit;color:#c9cfda}
 .icon{font-size:15px;line-height:1.2}
@@ -207,7 +207,7 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
     <div class="card" style="margin-bottom:14px"><div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
       <input type="search" id="setSearch" placeholder="Search settings…" style="max-width:340px">
       <span class="pill" style="color:var(--violet)">learned</span><span class="pill" style="color:var(--blue)">from .env</span><span class="pill dim">default</span>
-      <span class="muted" style="font-size:12px">Keys and tokens are never shown here. Change settings in <code>.env</code> and restart.</span></div>
+      <span class="pill" style="color:var(--green)">dashboard</span><span class="muted" style="font-size:12px">Change any setting here: it applies at once (a few apply after a restart) and beats .env and learned values. Keys and tokens are never shown or changeable here.</span></div>
       <div id="setProblems"></div></div>
     <div id="settings"></div>
   </section>
@@ -388,8 +388,17 @@ function drawSettings(){if(!SET)return;const q=$('setSearch').value.trim().toLow
  $('setProblems').innerHTML=(SET.problems||[]).length?`<div style="margin-top:12px">${SET.problems.map(p=>`<div class="reason down">⚠ ${esc(p)}</div>`).join('')}</div>`:'';
  $('settings').innerHTML=SET.groups.map(g=>{const rows=g.settings.filter(s=>!q||s.name.includes(q)||s.env.toLowerCase().includes(q)||String(s.value).toLowerCase().includes(q));if(!rows.length)return'';
   return `<details class="card setgroup" ${q||g.name!=='Timing & storage'?'open':''}><summary>${esc(g.name)} <span class="sub">(${rows.length})</span></summary><div class="tablewrap"><table><thead><tr><th>Setting</th><th>Value</th><th>From</th></tr></thead><tbody>
-  ${rows.map(s=>`<tr><td><b>${esc(s.name)}</b><br><span class="sub">${esc(s.env)}</span></td><td class="num">${s.secret?(s.value==='set'?'<span class="pill good">set</span>':'<span class="pill dim">not set</span>'):`<code>${esc(typeof s.value==='object'&&s.value!==null?JSON.stringify(s.value):fmt(s.value))}</code>`}</td>
-  <td class="src-${s.source==='.env'?'env':s.source}">${esc(s.source)}</td></tr>`).join('')}</tbody></table></div></details>`}).join('')}
+  ${rows.map(s=>{const shown=typeof s.value==='object'&&s.value!==null?JSON.stringify(s.value):(s.value==null?'':String(s.value));
+   const cell=s.secret?(s.value==='set'?'<span class="pill good">set</span>':'<span class="pill dim">not set</span>'):s.editable?
+    `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${typeof s.value==='boolean'?`<select class="setin" data-key="${esc(s.name)}"><option ${s.value?'selected':''}>true</option><option ${s.value?'':'selected'}>false</option></select>`:`<input class="setin" data-key="${esc(s.name)}" value="${esc(shown)}" style="width:${Math.min(320,Math.max(90,shown.length*8+30))}px">`}<button class="btn" data-save="${esc(s.name)}">Save</button>${s.source==='dashboard'?`<button class="btn" data-reset="${esc(s.name)}">Reset</button>`:''}${s.restart?'<span class="pill dim" title="read when the bot starts">after restart</span>':''}<span class="sub" data-msg="${esc(s.name)}"></span></div>`
+    :`<code>${esc(shown)}</code> <span class="sub">(not changeable here)</span>`;
+   return `<tr><td><b>${esc(s.name)}</b><br><span class="sub">${esc(s.env)}</span></td><td class="num">${cell}</td>
+  <td class="src-${s.source==='.env'?'env':s.source}">${esc(s.source)}</td></tr>`}).join('')}</tbody></table></div></details>`}).join('');
+ document.querySelectorAll('[data-save]').forEach(b=>b.onclick=async()=>{const k=b.dataset.save;const inp=document.querySelector(`.setin[data-key="${k}"]`);
+  const r=await post('/api/settings/set',{key:k,value:inp.value});const m=document.querySelector(`[data-msg="${k}"]`);
+  m.textContent=r.ok?(r.restart?'saved · applies after a restart':'saved · live now'):(r.error||'failed');m.className=r.ok?'sub up':'sub down';if(r.ok)settings()});
+ document.querySelectorAll('[data-reset]').forEach(b=>b.onclick=async()=>{const k=b.dataset.reset;const r=await post('/api/settings/reset',{key:k});
+  const m=document.querySelector(`[data-msg="${k}"]`);m.textContent=r.ok?'back to .env / default':(r.error||'failed');if(r.ok)settings()})}
 $('setSearch').oninput=drawSettings;
 
 let stRunning=false;
@@ -408,6 +417,15 @@ document.addEventListener('click',e=>{const tr=e.target.closest('tr[data-mint]')
 $('overlay').onclick=closeDrawer;document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDrawer()});
 function closeDrawer(){$('drawer').classList.remove('on');$('overlay').classList.remove('on')}
 const val=v=>v&&typeof v==='object'&&'value' in v?v.value:v;
+function teachBar(mint,taught){const box=document.createElement('div');box.className='card';box.style.marginBottom='12px';
+ const lab={runner:'👍 runner',rug:'👎 rug',nothing:'😐 went nowhere'};
+ box.innerHTML=`<h2>Teach the AI <span>${taught?'taught: '+esc(lab[taught]||taught):'what really happened to this coin?'}</span></h2>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">${Object.entries(lab).map(([k,v])=>`<button class="btn ${taught===k?'primary':''}" data-teach="${k}">${v}</button>`).join('')}${taught?'<button class="btn" data-teach="clear">Clear lesson</button>':''}<span class="sub" id="teachMsg"></span></div>
+  <p class="sub" style="margin:8px 0 0">Your lesson overrides what the bot measured for this coin, and both brains learn it at their next hourly training.</p>`;
+ const d=$('drawer');d.insertBefore(box,d.children[1]||null);
+ box.querySelectorAll('[data-teach]').forEach(b=>b.onclick=async()=>{const r=await post('/api/teach',{mint,label:b.dataset.teach});
+  $('teachMsg').textContent=r.ok?(r.label?'Taught'+(r.example?'':' (label only: no research numbers yet)'):'Lesson cleared'):(r.error||'Failed');
+  if(r.ok){box.remove();teachBar(mint,r.label)}})}
 async function openToken(mint,pre){$('drawer').classList.add('on');$('overlay').classList.add('on');if(!pre)$('drawer').innerHTML='<div class="empty"><span class="spin"></span> Loading research…</div>';
  try{const t=pre||await api('/api/token?mint='+encodeURIComponent(mint));const r=t.report||{},m=r.market||{},br=r.brain,gates=r.gates||[],sn=t.snapshot||{},pm=r.pre_migration||{};
   const gate=g=>`<div style="display:flex;gap:8px;font-size:12.5px;padding:3px 0"><span>${g.status==='PASS'?'✅':g.status==='FAIL'?'❌':'❔'}</span><span><b>${esc(g.name)}</b> <span class="sub">${esc(g.reason||'')}</span></span></div>`;
@@ -425,7 +443,7 @@ async function openToken(mint,pre){$('drawer').classList.add('on');$('overlay').
   ${verdictCard(r.verdict)}${bubbleCard(r.clusters,mint)}
   <div class="card" style="margin-bottom:12px"><h2>Why this decision</h2>${(t.reasons||[]).map(x=>`<div class="reason">• ${esc(x)}</div>`).join('')||'<div class="sub">—</div>'}</div>
   <div class="card"><h2>Safety checks</h2>${gates.length?gates.map(gate).join(''):'<div class="sub">No checks recorded</div>'}</div>`;
-  drawBubbles(r.clusters);wireCall(t,mint)}
+  drawBubbles(r.clusters);wireCall(t,mint);teachBar(mint,t.taught)}
  catch(e){if(e.message!=='auth')$('drawer').innerHTML=`<div class="empty">Could not load this coin.<br><br><button class="btn" onclick="runResearch('${esc(mint)}')">Research it now</button></div>`}}
 
 /* ---------- manual research and calls ---------- */

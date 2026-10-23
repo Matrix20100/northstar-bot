@@ -55,14 +55,14 @@ def run(db, now: Optional[float] = None, dry_run: bool = False) -> dict:
         TS.init_schema(db)
         CW.init_schema(db)
         drop: dict[str, str] = {}
-        for r in db.fetchall("SELECT key FROM training_examples WHERE rug IS NULL AND runner IS NULL AND ts < ?",
-                             (now - UNLABELLED_DAYS * 86400,)):
+        for r in db.fetchall("SELECT key FROM training_examples WHERE rug IS NULL AND runner IS NULL AND ts < ? "
+                             "AND key NOT LIKE 'teach:%'", (now - UNLABELLED_DAYS * 86400,)):
             drop[r["key"]] = "unlabelled"
         out["unlabelled"] = len(drop)
         last_seen: dict[str, float] = {}
         for r in db.fetchall("SELECT key, mint, ts, feats FROM training_examples ORDER BY ts"):
-            if r["key"] in drop:
-                continue
+            if r["key"] in drop or r["key"].startswith("teach:"):
+                continue                      # the operator's lessons are never cleaned away
             if _unknown_share(r["feats"]) >= UNKNOWN_SHARE:
                 drop[r["key"]] = "mostly unknown"
                 out["mostly_unknown"] += 1

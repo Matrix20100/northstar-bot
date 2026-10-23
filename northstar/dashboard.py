@@ -353,6 +353,10 @@ def view_token(c, mint: str) -> Optional[dict]:
         except ValueError:
             pass
         out["snapshot"] = {k: snap[k] for k in ("action", "score", "risk", "confidence", "ts")}
+    out["taught"] = None
+    if _table_ok(c, "operator_labels"):                      # v4.1.0: the operator's lesson, if any
+        lab = c.execute("SELECT label FROM operator_labels WHERE mint=?", (mint,)).fetchone()
+        out["taught"] = lab["label"] if lab else None
     return out
 
 
@@ -443,6 +447,10 @@ FLAG_LABELS = {
 }
 
 GROUPS = [
+    ("Calls on young coins (Pulse)", ("runner_", "curve_radar", "curve_learn", "early_call", "early_tp", "early_stop",
+                                      "early_trail", "early_time", "early_max_entry", "launch_")),
+    ("Tracked wallets & attention", ("wallet_", "tracked_wallets", "kol_", "attention_")),
+    ("Paper trading", ("paper_",)),
     ("Discord & posting", ("discord_", "dry_run", "free_", "vip_", "early_watch", "max_alerts", "alert_", "embed_")),
     ("Who gets called", ("min_", "max_allowed", "watchlist_", "block_", "require_", "reject_", "max_")),
     ("Trade plan (VIP calls)", ("plan_", "trade_plan")),
@@ -464,6 +472,9 @@ def view_settings(c, s) -> dict:
     if _table_ok(c, "learned_settings"):
         learned = {r["key"]: r["value"] for r in c.execute("SELECT key, value FROM learned_settings")}
     from_env = set(getattr(s, "model_fields_set", set()))
+    from . import operator_settings as OS
+    operator = ({r["key"] for r in c.execute("SELECT key FROM operator_settings")}
+                if _table_ok(c, "operator_settings") else set())
     groups: dict[str, list] = {g: [] for g, _ in GROUPS}
     for name in type(s).model_fields:
         raw = getattr(s, name, None)
@@ -476,11 +487,13 @@ def view_settings(c, s) -> dict:
                 value = list(value)
             elif not isinstance(value, (int, float, str, bool, list, dict, type(None))):
                 value = str(value)
-        source = "learned" if name in learned else (".env" if name in from_env else "default")
+        source = ("dashboard" if name in operator else "learned" if name in learned
+                  else (".env" if name in from_env else "default"))
         group = next((g for g, prefixes in GROUPS if any(name.startswith(p) for p in prefixes) and prefixes != ("",)),
                      "Timing & storage")
         groups[group].append({"name": name, "env": "NORTHSTAR_" + name.upper(), "value": value, "secret": secret,
-                              "source": source})
+                              "source": source, "editable": OS.editable(s, name),
+                              "restart": OS.needs_restart(name)})
     return {"groups": [{"name": g, "settings": v} for g, v in groups.items() if v],
             "problems": s.config_problems()}
 
@@ -696,7 +709,55 @@ class DashboardServer:
                     return self._untrack(u.path, self._body())
                 if u.path == "/api/paper/start":
                     return self._paper_start(self._body())
+                if u.path in ("/api/settings/set", "/api/settings/reset"):
+                    return self._setting(u.path, self._body())
+                if u.path == "/api/teach":
+                    return self._teach(self._body())
                 return self._send(404, {"error": "not found"})
+
+            def _setting(self, path: str, body: dict):
+                """v4.1.0: change (or reset) one setting from the panel; applied live and stored."""
+                from . import operator_settings as OS
+                from .db import Database
+                s = LIVE.get("settings") or owner.settings
+                key = str(body.get("key") or "")[:80]
+                if s is None:
+                    return self._send(503, {"ok": False, "error": "settings unavailable"})
+                db = Database(owner.db_path)
+                db.open()
+                try:
+                    if path == "/api/settings/set":
+                        v = OS.set_value(db, s, key, body.get("value"))
+                    else:
+                        v = OS.reset(db, s, key)
+                except ValueError as e:
+                    return self._send(422, {"ok": False, "error": str(e)})
+                except Exception as e:  # noqa: BLE001
+                    return self._send(500, {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"})
+                finally:
+                    db.close()
+                if isinstance(v, (set, tuple)):
+                    v = list(v)
+                return self._send(200, {"ok": True, "key": key, "value": v if isinstance(
+                    v, (int, float, str, bool, list, dict, type(None))) else str(v),
+                    "restart": OS.needs_restart(key)})
+
+            def _teach(self, body: dict):
+                """v4.1.0: teach the learners with a real coin (runner / rug / nothing / clear)."""
+                from . import teach as TE
+                from .db import Database
+                db = Database(owner.db_path)
+                db.open()
+                try:
+                    res = TE.teach(db, str(body.get("mint") or "").strip()[:64], str(body.get("label") or ""),
+                                   note=str(body.get("note") or "")[:300])
+                except ValueError as e:
+                    return self._send(422, {"ok": False, "error": str(e)})
+                except Exception as e:  # noqa: BLE001
+                    return self._send(500, {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"})
+                finally:
+                    db.close()
+                return self._send(200, {"ok": True, **res})
 
             def _paper_start(self, body: dict):
                 """Start a new paper run with the amount typed on the Paper tab."""

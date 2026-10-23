@@ -3,6 +3,32 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 4.1.0 — 2026-10-23 — change every setting on the dashboard; teach the AI with real coins
+
+Operator: "I must be able to change every setting inside the dashboard", "I want to be manually
+able to teach the AI with real coins".
+
+- **Settings tab: every setting is editable** (`operator_settings.py`).
+  - **Validation:** each value is checked exactly like a .env value; a bad value is refused with
+    the reason.
+  - **Live and kept:** a change applies to the running bot at once and is stored, so it survives
+    restarts.
+  - **Priority:** a dashboard value beats .env, the default, and anything the learners tuned.
+    The learners (settings tuner, curve learner) leave a setting you set alone.
+  - **Restart-only settings:** loop timings, feature on/off switches, rate limits and channel ids
+    are read at start; the panel marks them "after restart".
+  - **Reset:** puts a setting back to .env or the default.
+  - **Never editable:** keys, tokens, passwords, and where the bot keeps its data or listens.
+  - **New groups:** "Calls on young coins (Pulse)", "Tracked wallets & attention", "Paper trading".
+- **Teach the AI** (`teach.py`). Every coin's research drawer has 👍 runner / 👎 rug /
+  😐 went nowhere / clear.
+  - A lesson turns the coin's own research numbers into a training example.
+  - It overrides whatever the bot measured for that coin in every training example. A coin you
+    know rugged is never learned as a winner.
+  - Both brains learn it at their next hourly training.
+  - The daily cleanup never removes a lesson.
+- Tests: `tests/test_operator_settings_teach.py`.
+
 ## 4.0.1 — 2026-10-23 — extreme cases still reject outright
 
 Operator answer: hard rejects for "traps + extreme only" (4.0.0 had made only real traps reject).

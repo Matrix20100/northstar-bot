@@ -220,6 +220,16 @@ class Engine:
             self._learned_seen = dict(applied)
             if applied:
                 log.info("learning: applied learned settings %s", applied)
+        # v4.1.0: values set on the dashboard beat .env, defaults and learned values
+        self._operator_keys: set = set()
+        try:
+            from . import operator_settings as OS
+            applied_op = OS.apply(db, s)
+            self._operator_keys = set(applied_op)
+            if applied_op:
+                log.info("dashboard settings applied: %s", applied_op)
+        except Exception:  # noqa: BLE001
+            log.warning("dashboard settings could not be applied", exc_info=True)
         try:
             from . import curve_learn as CL
             CL.ensure(db)
@@ -409,7 +419,14 @@ class Engine:
         rows = {r["key"]: r["value"] for r in self.db.fetchall("SELECT key, value FROM learned_settings")}
         if rows == self._learned_seen:
             return
+        try:
+            from . import operator_settings as OS
+            operator = OS.keys(self.db)
+        except Exception:  # noqa: BLE001
+            operator = set()
         for t in self.learning.TUNABLES:
+            if t.key in operator:
+                continue                  # v4.1.0: a value set on the dashboard is never overwritten
             default = self._tunable_defaults[t.key]
             val = rows.get(t.key, default)
             if isinstance(default, int) and not isinstance(default, bool):
