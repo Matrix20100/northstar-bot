@@ -48,6 +48,7 @@ POINTS = {
     "crypto_trending": 20,                      # matches a trending coin / pool name
     "news": 15, "trends": 20, "wiki": 10, "crypto_news": 15,
     "promotion": 10, "socials": 5,
+    "flow_one": 15, "flow_two": 30, "flow_more": 45,   # v3.5.0: 1 / 2 / 3+ tracked wallets BUYING it now
 }
 
 
@@ -87,6 +88,7 @@ class Attention:
         self.kol_tickers: dict[str, dict] = {}    # TICKER -> {"channels": set, "last": ts}
         self.status: dict[str, dict] = {}
         self._last: dict[str, float] = {}
+        self.flow = None          # v3.5.0: wallet_flow.WalletFlow, when the wallet watch runs
 
     def channels(self) -> list[str]:
         raw = str(getattr(self.s, "kol_telegram_channels", "") or "")
@@ -166,6 +168,12 @@ class Attention:
             elif symbol and symbol.upper() in self.kol_tickers:
                 parts["kol"] = POINTS["kol_ticker"]
                 reasons.append(f"${symbol.upper()} mentioned by " + ", ".join(sorted(self.kol_tickers[symbol.upper()]["channels"])[:3]))
+            fl = self.flow.flow(mint) if self.flow is not None else None
+            if fl and fl["buyers"]:
+                n = fl["buyers"]
+                parts["flow"] = POINTS["flow_more"] if n >= 3 else POINTS["flow_two"] if n == 2 else POINTS["flow_one"]
+                reasons.insert(0, f"{n} tracked wallet{'s' if n != 1 else ''} bought in the last "
+                                  f"{fl['window_min']:.0f} min ({fl['buy_sol']:.1f} SOL in, {fl['sell_sol']:.1f} out)")
             held = ((report or {}).get("tracked_wallets") or {}).get("holding_count") or 0
             if held:
                 parts["wallets"] = POINTS["wallets_more"] if held >= 3 else POINTS["wallets_one"]

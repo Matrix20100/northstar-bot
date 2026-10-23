@@ -47,8 +47,13 @@ class PumpPortalStream:
         enable_trade_stream: bool = False,
         max_trade_subscriptions: int = 100,
         trade_subscription_ttl_seconds: int = 300,
+        account_keys: Optional[Callable[[], list]] = None,
     ):
+        """`account_keys`: v3.5.0, returns the wallets whose trades to stream (subscribeAccountTrade,
+        metered by PumpPortal, needs the API key). None or an empty list = no account stream."""
         self.on_event = on_event
+        self._account_keys_fn = account_keys
+        self._accounts: set[str] = set()     # wallets currently subscribed
         self.api_key = api_key
         self.health_cb = health_cb
 
@@ -181,6 +186,10 @@ class PumpPortalStream:
                                         }
                                     )
                                 )
+
+                    # v3.5.0: tracked-wallet trades (subscribeAccountTrade, metered)
+                    self._accounts = set()
+                    await self.sync_accounts()
 
                     self.connected = True
                     self.connected_at = time.time()
@@ -384,6 +393,32 @@ class PumpPortalStream:
 
         return True
 
+    async def sync_accounts(self) -> int:
+        """Subscribe the wallets `account_keys()` returns and unsubscribe the ones it no longer returns
+        (muted bots, paused budget). Returns how many are subscribed. Never raises."""
+        ws = self._ws
+        if ws is None or self._account_keys_fn is None or not self.api_key or self._trade_access_rejected:
+            return len(self._accounts)
+        try:
+            want = {k for k in (self._account_keys_fn() or []) if isinstance(k, str) and k}
+        except Exception:  # noqa: BLE001
+            return len(self._accounts)
+        drop = sorted(self._accounts - want)
+        add = sorted(want - self._accounts)
+        try:
+            for i in range(0, len(drop), 200):
+                await ws.send(json.dumps({"method": "unsubscribeAccountTrade", "keys": drop[i:i + 200]}))
+            for i in range(0, len(add), 200):
+                await ws.send(json.dumps({"method": "subscribeAccountTrade", "keys": add[i:i + 200]}))
+        except Exception as e:  # noqa: BLE001 - the reconnect loop re-syncs
+            log.info("PumpPortal account subscription update failed: %s", type(e).__name__)
+            return len(self._accounts)
+        self._accounts = (self._accounts - set(drop)) | set(add)
+        if add or drop:
+            log.info("PumpPortal wallet watch: %d tracked wallet(s) streamed (+%d / -%d)", len(self._accounts),
+                     len(add), len(drop))
+        return len(self._accounts)
+
     def _disable_trade_access(self, reason: str) -> None:
         """
         Disable metered trade requests after an explicit provider rejection.
@@ -398,6 +433,7 @@ class PumpPortalStream:
         self._trade_subscriptions.clear()
         self._pending_subscriptions.clear()
         self._last_trade_by_mint.clear()
+        self._accounts.clear()
 
         if first_rejection:
             # Expected on the free tier: trades are read from the chain instead, so this is a

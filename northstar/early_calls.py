@@ -104,6 +104,34 @@ class CurveRadar:
         self._last: dict[str, tuple] = {}     # mint -> (last looked at, 5-min volume then)
         init_schema(db)
 
+    def _record(self, mint: str, p, now: float) -> None:
+        """Store the DexScreener numbers the runner check reads (runner.radar_metrics)."""
+        self.db.upsert_discovery(mint, "curve_radar", 9.0, p.base_name, p.base_symbol, _radar_payload(p, now))
+
+    async def snapshot(self, mints: list[str], now: Optional[float] = None) -> int:
+        """v3.5.0: fresh numbers for coins found another way (tracked-wallet flow), whatever their band,
+        so the runner check can judge them. Returns how many were recorded."""
+        now = now or time.time()
+        if self.dex is None or not mints:
+            return 0
+        try:
+            pairs = await self.dex.tokens_batch(list(mints))
+        except Exception as e:  # noqa: BLE001
+            log.info("curve radar snapshot failed: %s", e)
+            return 0
+        best: dict = {}
+        for p in pairs:
+            if p.base_mint in mints and (p.base_mint not in best
+                                         or (p.liquidity_usd or 0) > (best[p.base_mint].liquidity_usd or 0)):
+                best[p.base_mint] = p
+        n = 0
+        for mint, p in best.items():
+            if (p.dex_id or "").lower() in ("pumpfun", "pump.fun", "pump") and (p.market_cap or p.fdv):
+                self._record(mint, p, now)
+                self._last[mint] = (now, float((p.vol or {}).get("m5") or 0))
+                n += 1
+        return n
+
     async def run_once(self, now: Optional[float] = None) -> list[str]:
         now = now or time.time()
         if self.dex is None:
@@ -168,12 +196,7 @@ class CurveRadar:
                 continue
             self._last[mint] = (now, vol)
             out.append(mint)
-            age = (now - p.pair_created_at) / 60 if p.pair_created_at else None
-            self.db.upsert_discovery(mint, "curve_radar", 9.0, p.base_name, p.base_symbol,
-                                     {"market_cap": mc, "buys_m5": buys, "sells_m5": sells, "vol_m5": vol,
-                                      "chg_m5": (p.price_change or {}).get("m5"), "liq": p.liquidity_usd,
-                                      "age_min": round(age, 1) if age is not None else None,
-                                      "image_url": p.image_url, "seen_at": now})
+            self._record(mint, p, now)
             # launches are no longer queued on a timer, so this is what puts one in the queue
             self.db.execute("UPDATE candidates SET next_research_at=? WHERE mint=?", (now, mint))
         if out:
@@ -184,6 +207,15 @@ class CurveRadar:
 
 
 # ----------------------------------------------------------------------------- caller
+def _radar_payload(p, now: float) -> dict:
+    t5 = (p.txns or {}).get("m5") or {}
+    age = (now - p.pair_created_at) / 60 if p.pair_created_at else None
+    return {"market_cap": p.market_cap or p.fdv, "buys_m5": t5.get("buys") or 0, "sells_m5": t5.get("sells") or 0,
+            "vol_m5": float((p.vol or {}).get("m5") or 0), "chg_m5": (p.price_change or {}).get("m5"),
+            "liq": p.liquidity_usd, "age_min": round(age, 1) if age is not None else None,
+            "image_url": p.image_url, "seen_at": now}
+
+
 class EarlyCaller:
     def __init__(self, s, db, publisher, events=None, judge=None):
         self.runner_stats = self._fresh_stats()

@@ -112,6 +112,14 @@ class Settings(BaseSettings):
     micro_insider_min_trades: int = 3        # tiny trades by top holders / bundlers / snipers that fail; 0 = off
     tracked_wallets_file: str = "data/tracked_wallets.json"  # Axiom wallet-tracker export (or one address a line)
     tracked_wallets_enabled: bool = True
+    # v3.5.0 wallet watch (wallet_flow.py): stream what the tracked wallets trade (PumpPortal
+    # subscribeAccountTrade; needs NORTHSTAR_PUMPPORTAL_API_KEY, metered 0.01 SOL per 10,000 trades)
+    wallet_watch_enabled: bool = True
+    wallet_flow_window_min: float = 30.0       # flow is counted over this window
+    wallet_flow_min_buyers: int = 2            # this many different tracked wallets buying -> research now
+    wallet_flow_big_buy_sol: float = 5.0       # or one tracked wallet buying this much SOL in one trade
+    wallet_watch_max_events_day: int = 30000   # about 0.03 SOL a day; paused until 00:00 UTC after this
+    wallet_bot_trades_per_hour: int = 60       # a wallet trading more than this an hour is muted for the day
     rejected_max_rechecks: int = 6
     second_chance_min_liquidity_usd: float = 35_000.0  # "strong liquidity" for a re-check (rug rate fell above ~$33K on 21 Oct paths)
     insufficient_max_rechecks: int = 8      # missing data is retried, but not forever

@@ -3,6 +3,37 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 3.5.0 — 2026-10-23 — follow the money: what the tracked wallets are buying, live
+
+Operator request: "track what tracked wallets are buying, find where all the attention and money is
+flowing". Before, the 1,436 tracked wallets were only checked while a coin was being researched
+("do any of them hold it?"), so they could never find a coin.
+
+- **Wallet watch (`wallet_flow.py`).**
+  - Every pump.fun and PumpSwap trade the tracked wallets make is streamed from PumpPortal
+    (`subscribeAccountTrade`, on the connection the bot already holds) and stored for 3 days.
+  - Per coin, over the last 30 minutes: how many different tracked wallets bought, SOL in, SOL out.
+- **Research now** when 2+ different tracked wallets buy the same coin within 30 minutes, or one
+  of them buys 5+ SOL in a single trade.
+  - The coin skips the queue like a radar surge, with fresh DexScreener numbers, so the runner
+    check can judge it.
+  - Every safety check still applies.
+  - Dropped, untracked and already-called coins are not brought back.
+- **Attention:** 1 / 2 / 3+ tracked wallets buying right now adds 15 / 30 / 45 attention points,
+  with the reason shown on the call ("3 tracked wallets bought in the last 30 min (4.2 SOL in, 0.5 out)").
+- **Dashboard, Pulse tab: 💸 Money flow card.** The coins your wallets are buying in the last hour,
+  how many wallets, SOL in and out, net, last trade, and the watch's state. Every 30 minutes the
+  log shows the top flow.
+- **Cost control.** PumpPortal meters this stream at 0.01 SOL per 10,000 trades, and it needs an
+  API key whose linked wallet holds at least 0.02 SOL.
+  - Without `NORTHSTAR_PUMPPORTAL_API_KEY` the watch stays off and says so in the log.
+  - A wallet trading more than 60 times an hour trades like a bot: it is muted (unsubscribed)
+    for the day.
+  - After 30,000 messages in a UTC day (about 0.03 SOL), the stream pauses until midnight UTC.
+- Settings: `NORTHSTAR_WALLET_WATCH_ENABLED`, `..._FLOW_WINDOW_MIN`, `..._FLOW_MIN_BUYERS`,
+  `..._FLOW_BIG_BUY_SOL`, `..._WATCH_MAX_EVENTS_DAY`, `..._BOT_TRADES_PER_HOUR`.
+- Tests: `tests/test_wallet_flow.py`.
+
 ## 3.4.2 — 2026-10-23 — scan for callable coins 4x as often
 
 Operator: "research queue should move a lot faster so we can make more calls". The queue was not

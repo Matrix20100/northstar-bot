@@ -176,6 +176,22 @@ class Engine:
         self.early.attention = self.attention
         if self.curve_radar is not None:
             self.curve_radar.attention = self.attention
+        # v3.5.0: tracked wallets' live trades (PumpPortal account stream) -> money flow
+        self.wallet_flow = None
+        if getattr(s, "wallet_watch_enabled", True) and getattr(s, "tracked_wallets_enabled", True):
+            try:
+                from pathlib import Path
+                from .analysis import holdings as HO
+                from .wallet_flow import WalletFlow
+                path = Path(getattr(s, "tracked_wallets_file", "") or "")
+                wallets = HO.load_tracked_wallets(path) if path.is_file() else []
+                if wallets:
+                    self.wallet_flow = WalletFlow(s, db, wallets)
+                    self.discovery.wallet_flow = self.wallet_flow
+                    self.discovery.on_wallet_signal = self._on_wallet_signal
+                    self.attention.flow = self.wallet_flow
+            except Exception:  # noqa: BLE001 - optional feature
+                log.warning("wallet watch could not start", exc_info=True)
         self._inflight: set[str] = set()
         self._manual: dict[str, tuple] = {}      # mint -> (outcome, researched_at) from the dashboard
         self._manual_busy: set[str] = set()
@@ -285,7 +301,16 @@ class Engine:
             stream = PumpPortalStream(self.discovery.on_pumpportal, key, self._pp_health,
                                       enable_trade_stream=self.s.enable_pumpportal_trades,
                                       max_trade_subscriptions=self.s.max_pumpportal_trade_subscriptions,
-                                      trade_subscription_ttl_seconds=self.s.pumpportal_trade_subscription_ttl_seconds)
+                                      trade_subscription_ttl_seconds=self.s.pumpportal_trade_subscription_ttl_seconds,
+                                      account_keys=self._wallet_keys)
+            if self.wallet_flow is not None:
+                if key:
+                    tasks.append(asyncio.create_task(self._loop("wallet-watch", 60, self._wallet_watch)))
+                else:
+                    log.warning("wallet watch is OFF: streaming what your %d tracked wallets buy needs "
+                                "NORTHSTAR_PUMPPORTAL_API_KEY (a PumpPortal API key whose linked wallet holds "
+                                "at least 0.02 SOL; metered at 0.01 SOL per 10,000 trades)",
+                                len(self.wallet_flow.names))
             self._pumpportal_stream = stream
             tasks.append(asyncio.create_task(stream.run(self.stop), name="pumpportal"))
         log.info("northstar engine running (dry_run=%s, rpc=%s)", self.s.dry_run, self.s.rpc_label)
@@ -1003,6 +1028,46 @@ class Engine:
         await self.events.refresh()
         await self.attention.refresh()
 
+    # ---------------------------------------------------------------- v3.5.0 wallet flow
+    def _wallet_keys(self) -> list:
+        wf = getattr(self, "wallet_flow", None)
+        if wf is None or wf.paused:
+            return []
+        return wf.keys()
+
+    async def _wallet_watch(self) -> None:
+        """Every minute: a new UTC day unmutes and unpauses; muted bots and a spent budget unsubscribe."""
+        wf, stream = self.wallet_flow, getattr(self, "_pumpportal_stream", None)
+        if wf is None or stream is None:
+            return
+        wf._roll_day(time.time())
+        await stream.sync_accounts()
+        now = time.time()
+        if now - getattr(self, "_flow_logged", 0) >= 1800:
+            self._flow_logged = now
+            top = wf.top(now, 60, 3)
+            log.info("wallet watch: %s; top flow (1h): %s", wf.status(),
+                     "; ".join(f"{t['symbol'] or t['mint'][:6]} {t['buyers']} buyers {t['net_sol']:+.1f} SOL"
+                               for t in top) or "none")
+
+    async def _on_wallet_signal(self, sig: dict) -> None:
+        """Tracked wallets piled into a coin: research it now (every safety check still applies)."""
+        mint = sig["mint"]
+        cand = self.db.get_candidate(mint)
+        if cand and cand["state"] in ("PUBLISHED", "WARNING", "CLOSED", "QUALIFIED", "IGNORED", "DROPPED"):
+            return
+        self.stats["wallet_signals"] = self.stats.get("wallet_signals", 0) + 1
+        log.info("wallet flow %s: %s - researching now", mint, sig["why"])
+        self.discovery.ingest(mint, "wallet_flow", payload={"why": sig["why"], "buyers": sig["buyers"],
+                                                            "buy_sol": sig["buy_sol"]})
+        if self.curve_radar is not None:
+            await self.curve_radar.snapshot([mint])
+        if mint in self._inflight:
+            return
+        task = asyncio.create_task(self._radar_research(mint))
+        self._radar_tasks.add(task)
+        task.add_done_callback(self._radar_tasks.discard)
+
     async def _curve_radar(self) -> None:
         for mint in await self.curve_radar.run_once():
             if mint in self._inflight:
@@ -1103,6 +1168,9 @@ class Engine:
         from . import retention as RT
 
         res = await asyncio.to_thread(RT.maintain, self.db, self.s)
+        if getattr(self, "wallet_flow", None) is not None:
+            from . import wallet_flow as WF
+            res["wallet_trades_removed"] = await asyncio.to_thread(WF.prune, self.db)
         if any(v for v in (res.get("pruned") or {}).values()) \
                 or any(isinstance(v, int) and v for v in res.values()):
             log.info("database retention: %s", res)

@@ -244,6 +244,21 @@ def view_pulse(c, now: float, hours: float = 3.0) -> dict:
     return {"hours": hours, "columns": {k: v[:60] for k, v in cols.items()}, "passed": passed[:40], "funnel": funnel}
 
 
+def view_flow(c, s, now: float) -> dict:
+    """v3.5.0: what the tracked wallets are buying (last hour), and the wallet watch's state."""
+    eng = LIVE.get("engine")
+    wf = getattr(eng, "wallet_flow", None) if eng is not None else None
+    key = bool(getattr(s, "pumpportal_api_key", None))
+    status = wf.status() if wf is not None else None
+    rows = []
+    if _table_ok(c, "wallet_trades"):
+        from . import wallet_flow as WF
+        rows = WF.view_top(_Ro(c), now, 60.0, 15)
+    return {"status": status, "api_key": key, "enabled": bool(getattr(s, "wallet_watch_enabled", True)),
+            "min_buyers": getattr(s, "wallet_flow_min_buyers", 2), "big_buy_sol": getattr(s, "wallet_flow_big_buy_sol", 5),
+            "top": rows}
+
+
 def view_paper(c, s, now: float, account: str = "calls") -> dict:
     """A paper account (read-only connection: shows the defaults until the bot starts a run)."""
     from . import paper as PT
@@ -620,6 +635,8 @@ class DashboardServer:
                         return self._send(200, CW.evaluate(_Ro(c), 7.0, now))
                     if u.path == "/api/calls":
                         return self._send(200, view_calls(c))
+                    if u.path == "/api/flow":
+                        return self._send(200, view_flow(c, s, now))
                     if u.path == "/api/paper":
                         acct = (parse_qs(u.query).get("account") or ["calls"])[0]
                         return self._send(200, view_paper(c, s, now, acct))
