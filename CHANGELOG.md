@@ -3,6 +3,20 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 3.4.2 — 2026-10-23 — scan for callable coins 4x as often
+
+Operator: "research queue should move a lot faster so we can make more calls". The queue was not
+the bottleneck: it sat at 0, and coins entering the band already skip it. Two things limited calls.
+First, how many coins the curve radar caught in the band. Second, almost all of those failing a
+safety check (mostly bundled launches). This release addresses the first; no safety rule changes.
+
+- The curve radar checks every **30 seconds** (was every 2 minutes). Young pump.fun coins often
+  cross the $15K-$90K band in under 2 minutes, so a 2-minute scan missed some entirely.
+- It looks only at launches from the **last hour** (was 3 hours). A coin over 45 minutes old can
+  never be runner-called, so the extra two hours were wasted lookups. Each pass now needs about a
+  third of the DexScreener lookups: roughly 40 a minute in total, within the 200 a minute budget.
+- The curve watch still follows every coin that entered the band for its full 4 hours.
+
 ## 3.4.1 — 2026-10-23 — the first runner call was never priced
 
 From the overnight log: the bot made its first runner call, but the call tracker reported
