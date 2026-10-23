@@ -3,6 +3,18 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v4.2.1 - Learning tab shows the real numbers
+
+- Rug brain and training memory showed "not trained yet" / "0 coins" on the dashboard although the
+  bot had trained them. The dashboard's read-only connection could not run the "create table" step
+  those reads started with; they now skip it there.
+- "Coins recorded" and "Checked against real price" showed 0: the "what predicts a rug" table reused
+  the same variable and overwrote the counts. Renamed.
+- Narratives: coins recorded before v4.2.0 have no stored theme and all showed as "other". They are
+  now classified from their ticker when read.
+- Blocked table: one row per rule. "5-min volume $5,340 under $7,500" and "$6,100 under $7,500" are
+  now one row, "5-min volume under $7,500" (same for market cap, age, extreme rejects, trap checks).
+
 ## 4.2.0 — 2026-10-23 — Twitter attention from J7 / uxento, narratives, two calls an hour
 
 Operator: "The bot must have twitter trackers like J7 or uxento to understand exactly where all

@@ -80,7 +80,7 @@ def theme_stats(db, days: float = 7.0, now: Optional[float] = None) -> dict:
         if "theme" not in cols:
             return {"all": {"n": 0}, "themes": {}}
         keep = "AND COALESCE(excluded, 0) = 0 " if "excluded" in cols else ""
-        rows = db.fetchall(f"SELECT theme, entry_mc, peak_mc, low_mc FROM curve_watch WHERE done = 1 {keep}"
+        rows = db.fetchall(f"SELECT theme, symbol, entry_mc, peak_mc, low_mc FROM curve_watch WHERE done = 1 {keep}"
                            "AND entered_at > ? AND entry_mc > 0", (now - days * 86400,))
     except Exception:  # noqa: BLE001
         return {"all": {"n": 0}, "themes": {}}
@@ -94,7 +94,8 @@ def theme_stats(db, days: float = 7.0, now: Optional[float] = None) -> dict:
 
     by: dict[str, list] = {}
     for r in rows:
-        by.setdefault(r["theme"] or "other", []).append(r)
+        # coins recorded before v4.2.0 have no stored theme: classify them from their ticker now
+        by.setdefault(r["theme"] or classify(None, r.get("symbol")), []).append(r)
     return {"all": rates(rows), "themes": {t: rates(rs) for t, rs in sorted(by.items(), key=lambda kv: -len(kv[1]))}}
 
 
