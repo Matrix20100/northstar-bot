@@ -392,8 +392,8 @@ class Settings(BaseSettings):
     early_time_stop_multiple: float = 1.15
     # curve radar: finds bonding-curve coins entering the early-call band
     curve_radar_enabled: bool = True
-    curve_radar_seconds: int = 120
-    curve_radar_hours: float = 3.0          # look at launches from the last N hours
+    curve_radar_seconds: int = 30            # v3.4.2: was 120; young coins cross the band in under 2 min
+    curve_radar_hours: float = 1.0          # v3.4.2: was 3; only coins under 45 min can be called
     curve_radar_max_tokens: int = 2400
     curve_radar_min_buys_m5: int = 12
     # v2.6.2 curve watch (curve_watch.py): outcomes of every pump.fun coin entering the early band

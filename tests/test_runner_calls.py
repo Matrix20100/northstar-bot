@@ -315,3 +315,23 @@ async def test_engine_drops_or_reschedules_and_the_radar_never_brings_a_dropped_
     found = await EC.CurveRadar(settings, db, Dex()).run_once()
     assert bund not in found and hi in found
     assert db.retrack(bund) and db.get_candidate(bund)["state"] == "DISCOVERED"     # undo from the panel
+
+
+async def test_radar_scans_only_launches_young_enough_to_call(db):
+    """v3.4.2: every 30 s over the last hour (was every 2 min over 3 h): coins over 45 min old can't
+    be runner-called, and young coins cross the $15K-$90K band in under 2 minutes."""
+    from conftest import make_pair
+    s = Settings(_env_file=None)
+    assert s.curve_radar_seconds == 30 and s.curve_radar_hours == 1.0
+    young, old = addr("young"), addr("old2h")
+    for m in (young, old):
+        db.upsert_discovery(m, "pumpportal_new", 1.0, "C", "C", {})
+    db.execute("UPDATE candidates SET discovered_at=? WHERE mint=?", (time.time() - 2 * 3600, old))
+
+    class Dex:
+        async def tokens_batch(self, mints):
+            return [make_pair(base_mint=m, dex_id="pumpfun", market_cap=40_000.0, fdv=40_000.0,
+                              vol={"m5": 20_000.0, "h1": 1.0, "h6": 1.0, "h24": 1.0},
+                              txns={"m5": {"buys": 90, "sells": 30}, "h1": {"buys": 1, "sells": 1}}) for m in mints]
+    found = await EC.CurveRadar(s, db, Dex()).run_once()
+    assert found == [young]
