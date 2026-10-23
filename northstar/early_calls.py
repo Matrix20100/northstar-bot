@@ -457,21 +457,32 @@ class EarlyCallTracker:
                 acc = next(it, None) if k else None
                 st = Researcher._parse_pump_curve_account(acc) if acc else None
                 if not st:
+                    self._why_unread(r["mint"], "curve account missing or unreadable" if acc is None
+                                     else "curve account did not parse")
                     continue
                 if st.get("complete"):
                     out[r["mint"]] = (None, True)
                     pool.append(r)
                 elif st.get("market_cap_sol") and sol_usd:
                     out[r["mint"]] = (st["market_cap_sol"] * sol_usd, False)
-        if pool and self.dex is not None:
+                elif not sol_usd:
+                    self._why_unread(r["mint"], "no SOL/USD price")
+        # v3.4.1: a curve coin the chain read could not price is read from DexScreener instead (it lists
+        # the curve as a "pumpfun" pair with a market cap). Before, it was silently skipped every time:
+        # the first live runner call was never priced, so no plan pings, no 2x proof, no paper result.
+        fallback = [r for r in curve if r["mint"] not in out and r not in pool]
+        if (pool or fallback) and self.dex is not None:
             try:
-                pairs = await self.dex.tokens_batch([r["mint"] for r in pool])
+                pairs = await self.dex.tokens_batch([r["mint"] for r in pool + fallback])
             except Exception as e:  # noqa: BLE001
                 log.info("early-call pool read failed: %s", e)
                 pairs = []
             best: dict = {}
+            curve_pair: dict = {}
             for p in pairs:
-                if (p.dex_id or "").lower() in ("pumpfun", "pump.fun"):
+                if (p.dex_id or "").lower() in ("pumpfun", "pump.fun", "pump"):
+                    if (p.market_cap or p.fdv) and p.base_mint not in curve_pair:
+                        curve_pair[p.base_mint] = p
                     continue
                 if p.base_mint not in best or (p.liquidity_usd or 0) > (best[p.base_mint].liquidity_usd or 0):
                     best[p.base_mint] = p
@@ -481,7 +492,24 @@ class EarlyCallTracker:
                     out[r["mint"]] = (p.market_cap or p.fdv, True)
                 elif r["mint"] not in out:
                     out[r["mint"]] = (None, True)
+            for r in fallback:
+                p = best.get(r["mint"])
+                if p and (p.market_cap or p.fdv):                 # it migrated after all
+                    out[r["mint"]] = (p.market_cap or p.fdv, True)
+                elif r["mint"] in curve_pair:
+                    cp = curve_pair[r["mint"]]
+                    out[r["mint"]] = (cp.market_cap or cp.fdv, False)
+                else:
+                    self._why_unread(r["mint"], "DexScreener has no price for it either")
         return out
+
+    def _why_unread(self, mint: str, why: str) -> None:
+        """Say once per coin and reason why a call could not be priced (a silent miss hid the bug)."""
+        seen = self.__dict__.setdefault("_unread_logged", set())
+        if (mint, why) in seen:
+            return
+        seen.add((mint, why))
+        log.warning("early-call tracker: could not price %s from the chain: %s", mint, why)
 
     async def run_once(self, now: Optional[float] = None) -> dict:
         now = now or time.time()
