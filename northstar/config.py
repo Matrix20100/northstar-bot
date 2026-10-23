@@ -349,6 +349,8 @@ class Settings(BaseSettings):
     runner_min_score: float = 45.0        # v3.2.2: was 60; with no KOL attention a safe, active coin scores ~50-58
     runner_max_per_hour: int = 6
     runner_launch_max_pages: int = 20
+    runner_reject_bundle_pct: float = 40.0  # v4.0.1: a bundle this big rejects outright (milder ones cost points)
+    runner_reject_dev_pct: float = 20.0     # v4.0.1: a dev holding or buying this much rejects outright
     runner_max_rechecks: int = 5           # v4.0.0: a near-miss is rescanned this many times (5 over ~15 min)
     runner_recheck_seconds: float = 60.0   # first rescan after 1 min, then 2, 4, 8 ...
     runner_recheck_max_seconds: float = 600.0   # ... never more than 10 min apart

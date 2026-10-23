@@ -257,6 +257,8 @@ class EarlyCaller:
                 out.append(f"{g['name'].replace('_', ' ')}: {g.get('reason') or 'failed'}")
         if (report.get("verdict") or {}).get("level") == "RUG LIKELY":
             out.append("rug check RUG LIKELY")
+        from . import runner as RN
+        out += RN.extreme(report, self.s)            # v4.0.1: a 40%+ bundle or a 20%+ dev bag never clears
         pm = report.get("pre_migration") or {}
         if pm.get("curve_complete"):
             out.append("curve complete (migrating)")

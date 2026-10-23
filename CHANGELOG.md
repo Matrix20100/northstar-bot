@@ -3,6 +3,17 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 4.0.1 — 2026-10-23 — extreme cases still reject outright
+
+Operator answer: hard rejects for "traps + extreme only" (4.0.0 had made only real traps reject).
+
+- A runner call is also rejected outright when:
+  - other wallets bought **40%+** of supply in the creation block (`NORTHSTAR_RUNNER_REJECT_BUNDLE_PCT`);
+  - the dev holds or bought **20%+** of supply (`NORTHSTAR_RUNNER_REJECT_DEV_PCT`).
+- These coins are dropped from tracking at once, since they can never clear.
+- Anything below these limits stays a scaled score penalty, as in 4.0.0.
+- Test: `tests/test_runner_calls.py`.
+
 ## 4.0.0 — 2026-10-23 — score, don't veto; Pulse rescans; posts in the operator's layout
 
 From the operator's handwritten brief ("Northstar Bot", pages 1-2). Includes 3.5.0 (wallet watch).

@@ -393,3 +393,25 @@ def test_a_strong_coin_with_a_moderate_bundle_is_now_called(db):
     row = asyncio.run(c.consider(out(r)))
     assert row is not None and r["runner"]["called"]
     assert any("bundled launch: 20%" in p["why"] for p in r["runner"]["penalties"])
+
+
+def test_extreme_bundles_and_dev_bags_still_reject_outright(db):
+    """v4.0.1, operator: "traps + extreme only". A 40%+ bundle or a dev holding/buying 20%+ rejects
+    however strong the rest is, and the coin is dropped at once (it can never clear)."""
+    s, pub, c = caller(db)
+    big = report(launch_buys={"verdict": "BUNDLED", "bundle_pct": 45.0, "early_buy_pct": 50.0, "sniper_held_pct": 2.0})
+    radar(db)
+    assert asyncio.run(c.consider(out(big))) is None
+    assert any(b.startswith("extreme: 45% bought in the creation block") for b in big["runner"]["blockers"])
+    kind, why = c.follow_up(MINT, big)
+    assert kind == "DROP" and "extreme" in why
+    dev = report(mint=addr("devbag"), launch_buys={"verdict": "SNIPED", "bundle_pct": 0.1, "early_buy_pct": 1.0,
+                                                   "dev_buy_pct": 53.0, "sniper_held_pct": 1.0})
+    radar(db, mint=addr("devbag"))
+    assert asyncio.run(c.consider(out(dev))) is None
+    assert any("dev holds or bought 53%" in b for b in dev["runner"]["blockers"])
+    # just under the limits: a penalty, not a reject
+    ok = report(mint=addr("under"), launch_buys={"verdict": "BUNDLED", "bundle_pct": 39.0, "early_buy_pct": 20.0,
+                                                 "sniper_held_pct": 2.0})
+    assert not [b for b in RN.blockers(ok, {"market_cap": 40_000, "vol_m5": 20_000, "buys_m5": 90, "sells_m5": 30,
+                                            "age_min": 10}, s) if b.startswith("extreme")]

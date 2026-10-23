@@ -4,7 +4,8 @@ What call bots like Nexas post: a pump.fun coin under ~45 minutes old, $15K-$90K
 real 5-minute volume. Northstar calls the same kind of coin after its own research.
 
 v4.0.0 (operator: "I don't want all coins to reject simply cause of 1 thing"): only REAL TRAPS block a
-call. Everything else is a penalty in the score, scaled by how bad it is, so one weak signal no
+call. v4.0.1 (operator: "traps + extreme only"): plus two extreme cases, a bundle of 40%+ bought in
+the creation block and a dev holding or buying 20%+ of supply (extreme()). Everything else is a penalty in the score, scaled by how bad it is, so one weak signal no
 longer kills an otherwise strong coin, while a coin with several problems still scores too low.
 
 A coin is CALLED when:
@@ -128,6 +129,23 @@ def score(report: dict, m: dict, attention: Optional[dict]) -> dict:
             "attention": round(att, 1), "penalties": [{"why": w, "points": p} for w, p in pen], "notes": notes}
 
 
+def extreme(report: dict, s) -> list[str]:
+    """v4.0.1 (operator: "traps + extreme only"): cases so extreme they reject outright, however
+    strong the rest of the coin looks. Everything milder stays a score penalty (penalties())."""
+    out = []
+    lb = report.get("launch_buys") or {}
+    h = report.get("holders") or {}
+    bundle_max = float(getattr(s, "runner_reject_bundle_pct", 40.0) or 0)
+    dev_max = float(getattr(s, "runner_reject_dev_pct", 20.0) or 0)
+    if bundle_max and (lb.get("bundle_pct") or 0) >= bundle_max:
+        out.append(f"extreme: {lb['bundle_pct']:.0f}% bought in the creation block (bundled; reject at "
+                   f"{bundle_max:.0f}%)")
+    dev = max(float(lb.get("dev_buy_pct") or 0), float(h.get("creator_pct") or 0))
+    if dev_max and dev >= dev_max:
+        out.append(f"extreme: the dev holds or bought {dev:.0f}% of supply (reject at {dev_max:.0f}%)")
+    return out
+
+
 def blockers(report: dict, m: Optional[dict], s, now: Optional[float] = None) -> list[str]:
     """Why this coin may NOT be called (empty list = it may). v4.0.0: candidate rules and traps only."""
     out = []
@@ -153,6 +171,7 @@ def blockers(report: dict, m: Optional[dict], s, now: Optional[float] = None) ->
     level = (report.get("verdict") or {}).get("level")
     if level == "RUG LIKELY":
         out.append("trap check: rug check RUG LIKELY")
+    out += extreme(report, s)
     if (report.get("pre_migration") or {}).get("curve_complete"):
         out.append("curve complete (migrating)")
     return out
