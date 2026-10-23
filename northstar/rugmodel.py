@@ -147,7 +147,8 @@ def train(db, s, now: Optional[float] = None) -> Optional[B.Model]:
 
 def latest(db) -> Optional[B.Model]:
     try:
-        init_schema(db)
+        if hasattr(db, "_lock"):          # the dashboard reads through a read-only adapter: no CREATE there
+            init_schema(db)
         row = db.fetchone("SELECT * FROM rug_models ORDER BY ts DESC LIMIT 1")
         return B.Model.from_row(row) if row else None
     except Exception:  # noqa: BLE001

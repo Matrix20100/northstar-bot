@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import statistics
 import time
 from typing import Optional
@@ -85,6 +86,33 @@ def table(db, s, days: float = 7.0, now: Optional[float] = None) -> dict:
     return {"days": days, "safe_coins": len(rows), "floors": out}
 
 
+_BLOCK_KEYS = [
+    (re.compile(r"^extreme: .*creation block"), "extreme: bundled launch"),
+    (re.compile(r"^extreme: the dev holds"), "extreme: dev holds too much"),
+    (re.compile(r"^extreme: already crashed"), "extreme: already crashed"),
+    (re.compile(r"^extreme: \d+ serious problems"), "extreme: 3+ serious problems"),
+    (re.compile(r"^market cap .* outside"), "market cap outside the band"),
+    (re.compile(r"^[\d.]+ min old"), "too old"),
+    (re.compile(r"^5-min volume \$[\d,.]+ under (\$[\d,.]+)"), r"5-min volume under \1"),
+    (re.compile(r"^(trap check: .*? not passed)(:.*)?$"), r"\1"),
+    (re.compile(r"^[\d.]+% bundled"), "bundled"),
+    (re.compile(r"^[\d.]+% sniped at launch"), "sniped at launch"),
+    (re.compile(r"^snipers still hold"), "snipers still hold"),
+    (re.compile(r"^top 10 hold"), "top 10 hold too much"),
+    (re.compile(r"^dev holds [\d.]+%"), "dev holds too much"),
+]
+
+
+def block_key(text: Optional[str]) -> str:
+    """One row per rule: "5-min volume $5,340 under $7,500" and "$6,100 under $7,500" are the same rule."""
+    t = (text or "other").strip()
+    for rx, key in _BLOCK_KEYS:
+        m = rx.search(t)
+        if m:
+            return m.expand(key)
+    return t
+
+
 def blocked_table(db, s, days: float = 7.0, now: Optional[float] = None) -> dict:
     """What coins blocked by each safety rule really did (v3.3.2), next to the coins that passed.
     A rule whose blocked coins rarely rug and often run is costing calls; one whose blocked coins
@@ -98,7 +126,7 @@ def blocked_table(db, s, days: float = 7.0, now: Optional[float] = None) -> dict
         "AND entered_at > ?", (now - days * 86400,))]
     groups: dict[str, list] = {}
     for r in rows:
-        key = "passed every safety check" if r.get("runner_safe") else (r.get("runner_block") or "other")
+        key = "passed every safety check" if r.get("runner_safe") else block_key(r.get("runner_block"))
         groups.setdefault(key, []).append(r)
     out = []
     for key, sub in sorted(groups.items(), key=lambda kv: -len(kv[1])):

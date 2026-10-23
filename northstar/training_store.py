@@ -270,7 +270,8 @@ def examples(db, label: str, limit: int = B.MAX_ROWS) -> list[dict]:
 
 def stats(db) -> dict:
     try:
-        init_schema(db)
+        if hasattr(db, "_lock"):          # the dashboard reads through a read-only adapter: no CREATE there
+            init_schema(db)
         r = db.fetchone("SELECT COUNT(*) AS n, SUM(rug = 1) AS rugs, SUM(runner = 1) AS runners, "
                         "SUM(LENGTH(feats)) AS bytes, MIN(ts) AS since FROM training_examples")
         return {"examples": r["n"] or 0, "rugs": r["rugs"] or 0, "runners": r["runners"] or 0,

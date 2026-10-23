@@ -414,10 +414,10 @@ def view_learning(c, s, now: float) -> dict:
                              for f, w in sorted(m.coef.items(), key=lambda kv: -abs(kv[1]))[:16]]}
     flags = None
     if _table_ok(c, "flag_outcomes"):
-        stats = {r["key"]: r for r in db.fetchall("SELECT key, n, crash, run2x FROM flag_outcomes")}
-        base = stats.pop("_all", None)
+        flag_stats = {r["key"]: r for r in db.fetchall("SELECT key, n, crash, run2x FROM flag_outcomes")}
+        base = flag_stats.pop("_all", None)
         if base:
-            rows = [{"key": k, "label": FLAG_LABELS.get(k, k.replace("_", " ")), **v} for k, v in stats.items() if v["n"] >= 5]
+            rows = [{"key": k, "label": FLAG_LABELS.get(k, k.replace("_", " ")), **v} for k, v in flag_stats.items() if v["n"] >= 5]
             rows.sort(key=lambda r: -(r["crash"] / r["n"]))
             flags = {"base": base, "rows": rows[:25]}
     from . import rugmodel as RM
