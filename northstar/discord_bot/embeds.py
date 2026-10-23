@@ -7,6 +7,7 @@ never publishes INCOMPLETE, and the label itself always says NOT RUG-PROOF); no 
 from __future__ import annotations
 
 import json
+import math
 import time
 from typing import Optional
 
@@ -464,22 +465,34 @@ def plan_status(alert: dict) -> str:
 
 
 def _update_compact(e: dict, alert: dict, multiple, entry_mcap, current_mcap) -> dict:
-    """Refresh the market-cap, peak and plan lines of a v3 compact call post."""
+    """Refresh the live lines of a compact call post (v4.0.0 layout; v3 posts too)."""
     lines = str(e.get("description") or "").split("\n")
     out = []
-    peak = alert.get("peak_mcap")
+    peak = max(alert.get("peak_mcap") or 0, current_mcap or 0) or None
     status = plan_status(alert)
+    mint = alert.get("mint") or ""
+    supply = 1_000_000_000 if mint.endswith("pump") else None
+    if supply is None and alert.get("entry_price") and entry_mcap:
+        supply = entry_mcap / alert["entry_price"]
     for ln in lines:
-        if ln.startswith("**Market Cap**:"):
+        if ln.startswith("**Current price:**"):
+            ln = f"**Current price:** {_px(current_mcap, supply)}"
+        elif ln.startswith("**Multiplier:**"):
+            ln = f"**Multiplier:** {multiple:.2f}x" if multiple is not None else ln
+        elif ln.startswith("**Peak since callout:**"):
+            ln = (f"**Peak since callout:** {peak / entry_mcap:.2f}x ({money(peak)} MC)"
+                  if peak and entry_mcap else ln)
+        elif ln.startswith("**Plan**:") or ln.startswith("**Plan:**"):
+            continue
+        elif ln.startswith("**Links:**") and status:
+            clean = status.replace("**Plan status:** ", "")
+            if not any(w in clean.lower() for w in EXIT_STATUS_WORDS):
+                out.append(f"**Plan**: {clean}")
+        elif ln.startswith("**Market Cap**:"):                 # a v3 post
             ln = f"**Market Cap**: {money(entry_mcap)}" + (
                 f" → {money(current_mcap)} ({multiple:.2f}x)" if multiple is not None else "")
         elif ln.startswith("**Peak**:") or ln.startswith("**Plan status**:"):
             continue
-        elif ln.startswith("**Address**:"):
-            if status:
-                out.append(f"**Plan status**: {status.replace('**Plan status:** ', '')}")
-            if peak and entry_mcap and peak / entry_mcap >= 1.2:
-                out.append(f"**Peak**: {money(peak)} ({peak / entry_mcap:.2f}x)")
         out.append(ln)
     e["description"] = _clip("\n".join(out), 4000)
     stamp = alert.get("last_update_at")
@@ -501,7 +514,7 @@ def updated_callout(original: dict, alert: dict) -> dict:
         current_price = alert.get("current_price")
         multiple = current_price / entry_price if current_price is not None and entry_price else None
         gain = (multiple - 1) * 100 if multiple is not None else None
-    if "**Market Cap**:" in str(e.get("description") or ""):
+    if "**Market Cap**:" in str(e.get("description") or "") or "**Callout price:**" in str(e.get("description") or ""):
         return _update_compact(e, alert, multiple, entry_mcap, current_mcap)
     summary = {
         "Called at market cap": money(entry_mcap),
@@ -561,35 +574,33 @@ def warning_embed(alert: dict, kind: str, detail: str, critical: bool = True) ->
 
 
 def milestone_embed(alert: dict, multiple: float) -> dict:
+    """A milestone post (2x, 3x, 5x, 10x since the call) in the compact call layout (v4.0.0)."""
     mint = alert["mint"]
     symbol = alert.get("symbol") or "?"
-    entry_mcap = alert.get("entry_mcap")
-    current_mcap = alert.get("current_mcap")
-    if entry_mcap and current_mcap is not None and entry_mcap > 0:
-        observed_multiple = current_mcap / entry_mcap
-        gain = (observed_multiple - 1) * 100
-        basis = "market cap"
-    else:
-        entry_price = alert.get("entry_price")
-        current_price = alert.get("current_price")
-        observed_multiple = current_price / entry_price if current_price is not None and entry_price else None
-        gain = (observed_multiple - 1) * 100 if observed_multiple is not None else None
-        basis = "price (market cap unavailable)"
-    token_url = f"https://dexscreener.com/solana/{mint}"
+    entry_mcap, current_mcap = alert.get("entry_mcap"), alert.get("current_mcap")
+    peak = max(alert.get("peak_mcap") or 0, current_mcap or 0, (entry_mcap or 0) * multiple) or None
+    supply = 1_000_000_000 if mint.endswith("pump") else (
+        entry_mcap / alert["entry_price"] if alert.get("entry_price") and entry_mcap else None)
+    lines = [f"**Callout price:** {_px(entry_mcap, supply)}",
+             f"**Current price:** {_px(current_mcap, supply)}",
+             f"**Multiplier:** {current_mcap / entry_mcap:.2f}x" if entry_mcap and current_mcap else "**Multiplier:** —",
+             f"**Peak since callout:** {peak / entry_mcap:.2f}x ({money(peak)} MC)" if peak and entry_mcap else "",
+             f"**Links:** [DexScreener](https://dexscreener.com/solana/{mint}) · [Axiom](https://axiom.trade/t/{mint})",
+             f"**CA:** `{mint}`"]
+    sent = alert.get("sent_at") or alert.get("created_at") or time.time()
     embed = {
-        "title": f"🎯 ${symbol} hit {multiple:g}x!",
-        "url": token_url,
-        "description": f"Milestone reached since the Northstar callout. Tracking basis: **{basis}**.\n`{mint}`",
+        "author": {"name": f"Northstar Callouts · called {time.strftime('%H:%M UTC', time.gmtime(sent))}"},
+        "title": f"📈 ${symbol} hit {multiple:g}x since the call!",
+        "url": f"https://dexscreener.com/solana/{mint}",
+        "description": "\n".join(x for x in lines if x),
         "color": COLOR_UPDATE,
-        "fields": [
-            {"name": "Called at market cap", "value": money(entry_mcap), "inline": True},
-            {"name": "Current market cap", "value": money(current_mcap), "inline": True},
-            {"name": "Gain since callout", "value": f"{pct(gain)} · {observed_multiple:.2f}x" if observed_multiple is not None else "UNAVAILABLE", "inline": True},
-            {"name": "Links", "value": links(mint, alert.get("pool_address")), "inline": False},
-        ],
         "footer": {"text": f"Observed milestone, not guaranteed executable profit · mint:{mint}"},
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "_buttons": [{"label": "More info", "custom_id": f"{MORE_INFO_PREFIX}{mint}"},
+                     {"label": "Axiom", "url": f"https://axiom.trade/t/{mint}"}],
     }
+    if isinstance(alert.get("image_url"), str) and alert["image_url"].startswith(("https://", "http://")):
+        embed["thumbnail"] = {"url": alert["image_url"]}
     return embed
 
 
@@ -711,75 +722,83 @@ def _age_text(minutes) -> str:
     return f"{minutes:.0f}m" if minutes < 60 else (f"{minutes / 60:.1f}h" if minutes < 1440 else f"{minutes / 1440:.1f}d")
 
 
-def compact_call_embed(report: dict, call: dict, *, kind: str = "runner") -> dict:
-    """The v3 call post: only the key numbers (like the call bots traders already read), the image,
-    and buttons. Everything else is one click away (More info). Rebuilt on every edit.
+CALL_TYPES = {"runner": "🎯 Runner call", "standard": "🚀 Call", "manual": "📣 Manual call",
+              "scalp": "☠️ Rug scalp", "early": "👀 Early watch", "narrative": "⚡ Narrative call"}
+# plan status lines that report an exit or a loss (hidden: only good news is shown, v4.0.0)
+EXIT_STATUS_WORDS = ("stopped out", "time stop —", "trailing stop —", "exit posted", "rugged")
 
-    ``call``: entry_mcap, current_mcap, peak_mcap, peak_at, sent_at, phase, status_line."""
+
+def _price(mc: Optional[float], supply: Optional[float]) -> Optional[str]:
+    """Token price from market cap and supply (pump.fun coins: 1,000,000,000)."""
+    if not mc or not supply:
+        return None
+    p = mc / supply
+    if p >= 1:
+        return f"${p:,.2f}"
+    digits = max(2, -int(math.floor(math.log10(p))) + 2)
+    return f"${p:.{min(digits, 12)}f}"
+
+
+def _px(mc: Optional[float], supply: Optional[float]) -> str:
+    pr = _price(mc, supply)
+    return f"{pr} · {money(mc)} MC" if pr else f"{money(mc)} MC"
+
+
+def compact_call_embed(report: dict, call: dict, *, kind: str = "runner") -> dict:
+    """The v4.0.0 call post, in the operator's layout:
+
+        Northstar Callouts · time
+        (coin image) $TICKER
+        Callout price / Current price / Multiplier / Peak since callout / Callout type / Links
+        [More info] [Axiom] [DexScreener]
+
+    Only the key numbers; everything else is one click away (More info). Rebuilt on every edit.
+    ``call``: entry_mcap, current_mcap, peak_mcap, sent_at, last_update_at, status_line, supply."""
     mint = report.get("mint", "")
     ident = report.get("identity") or {}
     market = report.get("market") or {}
-    pm = report.get("pre_migration") or {}
     run = report.get("runner") or {}
     m = run.get("metrics") or {}
-    h = report.get("holders") or {}
-    lb = report.get("launch_buys") or {}
-    att = report.get("attention") or {}
     u = report.get("unified") if isinstance(report.get("unified"), dict) else {}
-
-    def val(x):
-        return x.get("value") if isinstance(x, dict) else x
-
     symbol, name = ident.get("symbol") or "?", ident.get("name") or "Unknown"
     entry, cur, peak = call.get("entry_mcap"), call.get("current_mcap"), call.get("peak_mcap")
-    liq = m.get("liq") if m else val(market.get("liquidity_usd"))
-    vol5 = m.get("vol_m5") if m else val((market.get("volume") or {}).get("m5"))
-    chg5 = m.get("chg_m5") if m else val((market.get("price_change") or {}).get("m5"))
-    age = m.get("age_min") if m else (((report.get("security") or {}).get("pool_age_hours") or 0) * 60 or None)
+    cur = cur or entry
+    supply = call.get("supply") or (1_000_000_000 if mint.endswith("pump") or kind in ("runner", "early", "narrative")
+                                    else None)
+    if supply is None:                       # a pool coin: supply from its own price and market cap
+        pv = market.get("price_usd")
+        pv = pv.get("value") if isinstance(pv, dict) else pv
+        mv = market.get("market_cap_usd") or market.get("market_cap")
+        mv = mv.get("value") if isinstance(mv, dict) else mv
+        try:
+            supply = float(mv) / float(pv) if pv and mv else None
+        except (TypeError, ValueError, ZeroDivisionError):
+            supply = None
+    mult = (cur / entry) if cur and entry else None
+    pk = max(peak or 0, cur or 0)
     score = run.get("score") if run else u.get("score")
-    lines = [f"**Market Cap**: {money(entry)}" + (f" → {money(cur)} ({cur / entry:.2f}x)" if cur and entry and
-                                                  abs(cur / entry - 1) >= 0.01 else ""),
-             f"**Liquidity**: {money(liq)}" + (" (bonding curve)" if call.get("phase", "CURVE") == "CURVE"
-                                                and kind == "runner" else ""),
-             f"**5m Volume**: {money(vol5)}" + (f" · {pct(chg5)}" if isinstance(chg5, (int, float)) else ""),
-             f"**Age**: {_age_text(age)}"]
-    hold = []
-    if isinstance(h.get("top10_adj"), (int, float)):
-        hold.append(f"top 10 {h['top10_adj']:.1f}%")
-    if isinstance(h.get("creator_pct"), (int, float)):
-        hold.append(f"dev {h['creator_pct']:.1f}%")
-    if isinstance(lb.get("sniper_held_pct"), (int, float)):
-        hold.append(f"snipers {lb['sniper_held_pct']:.1f}%")
-    if hold:
-        lines.append(f"**Holders**: {' · '.join(hold)}")
-    if lb.get("verdict") == "ORGANIC":
-        lines.append(f"**Launch**: organic (first buyers {lb.get('early_buy_pct', 0):.1f}%, bundle {lb.get('bundle_pct', 0):.1f}%)")
-    if u.get("rug_odds") is not None:
-        lines.append(f"**Rug odds**: {u['rug_odds'] * 100:.0f}% (learned)")
-    if att.get("reasons"):
-        lines.append(f"**Attention**: {att['reasons'][0]}")
-    tw = report.get("tracked_wallets") or {}
-    if tw.get("holding_count"):
-        lines.append(f"**Tracked wallets**: {tw['holding_count']} holding")
-    if isinstance(score, (int, float)):
-        lines.append(f"**Score**: {score:.0f}/100")
-    if kind != "runner":
-        risk = (u.get("risk") or report.get("risk") or "INCOMPLETE").replace("_", " ")
-        lines.append(f"**Risk**: {risk} · not rug-proof")
-    if call.get("status_line"):
-        lines.append(f"**Plan**: {call['status_line']}")
-    if peak and entry and peak / entry >= 1.2:
-        lines.append(f"**Peak**: {money(peak)} ({peak / entry:.2f}x)")
-    lines.append(f"**Address**: `{mint}`")
-    title = {"runner": "🎯 NORTHSTAR CALL", "standard": "🚀 NORTHSTAR CALL", "manual": "📣 MANUAL CALL",
-             "scalp": "☠️ RUG SCALP"}.get(kind, "🎯 NORTHSTAR CALL")
-    stamp = call.get("last_update_at") or call.get("sent_at") or time.time()
-    embed = {"title": f"{title} — {name} (${symbol})", "url": f"https://dexscreener.com/solana/{mint}",
+    ctype = CALL_TYPES.get(kind, "🎯 Call") + (f" · score {score:.0f}/100" if isinstance(score, (int, float)) else "")
+    lines = [f"**Callout price:** {_px(entry, supply)}",
+             f"**Current price:** {_px(cur, supply)}",
+             f"**Multiplier:** {mult:.2f}x" if mult else "**Multiplier:** —",
+             f"**Peak since callout:** {pk / entry:.2f}x ({money(pk)} MC)" if pk and entry else "**Peak since callout:** —",
+             f"**Callout type:** {ctype}"]
+    status = str(call.get("status_line") or "")
+    if status and not any(w in status.lower() for w in EXIT_STATUS_WORDS):
+        lines.append(f"**Plan**: {status}")
+    lines += [f"**Links:** [DexScreener](https://dexscreener.com/solana/{mint}) · "
+              f"[Axiom](https://axiom.trade/t/{mint}) · [Pump.fun](https://pump.fun/coin/{mint})",
+              f"**CA:** `{mint}`"]
+    stamp = call.get("sent_at") or time.time()
+    upd = call.get("last_update_at") or stamp
+    title = f"{CALL_TYPES.get(kind, '🎯 Call').split(' ')[0]} ${symbol} · {name}"
+    embed = {"author": {"name": f"Northstar Callouts · {time.strftime('%H:%M UTC', time.gmtime(stamp))}"},
+             "title": _clip(title, 250), "url": f"https://dexscreener.com/solana/{mint}",
              "description": _clip("\n".join(lines), 4000),
-             "color": COLOR_CRITICAL if kind == "scalp" else (COLOR_EARLY if kind == "runner" else COLOR_CALLOUT),
-             "footer": {"text": f"Northstar · {'pump.fun curve · ' if kind == 'runner' else ''}{DISCLAIMER} · "
-                                f"mint:{mint}"},
-             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stamp)),
+             "color": COLOR_CRITICAL if kind == "scalp" else (COLOR_EARLY if kind in ("runner", "early", "narrative")
+                                                              else COLOR_CALLOUT),
+             "footer": {"text": f"Northstar · {DISCLAIMER} · mint:{mint}"},
+             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(upd)),
              "_buttons": [{"label": "More info", "custom_id": f"{MORE_INFO_PREFIX}{mint}"},
                           {"label": "Axiom", "url": f"https://axiom.trade/t/{mint}"},
                           {"label": "DexScreener", "url": f"https://dexscreener.com/solana/{mint}"}]}

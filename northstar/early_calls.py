@@ -25,7 +25,7 @@ from typing import Optional
 from . import curve_watch as CW
 from . import trade_plan as TP
 from .analysis.pda import pump_bonding_curve_address
-from .discord_bot.embeds import early_call_embed, early_free_embed, money, plan_event_embed
+from .discord_bot.embeds import milestone_embed, early_call_embed, early_free_embed, money, plan_event_embed
 from .discord_bot.publisher import PublishError
 
 log = logging.getLogger("northstar.early_calls")
@@ -95,6 +95,9 @@ OPEN = ("SENT", "DRY_RUN")
 def init_schema(db) -> None:
     with db._lock:
         db._conn.executescript(SCHEMA)
+        cols = {r[1] for r in db._conn.execute("PRAGMA table_info(early_calls)").fetchall()}
+        if "milestones" not in cols:      # v4.0.0: milestones posted (2x, 3x, 5x, 10x)
+            db._conn.execute("ALTER TABLE early_calls ADD COLUMN milestones TEXT NOT NULL DEFAULT '[]'")
 
 
 # ----------------------------------------------------------------------------- curve radar
@@ -104,9 +107,22 @@ class CurveRadar:
         self._last: dict[str, tuple] = {}     # mint -> (last looked at, 5-min volume then)
         init_schema(db)
 
+    def _sample(self, mint: str, mc, now: float) -> None:
+        """v4.0.0: one market-cap sample per scan (every 30 s) for the 15-minute pulse pattern."""
+        if not mc:
+            return
+        hist = self.__dict__.setdefault("_hist", {})
+        q = hist.setdefault(mint, [])
+        q.append((now, float(mc)))
+        if len(q) > 40:
+            del q[:-40]
+
     def _record(self, mint: str, p, now: float) -> None:
-        """Store the DexScreener numbers the runner check reads (runner.radar_metrics)."""
-        self.db.upsert_discovery(mint, "curve_radar", 9.0, p.base_name, p.base_symbol, _radar_payload(p, now))
+        """Store the DexScreener numbers the runner check reads (runner.radar_metrics), with the pulse."""
+        from . import runner as RN
+        payload = _radar_payload(p, now)
+        payload["pulse"] = RN.pulse_pattern(self.__dict__.get("_hist", {}).get(mint, []), now)
+        self.db.upsert_discovery(mint, "curve_radar", 9.0, p.base_name, p.base_symbol, payload)
 
     async def snapshot(self, mints: list[str], now: Optional[float] = None) -> int:
         """v3.5.0: fresh numbers for coins found another way (tracked-wallet flow), whatever their band,
@@ -127,6 +143,7 @@ class CurveRadar:
         n = 0
         for mint, p in best.items():
             if (p.dex_id or "").lower() in ("pumpfun", "pump.fun", "pump") and (p.market_cap or p.fdv):
+                self._sample(mint, p.market_cap or p.fdv, now)
                 self._record(mint, p, now)
                 self._last[mint] = (now, float((p.vol or {}).get("m5") or 0))
                 n += 1
@@ -178,6 +195,8 @@ class CurveRadar:
         else:
             lo, hi, min_vol = self.s.early_call_min_mc * 0.8, self.s.early_call_max_mc, 0.0
         for mint, p in best.items():
+            if (p.dex_id or "").lower() in ("pumpfun", "pump.fun", "pump"):
+                self._sample(mint, p.market_cap or p.fdv, now)  # every scan, for the pulse pattern
             if mint not in researchable:
                 continue                                        # dropped / untracked / called: measure only
             if (p.dex_id or "").lower() not in ("pumpfun", "pump.fun", "pump"):
@@ -203,6 +222,9 @@ class CurveRadar:
             log.info("curve radar: %d coin(s) entering the early band: %s", len(out), ", ".join(out[:5]))
         if len(self._last) > 20000:
             self._last = {k: v for k, v in self._last.items() if v[0] > now - 3600}
+        hist = self.__dict__.get("_hist")
+        if hist and len(hist) > 5000:
+            self._hist = {k: v for k, v in hist.items() if v and v[-1][0] > now - 1800}
         return out
 
 
@@ -224,21 +246,18 @@ class EarlyCaller:
         init_schema(db)
         self._no_key_logged = False
 
-    # ------------------------------------------------------------------ v3.4.0 follow-up
-    PERMANENT_GATES = {"mint_authority", "freeze_authority", "token_extensions", "launch_buys"}
+    # ------------------------------------------------------------------ v3.4.0 follow-up (v4.0.0 cadence)
+    PERMANENT_GATES = {"mint_authority", "freeze_authority", "token_extensions"}
 
     def permanent_blockers(self, report: dict, m: Optional[dict]) -> list[str]:
-        """Blockers that can never clear on this coin: rechecking it would only spend RPC calls."""
+        """Blockers that can never clear on this coin: a trap, too old, or migrating."""
         out = []
         for g in report.get("gates") or []:
             if isinstance(g, dict) and g.get("status") == "FAIL" and g.get("name") in self.PERMANENT_GATES:
                 out.append(f"{g['name'].replace('_', ' ')}: {g.get('reason') or 'failed'}")
-        lp = report.get("launch") or {}
-        if lp.get("verdict") in ("INSTANT_JUMP", "STAIRCASE", "DUMPED"):
-            out.append(f"launch chart: {(lp.get('reasons') or [lp['verdict']])[0]}")
+        if (report.get("verdict") or {}).get("level") == "RUG LIKELY":
+            out.append("rug check RUG LIKELY")
         pm = report.get("pre_migration") or {}
-        if (pm.get("socials") or {}).get("recycled"):
-            out.append("recycled socials")
         if pm.get("curve_complete"):
             out.append("curve complete (migrating)")
         age = (m or {}).get("age_min")
@@ -246,11 +265,21 @@ class EarlyCaller:
             out.append(f"{age:.0f} min old")
         return out
 
+    def recheck_delay(self, checks: int) -> float:
+        """1 min after the first look, then 2, 4, 8 ... capped at `runner_recheck_max_seconds` (10 min)."""
+        first = float(getattr(self.s, "runner_recheck_seconds", 60.0))
+        cap = float(getattr(self.s, "runner_recheck_max_seconds", 600.0))
+        return min(cap, first * (2 ** max(0, checks - 1)))
+
     def follow_up(self, mint: str, report: dict, now: Optional[float] = None) -> Optional[tuple[str, str]]:
         """After a runner check that did not call: ("RECHECK", why) or ("DROP", why); None when the
-        coin was called or never reached the check. A coin scoring at least `runner_min_score` whose
-        blockers can still clear is checked again up to `runner_max_rechecks` times; everything else
-        is dropped from tracking (the curve watch keeps measuring it for the learners)."""
+        coin was called or never reached the check.
+
+        v4.0.0 (operator: "coins scoring high get re-researched every 1 to 10 minutes, then lose score
+        and frequency"): a coin within `runner_recheck_margin` points of the floor, with no trap, is
+        researched again after 1, 2, 4, 8 min (max 10), up to `runner_max_rechecks` times (the pulse
+        pattern changes between looks); everything else is dropped from tracking (the curve watch
+        keeps measuring it for the learners)."""
         now = now or time.time()
         run = report.get("runner") or {}
         if not run.get("metrics") or run.get("called"):
@@ -266,16 +295,17 @@ class EarlyCaller:
                         "last_at = excluded.last_at, best_score = MAX(COALESCE(best_score, 0), excluded.best_score), "
                         "last_block = excluded.last_block", (mint, checks, now, now, score, first[:120]))
         need = float(getattr(self.s, "runner_min_score", 45))
+        margin = float(getattr(self.s, "runner_recheck_margin", 15.0))
         permanent = self.permanent_blockers(report, run.get("metrics"))
-        limit = int(getattr(self.s, "runner_max_rechecks", 3))
-        if score < need:
-            res = "DROP", f"runner score {score:.0f} under {need:.0f}"
-        elif permanent:
+        limit = int(getattr(self.s, "runner_max_rechecks", 5))
+        if permanent:
             res = "DROP", f"can never pass: {permanent[0]}"
+        elif score < need - margin:
+            res = "DROP", f"runner score {score:.0f} far under {need:.0f}"
         elif checks > limit:
-            res = "DROP", f"still not passing after {limit} recheck(s): {first}"
+            res = "DROP", f"still not called after {limit} rescan(s): {first}"
         else:
-            res = "RECHECK", f"score {score:.0f}; recheck {checks} of {limit}: {first}"
+            res = "RECHECK", f"score {score:.0f}; rescan {checks} of {limit} in {self.recheck_delay(checks):.0f}s: {first}"
         self.runner_stats["rechecks" if res[0] == "RECHECK" else "dropped"] += 1
         return res
 
@@ -370,8 +400,7 @@ class EarlyCaller:
                                     sources) if getattr(self, "attention", None) else {"score": 0, "reasons": []})
         r["attention"] = att
         sc = RN.score(r, m or {}, att) if m else {"score": 0.0}
-        why = RN.blockers(r, m, self.s, now)
-        why += [f"serious rug-check red flag: {x}" for x in serious_red_flags(r)[:2]]
+        why = RN.blockers(r, m, self.s, now)      # v4.0.0: candidate rules and traps only
         need = float(getattr(self.s, "runner_min_score", 60))
         if sc["score"] < need:
             why.append(f"runner score {sc['score']:.0f} < {need:.0f}")
@@ -437,9 +466,10 @@ class EarlyCaller:
         plan = TP.build_plan(entry, self.s, "early") if self.s.trade_plan_enabled else None
         call = {"entry_mcap": entry, "current_mcap": entry, "peak_mcap": entry, "peak_at": now, "sent_at": now,
                 "phase": "CURVE", "last_update_at": now}
-        from .discord_bot.embeds import runner_call_embed
-        embed = (runner_call_embed(out.report, call) if out.report.get("runner")
-                 else early_call_embed(out.report, call, TP.plan_lines(plan, money) if plan else None))
+        from .discord_bot.embeds import compact_call_embed
+        if plan:
+            call["status_line"] = " · ".join(TP.plan_lines(plan, money)[:3])[:300]
+        embed = compact_call_embed(out.report, call, kind="runner" if out.report.get("runner") else "narrative")
         target = self.s.discord_channel_id
         try:
             channel_id, message_id = await self.pub.publish(embed, target)
@@ -577,6 +607,8 @@ class EarlyCallTracker:
                     counts["events"] += 1
                     if kind == "ENTRY_CLOSED":
                         continue
+                    if kind in TP.EXIT_KINDS and not getattr(self.s, "post_drawdowns", False):
+                        continue          # v4.0.0: only good news is posted; the exit is recorded
                     ident = report.get("identity") or {}
                     try:
                         await self.pub.publish(plan_event_embed(
@@ -592,15 +624,50 @@ class EarlyCallTracker:
                 if kind in sent:
                     status_line = label
                     break
-            # free-channel proof copy
-            peak = row.get("peak_mcap") or 0
-            if (not r.get("free_message_id") and self.s.discord_free_channel_id and r["entry_mcap"]
-                    and peak / r["entry_mcap"] >= self.s.early_call_free_at):
+            # v4.0.0 milestones (2x, 3x, 5x, 10x since the call) go to VIP as they happen; the free
+            # channel gets the call `free_callout_delay_minutes` (20) later with every milestone reached so
+            # far posted at once, then each new milestone as it happens
+            ident = report.get("identity") or {}
+            peak_x = (row.get("peak_mcap") or 0) / r["entry_mcap"] if r["entry_mcap"] else 0
+            done_ms = [float(x) for x in json.loads(r.get("milestones") or "[]")]
+            ms_alert = {"mint": mint, "symbol": ident.get("symbol"), "entry_mcap": r["entry_mcap"],
+                        "current_mcap": row.get("current_mcap"), "peak_mcap": row.get("peak_mcap"),
+                        "sent_at": r["created_at"], "image_url": ident.get("image_url")}
+            new_ms = [x for x in self.s.milestone_list if x >= 2 and peak_x >= x and x not in done_ms]
+            free_ch = self.s.discord_free_channel_id
+            free_sent = bool(r.get("free_message_id"))
+            for x in new_ms:
+                emb = milestone_embed(ms_alert, x)
                 try:
-                    _, fid = await self.pub.publish(early_free_embed(report, {**row}), self.s.discord_free_channel_id)
+                    await self.pub.publish(emb, r["channel_id"])
+                except PublishError as e:
+                    log.warning("early-call milestone %sx failed for %s: %s", x, mint, e)
+                if free_ch and free_sent:
+                    try:
+                        await self.pub.publish(emb, free_ch)
+                    except PublishError as e:
+                        log.warning("early-call free milestone %sx failed for %s: %s", x, mint, e)
+                done_ms.append(x)
+            if new_ms:
+                fields["milestones"] = json.dumps(sorted(done_ms))
+            delay = float(getattr(self.s, "free_callout_delay_minutes", 20)) * 60
+            exited = bool(sent & TP.EXIT_KINDS)
+            if (free_ch and not free_sent and r["entry_mcap"] and now - r["created_at"] >= delay
+                    and not exited and r["status"] in OPEN):
+                call = {**row, "sent_at": r["created_at"], "status_line": None}
+                try:
+                    from .discord_bot.embeds import compact_call_embed
+                    _, fid = await self.pub.publish(compact_call_embed(
+                        report, call, kind="runner" if report.get("runner") else "early"), free_ch)
                     fields["free_message_id"] = fid
                     counts["free_posts"] += 1
-                    log.info("early call %s passed %.1fx: posted to the free channel", mint, self.s.early_call_free_at)
+                    for x in sorted(done_ms):                     # every milestone so far, at once
+                        try:
+                            await self.pub.publish(milestone_embed(ms_alert, x), free_ch)
+                        except PublishError as e:
+                            log.warning("early-call free milestone %sx failed for %s: %s", x, mint, e)
+                    log.info("early call %s: copied to the free channel after %.0f min (%d milestone(s))",
+                             mint, delay / 60, len(done_ms))
                 except PublishError as e:
                     log.warning("early-call free copy failed for %s: %s", mint, e)
             closing = now - r["created_at"] > self.s.early_call_track_hours * 3600
@@ -614,10 +681,11 @@ class EarlyCallTracker:
                                                                  or "phase" in fields):
                 call = {**row, **fields, "sent_at": r["created_at"], "status_line": status_line}
                 try:
-                    from .discord_bot.embeds import runner_call_embed
-                    await self.pub.edit(r["channel_id"], r["message_id"], runner_call_embed(report, call)
-                                        if report.get("runner") else early_call_embed(
-                                            report, call, TP.plan_lines(plan, money) if plan else None))
+                    from .discord_bot.embeds import compact_call_embed
+                    if not call.get("status_line") and plan:
+                        call["status_line"] = " · ".join(TP.plan_lines(plan, money)[:3])[:300]
+                    await self.pub.edit(r["channel_id"], r["message_id"], compact_call_embed(
+                        report, call, kind="runner" if report.get("runner") else "narrative"))
                     fields["last_edit_at"] = now
                     counts["edited"] += 1
                 except PublishError as e:

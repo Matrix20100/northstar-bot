@@ -111,7 +111,9 @@ class EarlyWatchTracker:
         row["current_sol_usd"] = self._sol_usd
         embed = AlertService._build_early_watch_embed(report, row, self.s)
         read_at = int(row.get("updated_at") or time.time())
-        if rugged:
+        if rugged and not getattr(self.s, "post_drawdowns", False):
+            status = f"⏹️ Tracking ended <t:{read_at}:R>"          # v4.0.0: no drawdowns shown
+        elif rugged:
             x = (row.get("current_market_cap_sol") or 0) / (row.get("entry_market_cap_sol") or 1)
             status = (f"🪦 Rugged: now {x:.2f}x of the call price (<t:{read_at}:R>) — removed from the watch, "
                       "tracking ended")
@@ -228,6 +230,8 @@ class EarlyWatchTracker:
             posted.append(kind)
             if kind == "ENTRY_CLOSED":
                 continue
+            if kind in TP.EXIT_KINDS and not getattr(self.s, "post_drawdowns", False):
+                continue          # v4.0.0: only good news is posted; the exit is recorded
             try:
                 await self.pub.publish(plan_event_embed(
                     symbol=ident.get("symbol") or "?", name=ident.get("name") or "", mint=row["mint"],

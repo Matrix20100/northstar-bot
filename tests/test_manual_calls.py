@@ -46,7 +46,7 @@ async def test_a_manual_call_posts_through_the_normal_publisher(settings, db):
     assert res["ok"], res
     assert len(pub.sent) == 1
     embed = pub.sent[0][1]
-    assert embed["title"].startswith("📣 MANUAL CALL")
+    assert embed["title"].startswith("📣 $") and "📣 Manual call" in embed["description"]
     assert "Called by hand from the dashboard" in embed["description"]
     assert "Northstar's own read" in embed["description"]
     notes = [f for f in embed["fields"] if f["name"] == "📝 Caller's note"]
@@ -137,7 +137,7 @@ async def test_dashboard_research_and_call_reach_the_running_bot(settings, db):
                                                                 "free_copy": False})
         res = json.loads(body)
         assert st == 200 and res["ok"], res
-        assert len(pub.sent) == 1 and pub.sent[0][1]["title"].startswith("📣 MANUAL CALL")
+        assert len(pub.sent) == 1 and pub.sent[0][1]["title"].startswith("📣 $")
 
         st, body = await asyncio.to_thread(c.req, "/api/call", {"mint": MINT})
         assert st == 422 and "Research this token first" in json.loads(body)["error"]

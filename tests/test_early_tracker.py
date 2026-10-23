@@ -69,8 +69,9 @@ def text(embed) -> str:
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        # post_drawdowns: these tests check the exit and rug messages themselves (off by default in v4)
         self.s = Settings(_env_file=None, data_dir=self.tmp.name, dry_run=True, discord_enabled=False,
-                          enable_pumpportal=False, log_json=False)
+                          enable_pumpportal=False, log_json=False, post_drawdowns=True)
         self.db = Database(Path(self.tmp.name) / "t.db")
         self.db.open()
         self.rpc, self.pub = FakeRpc(), FakePub()
@@ -258,11 +259,12 @@ class TrackerTests(Base):
         self.rpc.cap = 164.0
         self.run_once()
         d = self.pub.edits[-1][2]["description"]
-        self.assertIn("**Market Cap:** $15.0K", d)          # research-time snapshot: 100 SOL x $150
-        self.assertIn("**5m Buy Flow:** $450.00", d)
-        self.assertIn("**Called At:** $15.0K", d)
-        self.assertIn("**Now:** $26.2K (1.75x · +74.9%)", d)   # 164 SOL x $160 vs 100 SOL x $150
-        self.assertNotIn("SOL", d.split("**Links:**")[0].replace("Bonding curve", ""))
+        # v4.0.0 compact layout: called at 100 SOL x $150, now 164 SOL x $160
+        self.assertIn("**Callout price:** $0.0000150 · $15.0K MC", d)
+        self.assertIn("**Current price:** $0.0000262 · $26.2K MC", d)
+        self.assertIn("**Multiplier:** 1.75x", d)
+        self.assertIn("**Callout type:** 👀 Early watch", d)
+        self.assertNotIn("SOL", d.split("**Links:**")[0])
 
     def test_call_time_rate_survives_report_replacement(self):
         report = {"mint": MINT, "pre_migration": {"sol_usd": 150.0}}
@@ -373,7 +375,16 @@ class TradePlanMessages(Base):
         self.assertEqual(len(exits), 1)
         rep = json.loads(self.db.fetchone("SELECT report FROM early_signals WHERE mint=?", (MINT,))["report"])
         self.assertEqual(rep["early_tracking"]["plan_sent"], ["TP1", "TRAIL"])
-        self.assertIn("Plan status", text(self.pub.edits[-1][2]))
+        self.assertNotIn("exited", text(self.pub.edits[-1][2]).split("**Links:**")[0])
+
+    def test_exits_are_not_posted_by_default(self):
+        self.tr.s = Settings(_env_file=None, data_dir=self.tmp.name, dry_run=True, discord_enabled=False,
+                             enable_pumpportal=False, log_json=False)
+        self.rpc.cap = 60.0
+        asyncio.run(self.tr.run_once())
+        self.assertFalse(any("EXIT" in e["title"] for _, e in self.pub.posts))
+        rep = json.loads(self.db.fetchone("SELECT report FROM early_signals WHERE mint=?", (MINT,))["report"])
+        self.assertIn("STOP", rep["early_tracking"]["plan_sent"])          # recorded all the same
 
     def test_stop_loss(self):
         self.rpc.cap = 60.0

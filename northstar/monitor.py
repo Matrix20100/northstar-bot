@@ -141,20 +141,24 @@ class Monitor:
                 milestone = milestone_embed(merged, m)
                 # VIP gets all configured milestones; free gets only the selected public milestones.
                 await self._send(milestone, a["id"])
-                # v3.0.0: the free channel only sees proven wins - every milestone from
-                # `free_proof_multiple` (2x) up, never the call itself
-                if (self.s.discord_free_channel_id and m >= float(getattr(self.s, "free_proof_multiple", 2.0))
-                        and a.get("call_type") != "RUG_SCALP"):
-                    await self._send(milestone, a["id"], channel=self.s.discord_free_channel_id)
+                # v4.0.0: once the delayed free copy is out, every new milestone goes to free as well
+                # (the ones reached before it went out with the copy, all at once)
+                if self.s.discord_free_channel_id and a.get("call_type") != "RUG_SCALP":
+                    fp = self.db.fetchone("SELECT status FROM free_channel_posts WHERE alert_id = ?", (a["id"],))
+                    if fp and fp["status"] == "SENT":
+                        await self._send(milestone, a["id"], channel=self.s.discord_free_channel_id)
         upd["milestones_hit"] = hit
         for kind, detail in new_warnings:
             warnings.append(kind)
             upd["state"] = "WARNING"
             merged["state"] = "WARNING"
             self.db.add_alert_event(a["id"], "warning", {"kind": kind, "detail": detail})
-            await self._send(warning_embed(merged, kind.replace("_", " "), detail,
-                                           critical=kind in ("LIQUIDITY_COLLAPSE", "CREATOR_DUMP")),
-                             a["id"], channel=s.discord_warning_channel_id)
+            # v4.0.0: drawdowns and danger warnings are recorded, never posted to VIP or free; they go
+            # out only to a separate warning channel when one is set (NORTHSTAR_DISCORD_WARNING_CHANNEL_ID)
+            if getattr(s, "post_drawdowns", False) or s.discord_warning_channel_id:
+                await self._send(warning_embed(merged, kind.replace("_", " "), detail,
+                                               critical=kind in ("LIQUIDITY_COLLAPSE", "CREATOR_DUMP")),
+                                 a["id"], channel=s.discord_warning_channel_id)
         await self._trade_plan(a, merged, mult, warnings, new_warnings, now)
         upd["warnings"] = warnings
         rug_x = float(getattr(s, "callout_rug_close_x", 0.3) or 0)
@@ -167,8 +171,9 @@ class Monitor:
             warnings.append("RUGGED")
             upd["warnings"] = warnings
             self.db.add_alert_event(a["id"], "warning", {"kind": "RUGGED", "detail": detail})
-            await self._send(warning_embed(merged, "RUGGED", detail, critical=True), a["id"],
-                             channel=s.discord_warning_channel_id)
+            if getattr(s, "post_drawdowns", False) or s.discord_warning_channel_id:
+                await self._send(warning_embed(merged, "RUGGED", detail, critical=True), a["id"],
+                                 channel=s.discord_warning_channel_id)
         if rugged or now - a["created_at"] > s.max_tracking_hours * 3600:
             upd["state"] = "CLOSED"
             upd["closed_at"] = now
@@ -274,6 +279,8 @@ class Monitor:
             self.db.add_alert_event(a["id"], "plan", {"kind": kind, "detail": text, "multiple": mult})
             if kind == "ENTRY_CLOSED":
                 continue  # shown on the edited callout; not worth a ping
+            if kind in TP.EXIT_KINDS and not getattr(self.s, "post_drawdowns", False):
+                continue  # v4.0.0: only good news is posted; exits are recorded (paper, learning)
             await self._send(plan_event_embed(symbol=a.get("symbol") or "?", name=a.get("name") or "",
                                               mint=a["mint"],
                                               title=("☠️ SCALP · " if a.get("call_type") == "RUG_SCALP" else "")

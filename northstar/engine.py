@@ -744,6 +744,13 @@ class Engine:
             self._inflight.discard(mint)
 
     async def _process(self, mint: str) -> None:
+        rescan = self.__dict__.get("_rescan")
+        if rescan and mint in rescan and getattr(self, "curve_radar", None) is not None:
+            rescan.discard(mint)
+            try:      # v4.0.0: a rescan judges fresh numbers and an updated pulse pattern
+                await self.curve_radar.snapshot([mint])
+            except Exception:  # noqa: BLE001
+                log.debug("rescan snapshot failed for %s", mint, exc_info=True)
         cand = self.db.get_candidate(mint)
         if not cand or cand["state"] in ("PUBLISHED", "WARNING", "CLOSED", "QUALIFIED", "STALE", "IGNORED", "DROPPED"):
             return
@@ -831,10 +838,11 @@ class Engine:
                 kind, why = follow
                 if kind == "RECHECK":
                     self.stats["runner_rechecks"] = self.stats.get("runner_rechecks", 0) + 1
-                    log.info("runner %s: checking again in %ds (%s)", mint,
-                             int(self.s.runner_recheck_seconds), why)
-                    self.db.set_state(mint, "WATCHLIST", **{**common, "next_research_at":
-                                                             now + float(self.s.runner_recheck_seconds)})
+                    row = self.db.fetchone("SELECT checks FROM runner_followups WHERE mint = ?", (mint,))
+                    delay = self.early.recheck_delay(row["checks"] if row else 1)
+                    log.info("runner %s: rescanning in %ds (%s)", mint, int(delay), why)
+                    self.__dict__.setdefault("_rescan", set()).add(mint)
+                    self.db.set_state(mint, "WATCHLIST", **{**common, "next_research_at": now + delay})
                 else:
                     self.stats["runner_dropped"] = self.stats.get("runner_dropped", 0) + 1
                     log.info("runner %s: dropped from tracking (%s)", mint, why)

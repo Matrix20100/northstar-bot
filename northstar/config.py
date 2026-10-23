@@ -26,7 +26,8 @@ class Settings(BaseSettings):
     discord_token: Optional[SecretStr] = None
     discord_channel_id: Optional[int] = None  # legacy/default channel; use as VIP channel
     discord_free_channel_id: Optional[int] = None  # optional public funnel channel
-    free_callout_delay_minutes: int = 15  # VIP gets the call immediately; free receives it later
+    free_callout_delay_minutes: int = 20  # v4.0.0: was 15; free gets every VIP call this much later
+    post_drawdowns: bool = False          # v4.0.0: stop/exit/drawdown messages are recorded, not posted
     free_milestones: str = "2,3,5,10"  # free channel gets selected milestones only
     discord_warning_channel_id: Optional[int] = None  # defaults to main/VIP channel
     dry_run: bool = False  # True = never post; write embeds to data/dry_run_alerts.jsonl
@@ -146,7 +147,7 @@ class Settings(BaseSettings):
     min_curve_buy_sol_5m: float = 2.0
     min_curve_early_score: float = 75.0
     max_curve_chase_pct: float = 400.0  # early-watch is not offered once the curve is up more than this since launch
-    early_watch_channel: str = "off"  # v3.0.0 default off (runner calls replace them) | vip; free is no longer allowed
+    early_watch_channel: str = "vip"  # v3.0.0 default off (runner calls replace them) | vip; free is no longer allowed
     early_watch_refresh_seconds: int = 30  # how often open early-watch posts are re-read from the bonding curve
     min_verified_swaps: int = 15  # verified PumpSwap swaps needed before post-migration demand counts as VERIFIED
 
@@ -348,8 +349,10 @@ class Settings(BaseSettings):
     runner_min_score: float = 45.0        # v3.2.2: was 60; with no KOL attention a safe, active coin scores ~50-58
     runner_max_per_hour: int = 6
     runner_launch_max_pages: int = 20
-    runner_max_rechecks: int = 3           # v3.4.0: a high scorer that is blocked is checked again this many times
-    runner_recheck_seconds: float = 180.0  # ... this far apart; then it is dropped from tracking
+    runner_max_rechecks: int = 5           # v4.0.0: a near-miss is rescanned this many times (5 over ~15 min)
+    runner_recheck_seconds: float = 60.0   # first rescan after 1 min, then 2, 4, 8 ...
+    runner_recheck_max_seconds: float = 600.0   # ... never more than 10 min apart
+    runner_recheck_margin: float = 15.0    # rescanned when the score is within this many points of the floor
     # v3.3.0 curve learner (curve_learn.py): learns the runner score floor from real curve outcomes
     curve_learn_enabled: bool = True
     curve_learn_minutes: float = 30.0

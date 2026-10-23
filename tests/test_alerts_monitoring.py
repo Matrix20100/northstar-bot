@@ -42,10 +42,12 @@ async def test_publish_and_duplicate_alert_suppressed(settings, db):
     assert len(pub.sent) == 1
     e = pub.sent[0][1]
     text = json.dumps(e)
-    # v3.0.0 compact post: key numbers, image, More info + Axiom + DexScreener buttons
+    # v4.0.0 compact post in the operator's layout + More info / Axiom / DexScreener buttons
     assert f"mint:{MINT}" in e["footer"]["text"] and "not a trade recommendation" in e["footer"]["text"]
-    assert e["description"].startswith("**Market Cap**:") and f"`{MINT}`" in e["description"]
-    assert "not rug-proof" in e["description"]
+    assert e["description"].startswith("**Callout price:**") and f"`{MINT}`" in e["description"]
+    assert e["author"]["name"].startswith("Northstar Callouts · ") and e["title"].startswith("🚀 $")
+    for label in ("**Current price:**", "**Multiplier:**", "**Peak since callout:**", "**Callout type:**", "**Links:**"):
+        assert label in e["description"]
     assert [b["label"] for b in e["_buttons"]] == ["More info", "Axiom", "DexScreener"]
     assert e["_buttons"][0]["custom_id"] == f"ns:more:{MINT}"
     assert "fields" not in e
@@ -138,19 +140,21 @@ async def test_restart_recovery_of_pending_alert(settings, db, tmp_path):
 
 
 async def test_liquidity_collapse_after_publication(settings, db):
+    settings.discord_warning_channel_id = 999          # warnings only go to a separate warning channel
     aid, pub, p, _ = await published(settings, db)
     p.dex.pairs = [make_pair(liquidity_usd=30_000.0, price_usd=0.0009)]
     mon = Monitor(settings, db, pub, p.dex, None)
     await mon.run_once()
     a = db.get_alert(aid)
     assert "LIQUIDITY_COLLAPSE" in json.loads(a["warnings"]) and a["state"] == "WARNING"
-    assert any("WARNING" in e["title"] for _, e in pub.sent)
+    assert any("WARNING" in e["title"] and ch == 999 for ch, e in pub.sent)
     assert pub.edits, "original embed edited, not spammed"
     await mon.run_once()
     assert sum("WARNING" in e["title"] for _, e in pub.sent) == 1, "warning sent once"
 
 
 async def test_creator_dump_after_publication(settings, db):
+    settings.discord_warning_channel_id = 999
     aid, pub, p, _ = await published(settings, db)
     db.update_alert(aid, sent_at=NOW - 600)
     p.rpc.trades = p.rpc.trades + [swap_tx(CREATOR, "sell", 30_000_000, 99_999, int(time.time()))]
@@ -181,9 +185,8 @@ async def test_milestones_and_performance_math(settings, db):
     assert abs(a["max_drawdown_pct"] - 40.0) < 1e-6
     assert len([e for _, e in pub.sent if "hit" in e["title"]]) == 3, "one message per milestone"
     edited = pub.edits[-1][1]
-    mc_line = next(x for x in edited["description"].split("\n") if x.startswith("**Market Cap**"))
-    assert "0.60x" in mc_line
-    assert "3.20x" in next(x for x in edited["description"].split("\n") if x.startswith("**Peak**"))
+    assert "0.60x" in next(x for x in edited["description"].split("\n") if x.startswith("**Multiplier:**"))
+    assert "3.20x" in next(x for x in edited["description"].split("\n") if x.startswith("**Peak since callout:**"))
 
 
 async def test_missing_price_keeps_last_valid_never_zero(settings, db):
@@ -209,6 +212,7 @@ async def test_tracking_closes_after_window(settings, db):
 
 
 async def test_a_rugged_call_is_closed_once_not_tracked_for_hours(settings, db):
+    settings.discord_warning_channel_id = 999
     aid, pub, p, out = await published(settings, db)
     entry = db.get_alert(aid)["entry_mcap"]
     p.dex.pairs = [make_pair(market_cap=entry * 0.25, price_usd=out.pair.price_usd * 0.25)]
@@ -272,3 +276,18 @@ async def test_dry_run_publisher_writes_file(tmp_path):
     assert await pub.find_message_with(f"mint:{MINT}") == mid
     await pub.edit(ch, mid, {"title": "t2"})
     assert len((tmp_path / "a.jsonl").read_text().splitlines()) == 2
+
+
+
+async def test_drawdowns_are_never_posted_to_vip_or_free(settings, db):
+    """v4.0.0 (operator: only good news): with no separate warning channel, a liquidity collapse, a rug
+    and the plan's exit messages are recorded but not posted."""
+    settings.discord_warning_channel_id = None
+    aid, pub, p, out = await published(settings, db)
+    n = len(pub.sent)
+    entry = db.get_alert(aid)["entry_mcap"]
+    p.dex.pairs = [make_pair(liquidity_usd=30_000.0, market_cap=entry * 0.25, price_usd=out.pair.price_usd * 0.25)]
+    await Monitor(settings, db, pub, p.dex, None).run_once()
+    a = db.get_alert(aid)
+    assert "RUGGED" in json.loads(a["warnings"]) and a["state"] == "CLOSED"     # recorded
+    assert len(pub.sent) == n                                                  # nothing posted

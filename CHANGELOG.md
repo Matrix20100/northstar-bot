@@ -3,6 +3,53 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## 4.0.0 — 2026-10-23 — score, don't veto; Pulse rescans; posts in the operator's layout
+
+From the operator's handwritten brief ("Northstar Bot", pages 1-2). Includes 3.5.0 (wallet watch).
+
+**Calls**
+- **Only real traps block a call.**
+  - The traps: mint authority, freeze authority, a restricting token extension (each must RUN and
+    PASS), a RUG LIKELY verdict, a completed curve.
+  - Everything else is a scaled penalty on the 35 safety points: bundled launch (10% up to 50%+),
+    sniped launch, dev buy at launch, snipers still holding, top-10 and largest holder, dev bag,
+    insider tiny trades, fresh or linked wallets, the launch chart, rug-check HIGH RISK / CAUTION
+    and serious red flags, recycled socials, checks that could not run.
+  - One weak signal no longer kills a strong coin; several problems still drop the score under
+    the floor. A 74%-bundled coin with 46% in the top 10 scores 0 safety points.
+- **Score:** momentum 40 + pulse up to +10 + safety 35 + attention 25 (cap 100). The floor stays 45
+  and is learned by the curve learner. The parts and every penalty are stored with the research.
+- **Pulse rescans.**
+  - The curve radar samples every coin's market cap each scan (every 30 s) and reads its
+    15-minute pattern.
+  - A first pullback that bounces (+10), a first pump holding near its high (+6), dumping (-8).
+  - A near miss (within 15 points of the floor, no trap) is researched again after 1, 2, 4, 8 min,
+    at most 10 min apart, up to 5 times, each time with fresh numbers. Then it is dropped.
+
+**Posts**
+- **One layout for every post** (calls, early watches, milestones):
+  - "Northstar Callouts · time", coin image, $TICKER, Callout price, Current price, Multiplier,
+    Peak since callout, Callout type, Links, contract address;
+  - buttons: More info, Axiom, DexScreener;
+  - the title starts with the call type's emoji (☠️ for a rug scalp).
+  - Price is market cap / supply: 1B for pump.fun coins, the coin's own price and market cap for
+    others.
+- **VIP:** calls, early watches (on by default again, in the compact layout), take-profits and
+  milestones (2x, 3x, 5x, 10x) for every call, including runner calls.
+- **Only good news is posted** (`NORTHSTAR_POST_DRAWDOWNS=false`). Stop-loss, time-stop,
+  trailing-stop, exit-now, warning and rugged messages are recorded but never posted to VIP or
+  free. The paper accounts and the learners still use them. They go only to a separate warning
+  channel, if one is set.
+- **Free channel:** every VIP call 20 minutes later (`NORTHSTAR_FREE_CALLOUT_DELAY_MINUTES`), with
+  every milestone reached so far posted at once, then each new milestone as it happens.
+  - Not rug scalps: a minutes-long trade on a rug is useless and dangerous 20 minutes late.
+  - Not a call whose plan already exited.
+
+**Settings:** `NORTHSTAR_POST_DRAWDOWNS`, `NORTHSTAR_FREE_CALLOUT_DELAY_MINUTES=20`,
+`NORTHSTAR_EARLY_WATCH_CHANNEL=vip`, `NORTHSTAR_RUNNER_MAX_RECHECKS=5`,
+`NORTHSTAR_RUNNER_RECHECK_SECONDS=60`, `NORTHSTAR_RUNNER_RECHECK_MAX_SECONDS=600`,
+`NORTHSTAR_RUNNER_RECHECK_MARGIN=15`.
+
 ## 3.5.0 — 2026-10-23 — follow the money: what the tracked wallets are buying, live
 
 Operator request: "track what tracked wallets are buying, find where all the attention and money is
