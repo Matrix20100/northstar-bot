@@ -1,4 +1,4 @@
-# Live trading and the exit engine (v5.0.0)
+# Live trading and the exit engine (v5.0.0, conviction v5.1.0)
 
 Not financial advice. Most memecoins in the bot's band go to zero within a day. Only fund the bot's
 wallet with an amount you can lose completely.
@@ -26,6 +26,28 @@ by default (`NORTHSTAR_PAPER_EXIT_MODE=engine`; `plan` follows the posted trade 
 Calls tab's **Bot exit** column shows where the bot sold each call: average sell multiple, the
 result after fees, and the reason.
 
+## Conviction: a stop and size for each setup (v5.1.0)
+
+Every position is graded once, when it is bought, from the coin's research: rug odds, risk level, score, how the
+launch went (bundled, sniped or organic), snipers still holding, tracked wallets holding, buyer trend, 5-minute buy
+share and failed risk checks. The runner brain only counts once it is trusted. The result is a conviction score
+0-100 and a grade A (70+), B (50+) or C.
+
+| | Weak setup (C) | Strong setup (A) |
+|---|---|---|
+| Stop | about -15% | up to -35% |
+| Dip-hold | no | under the stop with buyers still in control: waits up to 90 s for a bounce |
+| Size | about half | smaller than normal when the stop is wider, so the loss at the stop stays the same |
+| Live trading | skipped under `trade_min_conviction` (40) | bought |
+
+The hard stop (`exit_hard_stop_pct`, -45%) always sells, whatever the grade. A coin that already ran past 1.3x is
+handled by the trailing stop, never by a dip-hold. The Paper tab shows results by grade: that is the evidence of
+whether the grading works, measured on the bot's own trades.
+
+Settings (Settings tab → "Exits"): `exit_conviction_enabled`, `exit_stop_min_pct`, `exit_stop_max_pct`,
+`exit_hard_stop_pct`, `exit_grace_seconds`, `exit_grace_min_conviction`, `exit_size_by_conviction`; and
+`trade_min_conviction` under "Live trading".
+
 ## Live trading: setup
 
 1. **Create a NEW wallet used only by the bot**, e.g. a new account in Phantom or Solflare. Never use
@@ -51,6 +73,7 @@ result after fees, and the reason.
    | `trade_max_chase_pct` | 25 | Skips a call whose coin is already up 25% since the call. |
    | `trade_slippage_pct` | 15 | Slippage allowed per trade. |
    | `trade_follow` | runner | `runner` = runner calls only; `all` = every call except rug scalps. |
+   | `trade_min_conviction` | 40 | Skips calls graded under this (0 = buy every followed call). `trade_sol_per_trade` is the most a buy spends; weaker setups and wider stops spend less. |
 
 7. **Turn trading on in test mode first.** Every trade is built by PumpPortal, signed by the bot and
    **simulated** on-chain (`simulateTransaction`), but never sent. Positions show a "test" tag. This

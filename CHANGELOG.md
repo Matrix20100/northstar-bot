@@ -3,6 +3,32 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.1.0 - Conviction-graded exits: educated risks
+
+Operator: "the bot was down on coins and sold, now it ran to 2x. A bot should have a risk factor by analysing
+the coin and likelihood of succeeding in the trade, we need to take educated risks."
+
+- **Every position is graded when it is bought** (`northstar/conviction.py`): a conviction score 0-100 and a grade
+  A/B/C from the coin's research. Inputs: the rug model's odds, the risk level, the call's score, the launch (bundled /
+  sniped / organic), launch snipers still holding, tracked wallets holding, buyers rising or falling, the 5-minute buy
+  share, failed risk checks, and the runner brain's odds only once the brain is trusted. Unmeasured inputs add
+  nothing; with fewer than 3 measured the grade is capped at 45 (unknown is not good).
+- **Its own stop**: 15% for the weakest setups up to 35% for the strongest (`exit_stop_min_pct`, `exit_stop_max_pct`)
+  instead of a flat 20%.
+- **Dip-hold**: a setup with conviction 60+ that falls under its stop while buyers are still in control (5-min buys
+  at least sells, no fast dump, liquidity at least 60% of the buy) waits up to 90 s for a bounce
+  (`exit_grace_seconds`). Never below the hard stop (`exit_hard_stop_pct`, 45%), and never after the coin had run
+  past 1.3x (the trailing stop is in charge then).
+- **Size**: weaker setups and wider stops get a smaller position, so the money lost at the stop is never more than a
+  plain 20% stop on a full position (`exit_size_by_conviction`). Never bigger than before.
+- **Live trading skips weak setups**: calls graded under `trade_min_conviction` (40) are not bought; the reason is
+  shown on the Trading tab.
+- **"Never got going"** waits up to twice as long for strong setups.
+- Paper and Trading tabs show each position's grade, stop, dip-hold and size (reasons on hover), what the engine is
+  doing right now ("holding through a dip ... 60 s left"), and the Paper tab adds **results by grade**: the bot's own
+  closed trades split by A/B/C, which is how to tell whether the grading pays. No win rate is claimed before that.
+- `exit_conviction_enabled=false` restores the v5.0.0 engine exactly.
+
 ## v5.0.0 - The exit engine, and live trading with a bot-only wallet
 
 Operator: "almost every coin dies ... we should sell when we are down, check every chart live ...

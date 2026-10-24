@@ -27,6 +27,12 @@ returns what to sell and why. Rules, in order ("protect capital"):
 HOLD: while the coin is making a new high with at least as many buys as sells, rules 3-5 wait: it is
 still going up. The stop and the trail always apply.
 
+v5.1.0 CONVICTION (conviction.py): a position graded at the buy carries its own stop (`Position.stop_pct`, 15-35%
+instead of the flat 20%). A strong setup (`Position.grace`) that falls under its stop while buyers are still in
+control - 5-min buys >= sells, no fast 5-min dump, liquidity at least 60% of what it was at the buy - waits up to
+`exit_grace_seconds` for a bounce ("dip-hold"). Never below `exit_hard_stop_pct`, and never once the coin had run
+past the trailing-stop start (then the trailing stop is in charge). "Never got going" waits longer for strong setups.
+
 Every rule is a setting (dashboard Settings, "Exits"). Nothing here buys, signs or sends anything.
 """
 from __future__ import annotations
@@ -39,8 +45,9 @@ ALL = 1.0          # sell everything left
 REASONS = {
     "STOP": "stop loss", "TRAIL": "trailing stop", "SELLERS": "sellers took over", "FADING": "volume faded",
     "NO_PROGRESS": "never got going", "TIME": "held too long", "TP1": "take profit 1", "TP2": "take profit 2",
-    "DEAD": "coin died", "KILL": "kill switch", "END": "tracking ended",
+    "DEAD": "coin died", "KILL": "kill switch", "END": "tracking ended", "HARD_STOP": "hard stop",
 }
+GRACE_MIN_LIQ_SHARE = 0.6        # a dip-hold needs at least this share of the liquidity seen at the buy
 
 
 @dataclass
@@ -73,6 +80,12 @@ class Position:
     peak_mcap: float                 # highest market cap seen since the buy (before this tick)
     done: set = field(default_factory=set)
     stop_x: Optional[float] = None   # the trailing stop reached so far (only moves up)
+    stop_pct: Optional[float] = None # v5.1.0: this position's own stop from its conviction (None = exit_stop_pct)
+    grace: bool = False              # v5.1.0: may hold through a short dip under the stop
+    grace_since: Optional[float] = None   # when the current dip-hold started
+    conviction: Optional[float] = None    # 0-100
+    entry_liq: Optional[float] = None     # pool liquidity at the buy
+    note: Optional[str] = None            # what the engine is doing right now (e.g. holding through a dip)
 
 
 @dataclass
@@ -101,6 +114,24 @@ def trail_line(peak_x: float, s=None) -> Optional[float]:
     return max(floor, peak_x * (1 - give))
 
 
+def _dip_hold(pos: Position, tick: Tick, peak_x: float, s=None) -> tuple[bool, str]:
+    """May a strong setup wait under its stop? (ok, why)."""
+    if not pos.grace:
+        return False, ""
+    if peak_x >= _g(s, "exit_trail_start_x", 1.3):
+        return False, "it already ran, the trailing stop is in charge"
+    b, sl = tick.buys_m5, tick.sells_m5
+    if b is None or sl is None:
+        return False, "5-min trades unknown"
+    if sl > b:
+        return False, f"sellers in control ({sl} sells vs {b} buys)"
+    if tick.chg_m5 is not None and tick.chg_m5 <= -2 * _g(s, "exit_dump_m5_pct", 10.0):
+        return False, f"fast dump ({tick.chg_m5:+.0f}% in 5 min)"
+    if pos.entry_liq and tick.liquidity is not None and tick.liquidity < GRACE_MIN_LIQ_SHARE * pos.entry_liq:
+        return False, f"liquidity down to {tick.liquidity / pos.entry_liq:.0%} of the buy"
+    return True, f"{b} buys vs {sl} sells"
+
+
 def decide(pos: Position, tick: Tick, s=None) -> list[Action]:
     """What to sell now. Updates pos.peak_mcap and pos.stop_x."""
     entry = pos.entry_mcap
@@ -112,10 +143,29 @@ def decide(pos: Position, tick: Tick, s=None) -> list[Action]:
     peak_x = pos.peak_mcap / entry
     minutes = (tick.at - pos.opened_at) / 60.0
 
-    # 1. hard stop
-    stop = 1 - _g(s, "exit_stop_pct", 20.0) / 100
+    pos.note = None
+    # 1. stop (its own, from the conviction grade) and the hard stop under it
+    stop_pct = pos.stop_pct if pos.stop_pct else _g(s, "exit_stop_pct", 20.0)
+    stop = 1 - stop_pct / 100
+    hard = 1 - max(stop_pct, _g(s, "exit_hard_stop_pct", 45.0)) / 100
+    if x <= hard:
+        return [Action("HARD_STOP" if pos.stop_pct else "STOP", ALL,
+                       f"down {100 * (1 - x):.0f}% from the entry (hard stop at -{100 * (1 - hard):.0f}%)")]
     if x <= stop:
-        return [Action("STOP", ALL, f"down {100 * (1 - x):.0f}% from the entry (stop at -{100 * (1 - stop):.0f}%)")]
+        ok, why = _dip_hold(pos, tick, peak_x, s)
+        if ok:
+            pos.grace_since = pos.grace_since or tick.at
+            waited = tick.at - pos.grace_since
+            limit = _g(s, "exit_grace_seconds", 90.0)
+            if waited < limit:
+                pos.note = (f"holding through a dip: {100 * (1 - x):.0f}% down, {why}; "
+                            f"{limit - waited:.0f}s left before the stop")
+                return []
+            return [Action("STOP", ALL, f"down {100 * (1 - x):.0f}% and no bounce in {waited:.0f}s "
+                                        f"(stop at -{stop_pct:.0f}%)")]
+        extra = f"; no dip-hold: {why}" if pos.grace and why else ""
+        return [Action("STOP", ALL, f"down {100 * (1 - x):.0f}% from the entry (stop at -{stop_pct:.0f}%){extra}")]
+    pos.grace_since = None
     # 2. trailing stop (ratchets up, never down)
     line = trail_line(peak_x, s)
     if line is not None:
@@ -139,7 +189,8 @@ def decide(pos: Position, tick: Tick, s=None) -> list[Action]:
             return [Action("FADING", ALL, f"5-min volume ${tick.vol_m5:,.0f} is under {fade:.0%} of the hour's pace, "
                                           f"{100 * (1 - x / peak_x):.0f}% under the high")]
         # 5. never got going
-        if minutes >= _g(s, "exit_no_progress_minutes", 8.0) and peak_x < 1.15 and x < 0.92:
+        np_minutes = _g(s, "exit_no_progress_minutes", 8.0) * (1 + max(0.0, min(1.0, ((pos.conviction or 50) - 50) / 30)))
+        if minutes >= np_minutes and peak_x < 1.15 and x < 0.92:
             return [Action("NO_PROGRESS", ALL, f"{minutes:.0f} min in, never above {peak_x:.2f}x, now {x:.2f}x")]
     # 6. time
     hold = _g(s, "exit_max_hold_minutes", 180.0)
@@ -155,10 +206,21 @@ def decide(pos: Position, tick: Tick, s=None) -> list[Action]:
     return out
 
 
-def replay(entry_mcap: float, opened_at: float, ticks: list[Tick], s=None) -> dict:
+def apply_conviction(pos: Position, conv) -> Position:
+    """Put a conviction grade (conviction.Conviction or its dict) on a position."""
+    if conv is None:
+        return pos
+    d = conv if isinstance(conv, dict) else conv.to_dict()
+    pos.stop_pct = d.get("stop_pct") or pos.stop_pct
+    pos.grace = bool(d.get("grace"))
+    pos.conviction = d.get("score")
+    return pos
+
+
+def replay(entry_mcap: float, opened_at: float, ticks: list[Tick], s=None, conv=None) -> dict:
     """Run the engine over a recorded price path: where would it have sold? Used for calls the bot
     only tracked (the Calls tab's "bot exit"). Returns {"x" (average sell multiple), "exit", "reason", "at"}."""
-    pos = Position(entry_mcap=entry_mcap, opened_at=opened_at, peak_mcap=entry_mcap)
+    pos = apply_conviction(Position(entry_mcap=entry_mcap, opened_at=opened_at, peak_mcap=entry_mcap), conv)
     left, got, last = 1.0, 0.0, None
     for t in ticks:
         for a in decide(pos, t, s):

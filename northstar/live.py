@@ -72,6 +72,11 @@ CREATE INDEX IF NOT EXISTS ix_live_open ON live_trades(status);
 def init_schema(db) -> None:
     with db._lock:
         db._conn.executescript(SCHEMA)
+        cols = {r[1] for r in db._conn.execute("PRAGMA table_info(live_trades)").fetchall()}
+        for col, decl in (("conviction", "REAL"), ("conv", "TEXT"), ("grace_since", "REAL"), ("entry_liq", "REAL"),
+                          ("engine_note", "TEXT")):
+            if col not in cols:
+                db._conn.execute(f"ALTER TABLE live_trades ADD COLUMN {col} {decl}")
 
 
 def held_share(r: dict) -> float:
@@ -301,7 +306,24 @@ class LiveTrader:
                 self._skip(c, f"already up {100 * (tick.mcap / c['entry'] - 1):.0f}% since the call", now, test)
                 counts["skipped"] += 1
                 continue
+            # v5.1.0: grade the setup. Weak setups are skipped; the rest get their own stop and a size of at most
+            # trade_sol_per_trade (smaller for weaker setups and wider stops, never bigger)
+            from . import conviction as CV
+            conv, liq = None, None
+            if CV.enabled(self.s):
+                report = CV.report_for(self.db, c["ref"], c["mint"])
+                conv, liq = CV.assess(report, self.s), CV.entry_liquidity(report)
+                floor = float(getattr(self.s, "trade_min_conviction", 40.0) or 0)
+                if floor and conv.score < floor:
+                    self._skip(c, f"conviction {conv.score:.0f} ({conv.grade}) under {floor:.0f}: "
+                                  + "; ".join(conv.why[:3]), now, test)
+                    counts["skipped"] += 1
+                    continue
             sol = float(getattr(self.s, "trade_sol_per_trade", 0.1))
+            if conv is not None:
+                sol = round(max(0.001, sol * conv.size_mult), 6)
+            cj = json.dumps(conv.to_dict()) if conv is not None else None
+            cs = conv.score if conv is not None else None
             try:
                 res = await self._trade("buy", c["mint"], sol, in_sol=True, simulate=bool(test))
             except Exception as e:  # noqa: BLE001
@@ -312,10 +334,11 @@ class LiveTrader:
                     # whatever was bought (sells are a % of the wallet's balance of this coin)
                     self.db.execute(
                         "INSERT INTO live_trades(ref, mint, symbol, test, opened_at, entry_mcap, sol_in, last_mcap, "
-                        "peak_mcap, fills, error) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        "peak_mcap, fills, error, conviction, conv, entry_liq) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (c["ref"], c["mint"], c.get("symbol"), test, now, tick.mcap, sol, tick.mcap, tick.mcap,
                          json.dumps([{"kind": "BUY", "at": now, "mcap": tick.mcap, "sol": sol, "sig": e.sent,
-                                      "unconfirmed": True}]), "buy sent but not confirmed in time"))
+                                      "unconfirmed": True}]), "buy sent but not confirmed in time", cs, cj,
+                         liq or tick.liquidity))
                 else:
                     self._skip(c, self.last_error, now, test, status="FAILED")
                 continue
@@ -323,12 +346,14 @@ class LiveTrader:
             tokens = res["tokens"] if res["tokens"] is not None else 0.0   # test mode: tracked by share sold
             self.db.execute(
                 "INSERT INTO live_trades(ref, mint, symbol, test, opened_at, entry_mcap, sol_in, tokens, tokens_left, "
-                "last_mcap, peak_mcap, fills) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "last_mcap, peak_mcap, fills, conviction, conv, entry_liq) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (c["ref"], c["mint"], c.get("symbol"), test, now, tick.mcap, spent, tokens, tokens, tick.mcap, tick.mcap,
-                 json.dumps([{"kind": "BUY", "at": now, "mcap": tick.mcap, "sol": round(spent, 6), "sig": res["sig"]}])))
+                 json.dumps([{"kind": "BUY", "at": now, "mcap": tick.mcap, "sol": round(spent, 6), "sig": res["sig"]}]),
+                 cs, cj, tick.liquidity or liq))
             counts["bought"] += 1
-            log.info("live%s: bought $%s for %.4f SOL at $%.0f market cap (%s)", " TEST" if test else "",
-                     c.get("symbol") or c["mint"][:6], spent, tick.mcap, res["sig"])
+            log.info("live%s: bought $%s for %.4f SOL at $%.0f market cap (%s)%s", " TEST" if test else "",
+                     c.get("symbol") or c["mint"][:6], spent, tick.mcap, res["sig"],
+                     f" - {conv.label()}" if conv is not None else "")
         return counts
 
     def _skip(self, c: dict, why: str, now: float, test: int, status: str = "SKIPPED") -> None:
@@ -366,13 +391,12 @@ class LiveTrader:
             else:
                 if tick is None:
                     continue
-                pos = EX.Position(entry_mcap=r["entry_mcap"], opened_at=r["opened_at"],
-                                  peak_mcap=r["peak_mcap"] or r["entry_mcap"], done=set(json.loads(r["done"] or "[]")),
-                                  stop_x=r["stop_x"])
+                from .paper import position_from_row
+                pos = position_from_row(r, self.s)
                 actions = EX.decide(pos, tick, self.s)
                 mcap = tick.mcap
-                self.db.execute("UPDATE live_trades SET last_mcap=?, peak_mcap=?, stop_x=? WHERE id=?",
-                                (tick.mcap, pos.peak_mcap, pos.stop_x, r["id"]))
+                self.db.execute("UPDATE live_trades SET last_mcap=?, peak_mcap=?, stop_x=?, grace_since=?, engine_note=? "
+                                "WHERE id=?", (tick.mcap, pos.peak_mcap, pos.stop_x, pos.grace_since, pos.note, r["id"]))
                 r.update(last_mcap=tick.mcap, peak_mcap=pos.peak_mcap, stop_x=pos.stop_x)
             for a in actions:
                 closed = await self._sell(r, a, mcap, now)
@@ -444,11 +468,15 @@ class LiveTrader:
                 h["fills"] = json.loads(h["fills"] or "[]")
             except ValueError:
                 h["fills"] = []
+            try:
+                h["conv"] = json.loads(h.get("conv") or "null")
+            except (TypeError, ValueError):
+                h["conv"] = None
         return {"wallet": self.wallet.address if self.wallet else None, "enabled": self.enabled(),
                 "test_mode": self.test_mode, "balance_sol": self.balance_sol, "last_error": self.last_error,
                 "today_sol": round(self.today_result_sol(), 6), "kill_requested": self.kill_requested,
                 "limits": {k: getattr(self.s, k, None) for k in ("trade_sol_per_trade", "trade_max_open",
                                                                  "trade_daily_loss_limit_sol", "trade_min_sol_reserve",
                                                                  "trade_slippage_pct", "trade_max_chase_pct",
-                                                                 "trade_follow")},
+                                                                 "trade_follow", "trade_min_conviction")},
                 "trades": hist}

@@ -423,6 +423,17 @@ class Settings(BaseSettings):
     exit_tp1_sell_pct: float = 35.0
     exit_tp2_x: float = 2.5
     exit_tp2_sell_pct: float = 35.0
+    # v5.1.0 conviction (conviction.py): each position is graded from its research when it is bought. A strong
+    # setup gets a wider stop and may hold through a short dip; a weak one keeps a tight stop. The size is cut so
+    # the money lost at the stop is never more than with the plain exit_stop_pct.
+    exit_conviction_enabled: bool = True
+    exit_stop_min_pct: float = 15.0          # the stop for the weakest setups
+    exit_stop_max_pct: float = 35.0          # the stop for the strongest setups
+    exit_hard_stop_pct: float = 45.0         # always sell at this loss, whatever the grade (no dip-hold below it)
+    exit_grace_seconds: float = 90.0         # a strong setup under its stop with buyers still in control waits this long
+    exit_grace_min_conviction: float = 60.0  # conviction (0-100) needed for that dip-hold
+    exit_size_by_conviction: bool = True     # smaller size for weaker setups and for wider stops (never bigger)
+    trade_min_conviction: float = 40.0       # live trading skips calls graded under this (0 = buy every call)
     early_call_min_mc: float = 30_000
     early_call_max_mc: float = 50_000
     early_call_min_ai_score: int = 70
@@ -575,7 +586,7 @@ class Settings(BaseSettings):
         return v
 
     @field_validator("exit_stop_pct", "exit_trail_pct", "exit_dump_m5_pct", "exit_tp1_sell_pct", "exit_tp2_sell_pct",
-                     "exit_breakeven_buffer_pct")
+                     "exit_breakeven_buffer_pct", "exit_stop_min_pct", "exit_stop_max_pct", "exit_hard_stop_pct")
     @classmethod
     def _exit_pct(cls, v: float) -> float:
         v = float(v)
@@ -587,6 +598,16 @@ class Settings(BaseSettings):
     @classmethod
     def _exit_poll(cls, v: float) -> float:
         return max(3.0, float(v))
+
+    @field_validator("exit_grace_seconds")
+    @classmethod
+    def _exit_grace(cls, v: float) -> float:
+        return max(0.0, min(600.0, float(v)))
+
+    @field_validator("exit_grace_min_conviction", "trade_min_conviction")
+    @classmethod
+    def _conviction_0_100(cls, v: float) -> float:
+        return max(0.0, min(100.0, float(v)))
 
     @field_validator("dead_mcap_usd")
     @classmethod

@@ -77,7 +77,7 @@ SELL_KINDS = ("TP1", "TP2") + tuple(sorted(TP.EXIT_KINDS))
 REASONS = {"TP1": "take profit 1", "TP2": "take profit 2", "TRAIL": "trailing stop", "STOP": "stop loss",
            "TIME": "time stop", "DANGER": "exit now (danger)", "END": "tracking ended", "HOLD": "hold time over",
            "DEAD": "coin died ($5K or lower)", "SELLERS": "sellers took over", "FADING": "volume faded",
-           "NO_PROGRESS": "never got going", "KILL": "kill switch"}
+           "NO_PROGRESS": "never got going", "KILL": "kill switch", "HARD_STOP": "hard stop"}
 MIN_POSITION_USD = 1.0
 # v3.3.2 sanity rails: a coin is only bought with a believable price, and a price that jumps more than
 # MAX_TICK_JUMP x (or falls under 1 / MAX_TICK_JUMP) between two checks 15 s apart is a bad quote,
@@ -100,7 +100,10 @@ def init_schema(db) -> None:
         db._conn.executescript(SCHEMA)
         for table, col, decl in (("paper_runs", "account", "TEXT NOT NULL DEFAULT 'calls'"),
                                  ("paper_trades", "note", "TEXT"), ("paper_trades", "pool", "TEXT"),
-                                 ("paper_trades", "stop_x", "REAL"), ("paper_trades", "last_seen_at", "REAL")):
+                                 ("paper_trades", "stop_x", "REAL"), ("paper_trades", "last_seen_at", "REAL"),
+                                 ("paper_trades", "conviction", "REAL"), ("paper_trades", "conv", "TEXT"),
+                                 ("paper_trades", "stop_pct", "REAL"), ("paper_trades", "grace_since", "REAL"),
+                                 ("paper_trades", "entry_liq", "REAL"), ("paper_trades", "engine_note", "TEXT")):
             cols = {r[1] for r in db._conn.execute(f"PRAGMA table_info({table})").fetchall()}
             if col not in cols:
                 db._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
@@ -154,24 +157,31 @@ def cash(db, run: dict) -> float:
 
 # ----------------------------------------------------------------------------- shared mechanics
 def _buy(db, run: dict, ref: str, mint: str, symbol, kind: str, entry: float, plan: Optional[dict], now: float,
-         note: Optional[str] = None, pool: Optional[str] = None) -> Optional[str]:
-    """Open a position. Returns why it could not, or None."""
+         note: Optional[str] = None, pool: Optional[str] = None, conv=None,
+         entry_liq: Optional[float] = None) -> Optional[str]:
+    """Open a position. Returns why it could not, or None. v5.1.0: `conv` (conviction.Conviction) sets the
+    position's own stop and dip-hold, and cuts its size for weaker setups."""
     if not entry or entry <= 0:
         return "no entry market cap"
     if entry < MIN_ENTRY_MCAP:
         return f"entry market cap ${entry:,.0f} is not believable (under ${MIN_ENTRY_MCAP:,.0f})"
     size = cash(db, run) * float(run["position_pct"]) / 100
+    if conv is not None:
+        size *= conv.size_mult
     if size < MIN_POSITION_USD:
         return f"cash too low for a position (${size:.2f})"
     units = size * (1 - float(run["fee_pct"]) / 100) / entry
     db.execute(
         "INSERT OR IGNORE INTO paper_trades(run_id, ref, mint, symbol, kind, opened_at, entry_mcap, cost_usd, units, "
-        "units_left, last_mcap, peak_mcap, plan, fills, note, pool) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "units_left, last_mcap, peak_mcap, plan, fills, note, pool, conviction, conv, stop_pct, entry_liq) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (run["id"], ref, mint, symbol, kind, now, entry, size, units, units, entry, entry,
          json.dumps(plan) if plan else None,
-         json.dumps([{"kind": "BUY", "at": now, "mcap": entry, "multiple": 1.0, "usd": round(size, 2)}]), note, pool))
-    log.info("paper[%s]: bought $%s for $%.2f at $%.0f market cap", run.get("account", "calls"),
-             symbol or mint[:6], size, entry)
+         json.dumps([{"kind": "BUY", "at": now, "mcap": entry, "multiple": 1.0, "usd": round(size, 2)}]), note, pool,
+         conv.score if conv is not None else None, json.dumps(conv.to_dict()) if conv is not None else None,
+         conv.stop_pct if conv is not None else None, entry_liq))
+    log.info("paper[%s]: bought $%s for $%.2f at $%.0f market cap%s", run.get("account", "calls"),
+             symbol or mint[:6], size, entry, f" ({conv.label()})" if conv is not None else "")
     return None
 
 
@@ -311,7 +321,14 @@ class PaperTrader:
         for ref, c in calls.items():
             if ref in have:
                 continue
-            why = _buy(self.db, run, ref, c["mint"], c.get("symbol"), c.get("kind"), c.get("entry"), c.get("plan"), now)
+            conv, liq = None, None
+            if engine_mode(self.s):
+                from . import conviction as CV
+                if CV.enabled(self.s):
+                    report = CV.report_for(self.db, ref, c["mint"])
+                    conv, liq = CV.assess(report, self.s), CV.entry_liquidity(report)
+            why = _buy(self.db, run, ref, c["mint"], c.get("symbol"), c.get("kind"), c.get("entry"), c.get("plan"), now,
+                       conv=conv, entry_liq=liq)
             if why:
                 counts["skipped"] += 1
                 log.info("paper[calls]: skipped %s: %s", c.get("symbol") or c["mint"][:6], why)
@@ -402,8 +419,12 @@ class BrainTrader:
         except (AttributeError, KeyError, TypeError):
             plan = None
         note = f"runner odds {p:.0%}" + (f" · rug odds {rug:.0%}" if rug is not None else "")
+        conv = None
+        if engine_mode(self.s):
+            from . import conviction as CV
+            conv = CV.assess(r, self.s) if CV.enabled(self.s) else None
         why = _buy(self.db, run, ref, out.mint, pair.base_symbol, "brain", mc, plan.__dict__ if plan else None, now,
-                   note=note, pool=pair.pair_address)
+                   note=note, pool=pair.pair_address, conv=conv, entry_liq=pair.liquidity_usd)
         return why or "bought"
 
     async def _caps(self, mints: list[str]) -> tuple[dict[str, float], dict[str, float]]:
@@ -511,6 +532,21 @@ def apply_actions(db, row: dict, run: dict, mcap: float, actions: list, now: flo
     return closed
 
 
+def position_from_row(r: dict, s=None):
+    """An exit-engine Position from a stored trade row (paper or live), with its conviction grade."""
+    from . import exits as EX
+    pos = EX.Position(entry_mcap=r["entry_mcap"], opened_at=r["opened_at"],
+                      peak_mcap=r.get("peak_mcap") or r["entry_mcap"], done=set(json.loads(r.get("done") or "[]")),
+                      stop_x=r.get("stop_x"), grace_since=r.get("grace_since"), entry_liq=r.get("entry_liq"))
+    from . import conviction as CV
+    if r.get("conv") and CV.enabled(s):
+        try:
+            EX.apply_conviction(pos, json.loads(r["conv"]))
+        except (TypeError, ValueError):
+            pass
+    return pos
+
+
 def pick_pair(pairs: list, mint: str, pool: Optional[str] = None):
     """The pool a position is priced from: the one it was bought in, else the curve, else the deepest."""
     mine = [p for p in pairs if p.base_mint == mint and (p.market_cap or p.fdv)]
@@ -574,12 +610,14 @@ class ExitManager:
                     counts["closed"] += 1
                 continue
             counts["priced"] += 1
-            pos = EX.Position(entry_mcap=r["entry_mcap"], opened_at=r["opened_at"],
-                              peak_mcap=r["peak_mcap"] or r["entry_mcap"], done=set(json.loads(r["done"] or "[]")),
-                              stop_x=r.get("stop_x"))
+            pos = position_from_row(r, self.s)
             actions = EX.decide(pos, tick, self.s)
             if actions:
                 counts["sold"] += 1
+            if pos.note:
+                counts["dip_holds"] = counts.get("dip_holds", 0) + 1
+            self.db.execute("UPDATE paper_trades SET grace_since = ?, engine_note = ? WHERE id = ?",
+                            (pos.grace_since, pos.note, r["id"]))
             if apply_actions(self.db, r, run, tick.mcap, actions, now, pos.stop_x):
                 counts["closed"] += 1
         return counts
@@ -609,6 +647,17 @@ def repair(db, s=None, now: Optional[float] = None) -> list[str]:
 
 
 # ----------------------------------------------------------------------------- reporting
+def _conv_view(r: dict) -> Optional[dict]:
+    try:
+        c = json.loads(r.get("conv") or "null")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(c, dict):
+        return None
+    return {"score": c.get("score"), "grade": c.get("grade"), "stop_pct": c.get("stop_pct"),
+            "size_mult": c.get("size_mult"), "grace": c.get("grace"), "why": (c.get("why") or [])[:6]}
+
+
 def summary(db, s=None, now: Optional[float] = None, trades_limit: int = 60, run: Optional[dict] = None,
             account: str = "calls") -> dict:
     """Account, open positions and trade history for the current run (and a list of past runs)."""
@@ -633,9 +682,20 @@ def summary(db, s=None, now: Optional[float] = None, trades_limit: int = 60, run
                        "open_value": value if r["status"] == "OPEN" else 0.0, "pnl": pnl,
                        "pnl_pct": 100 * pnl / r["cost_usd"] if pnl is not None and r["cost_usd"] else None,
                        "exit": REASONS.get(r["exit_reason"] or "", r["exit_reason"]), "note": r.get("note"),
-                       "fills": json.loads(r["fills"] or "[]")})
+                       "fills": json.loads(r["fills"] or "[]"), "conv": _conv_view(r),
+                       "engine_note": r.get("engine_note") if r["status"] == "OPEN" else None})
     equity = cash_now + open_value
     wins = [p for p in closed if p > 0]
+    by_grade = {}
+    for t in trades:
+        g = (t.get("conv") or {}).get("grade")
+        if not g or t["status"] != "CLOSED" or t["pnl"] is None:
+            continue
+        b = by_grade.setdefault(g, {"grade": g, "closed": 0, "wins": 0, "pnl": 0.0, "cost": 0.0})
+        b["closed"] += 1
+        b["wins"] += 1 if t["pnl"] > 0 else 0
+        b["pnl"] = round(b["pnl"] + t["pnl"], 2)
+        b["cost"] = round(b["cost"] + (t["cost"] or 0), 2)
     past = [dict(r) for r in db.fetchall("SELECT * FROM paper_runs WHERE id != ? AND COALESCE(account, 'calls') = ? "
                                          "ORDER BY id DESC LIMIT 10", (run["id"], account))]
     for p in past:
@@ -649,4 +709,5 @@ def summary(db, s=None, now: Optional[float] = None, trades_limit: int = 60, run
             "realized": round(sum(closed), 2) if closed else 0.0,
             "best": max(closed) if closed else None, "worst": min(closed) if closed else None,
             "skipped": sum(1 for t in trades if t["status"] == "SKIPPED"),
-            "trades": trades[:trades_limit], "past_runs": past, "now": now}
+            "trades": trades[:trades_limit], "past_runs": past, "now": now,
+            "by_grade": [by_grade[g] for g in ("A", "B", "C") if g in by_grade]}
