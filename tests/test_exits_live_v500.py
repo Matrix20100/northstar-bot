@@ -213,6 +213,8 @@ class FakeChain:
 def _live(db, test_mode=True, **kw):
     w = Wallet(_wallet())
     m = addr("live")
+    # v5.0.0 behaviour (flat stop, full size): conviction grading is tested in test_conviction_v510.py
+    kw.setdefault("exit_conviction_enabled", False)
     s = Settings(_env_file=None, trade_enabled=True, trade_test_mode=test_mode, **kw)
     chain = FakeChain(w, m)
     built = []

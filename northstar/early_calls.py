@@ -708,7 +708,7 @@ class EarlyCallTracker:
                 status_line = "💀 coin died — tracking ended"
                 closing = True
                 counts["dead"] = counts.get("dead", 0) + 1
-                log.info("early call %s: dead at $%,.0f market cap (called at $%,.0f); closed", mint, low_now,
+                log.info("early call %s: dead at $%.0f market cap (called at $%.0f); closed", mint, low_now,
                          r["entry_mcap"] or 0)
             if closing:
                 fields.update(status="CLOSED", closed_at=now)
