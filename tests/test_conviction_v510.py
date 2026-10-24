@@ -174,3 +174,12 @@ def test_live_trading_skips_weak_setups_and_sizes_the_rest(db, monkeypatch):
     c = CV.assess(strong_report(), t.s)
     assert row["sol_in"] == pytest.approx(0.1 * c.size_mult) and row["sol_in"] <= 0.1
     assert row["conviction"] == c.score and t.status()["trades"][0]["conv"]["grade"] == "A"
+
+
+def test_a_trailing_exit_under_the_entry_does_not_claim_a_profit():
+    from northstar import trade_plan as TP
+    p = TP.build_plan(36_500.0, S, "early")
+    ev = dict(TP.evaluate(p, 0.26, 5.9, 600, {"TP1", "TP2"}, lambda v: f"${v:,.0f}"))
+    assert "TRAIL" in ev and "keep the profit" not in ev["TRAIL"] and "below your entry" in ev["TRAIL"]
+    ev = dict(TP.evaluate(p, 2.8, 5.0, 600, {"TP1", "TP2"}, lambda v: f"${v:,.0f}"))
+    assert "keep the profit" in ev["TRAIL"]

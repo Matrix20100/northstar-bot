@@ -120,8 +120,11 @@ def evaluate(p: Plan, multiple: Optional[float], peak: float, age_seconds: float
                            f"({p.trail_pct:g}% below the high)."))
     exit_event = None
     if tp1_done and peak >= p.tp1 and multiple <= max(1.0, peak * (1 - p.trail_pct / 100)):
-        exit_event = ("TRAIL", f"Fell from a {peak:.2f}x high to {multiple:.2f}x ({fmt(mc)}). Exit the rest "
-                               "and keep the profit.")
+        # v5.1.0: a coin that gaps from its high to under the entry between two checks (a dump or LP pull) is
+        # not "keeping the profit": say what happened. The take-profit sales are what was banked.
+        tail = ("Exit the rest and keep the profit." if multiple >= 1.0 else
+                "It gapped below your entry between checks: exit the rest. The take-profit sales were the gain.")
+        exit_event = ("TRAIL", f"Fell from a {peak:.2f}x high to {multiple:.2f}x ({fmt(mc)}). {tail}")
     elif multiple <= p.stop:
         exit_event = ("STOP", f"Down to {multiple:.2f}x ({fmt(mc)}), below the {(p.stop - 1) * 100:+.0f}% stop. Exit.")
     elif (age_seconds >= p.time_stop_min * 60 and multiple < p.time_stop_multiple and not tp1_done):
