@@ -293,8 +293,17 @@ class Engine:
                  asyncio.create_task(self._loop("free-channel-delivery", 15, self.alerts.publish_due_free_posts)),
                  asyncio.create_task(self._loop("heartbeat", 300, self._heartbeat)),
                  asyncio.create_task(self._loop("db-retention", 3600, self._prune))]
+        # v5.0.0 live trading: loaded whenever a wallet key is set (to show its balance); trades only when switched on
+        from .live import LiveTrader
+        self.live = (LiveTrader.from_settings(self.s, self.db, getattr(self.p, "rpc", None), getattr(self.p, "dex", None))
+                     if getattr(self.s, "trade_wallet_private_key", None) is not None else None)
+        if self.live is not None:
+            tasks.append(asyncio.create_task(self._loop("live-trader", float(getattr(self.s, "exit_poll_seconds", 10)),
+                                                        self._live)))
         if getattr(self.s, "paper_enabled", True):
             tasks.append(asyncio.create_task(self._loop("paper-trader", 15, self._paper)))
+            tasks.append(asyncio.create_task(self._loop("exit-engine", float(getattr(self.s, "exit_poll_seconds", 10)),
+                                                        self._exits)))
         if self.twitter is not None:
             if self.twitter.enabled():
                 tasks.append(asyncio.create_task(self._loop("twitter-feed", float(self.s.twitter_feed_seconds),
@@ -413,6 +422,15 @@ class Engine:
 
     async def _schedule(self) -> None:
         now = time.time()
+        # v5.0.0: while the Solana RPC circuit is open (rate limited past its budget) every research would
+        # fail its on-chain reads and end as "not ready", which keeps the RPC overloaded. Wait instead.
+        client = getattr(getattr(self.p, "rpc", None), "client", None)
+        if client is not None and getattr(client, "circuit_open", False) is True:
+            if now - self.__dict__.get("_rpc_pause_logged", 0) > 120:
+                self._rpc_pause_logged = now
+                log.warning("research paused: the Solana RPC is over its rate limit (circuit open). Lower "
+                            "research_concurrency or set NORTHSTAR_RPC_RPM to your Helius plan")
+            return
         if now - self.__dict__.get("_watch_swept", 0) >= 60:
             self._watch_swept = now
             gone = self.db.expire_watchlist(float(getattr(self.s, "watchlist_max_hours", 2.0) or 0), now)
@@ -835,9 +853,15 @@ class Engine:
             # on the live bot (nearly all on dead coins).
             launch_only = sources and all(s in ("pumpportal_new", "curve_radar") for s in sources)
             T.record_outcome(self.db, out, now)
+            # v5.0.0: a coin that is "not ready" three times in a row (no pool, no trades) stops being
+            # re-queued; a surge, migration, listing or feed post brings it back
+            nr = self.__dict__.setdefault("_not_ready_n", {})
+            nr[mint] = nr.get(mint, 0) + 1
+            if len(nr) > 20000:
+                nr.clear()
+            again = not launch_only and nr[mint] < 3
             self.db.set_state(mint, prev_state,
-                              next_research_at=None if launch_only
-                              else now + self.s.rejected_recheck_seconds)
+                              next_research_at=now + self.s.rejected_recheck_seconds if again else None)
             return
         common = dict(last_research_at=now, research_count=cand["research_count"] + 1, last_data_hash=out.data_hash,
                       last_action=out.action.value, last_score=out.score, last_risk=out.risk.value,
@@ -1260,6 +1284,23 @@ class Engine:
         b = await self._brain_trader().run_once()
         if b["closed"]:
             log.info("paper trader (brain): %s", b)
+
+    async def _exits(self) -> None:
+        """v5.0.0: the exit engine re-reads every open position's pool and sells by the chart (exits.py)."""
+        from .paper import ExitManager
+        if getattr(self, "exit_manager", None) is None:
+            self.exit_manager = ExitManager(self.s, self.db, getattr(self.p, "dex", None))
+        c = await self.exit_manager.run_once()
+        if c["sold"] or c["closed"]:
+            log.info("exit engine: %s", c)
+
+    async def _live(self) -> None:
+        """v5.0.0: buy new calls within the limits, then let the exit engine manage every live position."""
+        b = await self.live.run_once()
+        m = await self.live.manage()
+        if b["bought"] or m["sold"]:
+            log.info("live trader: %s %s", b, m)
+        await self.live.balance()
 
     async def _track_early_watch(self) -> None:
         counts = await self.early_tracker.run_once()

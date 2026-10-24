@@ -76,7 +76,8 @@ ACCOUNTS = ("calls", "brain")
 SELL_KINDS = ("TP1", "TP2") + tuple(sorted(TP.EXIT_KINDS))
 REASONS = {"TP1": "take profit 1", "TP2": "take profit 2", "TRAIL": "trailing stop", "STOP": "stop loss",
            "TIME": "time stop", "DANGER": "exit now (danger)", "END": "tracking ended", "HOLD": "hold time over",
-           "DEAD": "coin died ($5K or lower)"}
+           "DEAD": "coin died ($5K or lower)", "SELLERS": "sellers took over", "FADING": "volume faded",
+           "NO_PROGRESS": "never got going", "KILL": "kill switch"}
 MIN_POSITION_USD = 1.0
 # v3.3.2 sanity rails: a coin is only bought with a believable price, and a price that jumps more than
 # MAX_TICK_JUMP x (or falls under 1 / MAX_TICK_JUMP) between two checks 15 s apart is a bad quote,
@@ -98,7 +99,8 @@ def init_schema(db) -> None:
     with db._lock:
         db._conn.executescript(SCHEMA)
         for table, col, decl in (("paper_runs", "account", "TEXT NOT NULL DEFAULT 'calls'"),
-                                 ("paper_trades", "note", "TEXT"), ("paper_trades", "pool", "TEXT")):
+                                 ("paper_trades", "note", "TEXT"), ("paper_trades", "pool", "TEXT"),
+                                 ("paper_trades", "stop_x", "REAL"), ("paper_trades", "last_seen_at", "REAL")):
             cols = {r[1] for r in db._conn.execute(f"PRAGMA table_info({table})").fetchall()}
             if col not in cols:
                 db._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
@@ -316,6 +318,8 @@ class PaperTrader:
                 _skip(self.db, run, ref, c["mint"], c.get("symbol"), c.get("kind"), c.get("entry"), why, now)
             else:
                 counts["opened"] += 1
+        if engine_mode(self.s):
+            return counts                          # v5.0.0: the exit engine sells (ExitManager)
         for t in self.db.fetchall("SELECT * FROM paper_trades WHERE run_id = ? AND status = 'OPEN'", (run["id"],)):
             c = calls.get(t["ref"])
             counts["followed"] += 1
@@ -424,8 +428,8 @@ class BrainTrader:
 
     async def run_once(self, now: Optional[float] = None) -> dict:
         counts = {"followed": 0, "closed": 0, "priced": 0}
-        if not self.enabled():
-            return counts
+        if not self.enabled() or engine_mode(self.s):
+            return counts                          # v5.0.0: in engine mode the ExitManager sells
         now = now or time.time()
         run = active_run(self.db, self.s, "brain")
         rows = [dict(t) for t in self.db.fetchall("SELECT * FROM paper_trades WHERE run_id = ? AND status = 'OPEN'",
@@ -456,6 +460,127 @@ class BrainTrader:
             if mc and B.is_dead(mc, t["entry_mcap"]):
                 end = "DEAD"                               # v4.3.0: the coin died, sell what is left
             if _execute(self.db, t, run, mc, kinds, end, now):
+                counts["closed"] += 1
+        return counts
+
+
+# ----------------------------------------------------------------------------- v5.0.0 the exit engine
+def engine_mode(s) -> bool:
+    return str(getattr(s, "paper_exit_mode", "engine") or "engine").lower() == "engine"
+
+
+def apply_actions(db, row: dict, run: dict, mcap: float, actions: list, now: float,
+                  stop_x: Optional[float] = None, seen: bool = True) -> bool:
+    """Sell what the exit engine decided (fractions of the ORIGINAL position) at `mcap`. Returns True
+    when the position closed."""
+    from . import exits as EX
+    t = {**row, "fills": json.loads(row["fills"] or "[]"), "done": set(json.loads(row["done"] or "[]"))}
+    fee = float(run["fee_pct"]) / 100
+    t["last_mcap"] = mcap
+    t["peak_mcap"] = max(t["peak_mcap"] or 0, mcap)
+    for a in actions:
+        if t["units_left"] <= 0:
+            break
+        units = t["units_left"] if a.fraction >= EX.ALL else min(t["units_left"], t["units"] * a.fraction)
+        if units <= 0:
+            continue
+        net = units * mcap * (1 - fee)
+        t["units_left"] -= units
+        t["proceeds_usd"] += net
+        t["done"].add(a.kind)
+        t["fills"].append({"kind": a.kind, "at": now, "mcap": mcap, "multiple": round(mcap / t["entry_mcap"], 4),
+                           "sold_pct": round(100 * units / t["units"], 1), "usd": round(net, 2), "why": a.reason[:160]})
+        if a.fraction >= EX.ALL:
+            t["exit_reason"] = a.kind
+    closed = t["units_left"] <= t["units"] * 1e-9
+    if closed:
+        t["units_left"] = 0.0
+        t["status"] = "CLOSED"
+        t["closed_at"] = t.get("closed_at") or now
+        t["exit_reason"] = t.get("exit_reason") or (t["fills"][-1]["kind"] if t["fills"] else "END")
+    db.execute("UPDATE paper_trades SET units_left=?, proceeds_usd=?, last_mcap=?, peak_mcap=?, done=?, fills=?, "
+               "status=?, exit_reason=?, closed_at=?, stop_x=?, last_seen_at=COALESCE(?, last_seen_at) WHERE id=?",
+               (t["units_left"], t["proceeds_usd"], t["last_mcap"], t["peak_mcap"], json.dumps(sorted(t["done"])),
+                json.dumps(t["fills"][-40:]), t["status"], t.get("exit_reason"), t.get("closed_at"), stop_x,
+                now if seen else None, t["id"]))
+    if closed:
+        pnl = t["proceeds_usd"] - t["cost_usd"]
+        log.info("paper[%s]: closed $%s (%s): %+.2f USD (%+.0f%%)", run.get("account", "calls"),
+                 t.get("symbol") or t["mint"][:6], REASONS.get(t["exit_reason"], t["exit_reason"]), pnl,
+                 100 * pnl / max(t["cost_usd"], 1e-9))
+    return closed
+
+
+def pick_pair(pairs: list, mint: str, pool: Optional[str] = None):
+    """The pool a position is priced from: the one it was bought in, else the curve, else the deepest."""
+    mine = [p for p in pairs if p.base_mint == mint and (p.market_cap or p.fdv)]
+    if not mine:
+        return None
+    if pool:
+        for p in mine:
+            if p.pair_address == pool:
+                return p
+    curve = [p for p in mine if (p.dex_id or "").lower() in ("pumpfun", "pump.fun", "pump")]
+    if curve:
+        return curve[0]
+    return max(mine, key=lambda p: p.liquidity_usd or 0)
+
+
+class ExitManager:
+    """v5.0.0: every `exit_poll_seconds`, re-read the pool of every open paper position (both accounts)
+    and let the exit engine (exits.py) decide what to sell. Also used by live trading (live.py)."""
+
+    def __init__(self, s, db, dex):
+        self.s, self.db, self.dex = s, db, dex
+
+    async def pairs_for(self, mints: list[str]) -> list:
+        out = []
+        for i in range(0, len(mints), 30):
+            try:
+                out += await self.dex.tokens_batch(mints[i:i + 30])
+            except Exception:  # noqa: BLE001 - retried next tick
+                log.info("exit manager: price refresh failed", exc_info=True)
+        return out
+
+    async def run_once(self, now: Optional[float] = None) -> dict:
+        from . import exits as EX
+        counts = {"open": 0, "priced": 0, "sold": 0, "closed": 0}
+        if self.dex is None or not getattr(self.s, "paper_enabled", True) or not engine_mode(self.s):
+            return counts
+        now = now or time.time()
+        init_schema(self.db)
+        rows = [dict(r) for r in self.db.fetchall(
+            "SELECT t.*, r.fee_pct AS run_fee FROM paper_trades t JOIN paper_runs r ON r.id = t.run_id "
+            "WHERE t.status = 'OPEN' AND r.ended_at IS NULL")]
+        counts["open"] = len(rows)
+        if not rows:
+            return counts
+        pairs = await self.pairs_for(sorted({r["mint"] for r in rows}))
+        runs = {}
+        hold = float(getattr(self.s, "exit_max_hold_minutes", 180.0) or 0) * 60
+        for r in rows:
+            run = runs.get(r["run_id"]) or dict(self.db.fetchone("SELECT * FROM paper_runs WHERE id = ?", (r["run_id"],)))
+            runs[r["run_id"]] = run
+            pair = pick_pair(pairs, r["mint"], r.get("pool"))
+            tick = EX.Tick.from_pair(pair, now) if pair is not None else None
+            ref = r["last_mcap"] or r["entry_mcap"]
+            if tick and ref and not (ref / MAX_TICK_JUMP <= tick.mcap <= ref * MAX_TICK_JUMP):
+                tick = None                                # a bad quote, not a move
+            if tick is None:
+                # no price: after the hold time the position is closed at the last price seen
+                if hold and now - r["opened_at"] >= hold * 1.5:
+                    apply_actions(self.db, r, run, ref, [EX.Action("END", EX.ALL, "no price for too long")], now,
+                                  r.get("stop_x"), seen=False)
+                    counts["closed"] += 1
+                continue
+            counts["priced"] += 1
+            pos = EX.Position(entry_mcap=r["entry_mcap"], opened_at=r["opened_at"],
+                              peak_mcap=r["peak_mcap"] or r["entry_mcap"], done=set(json.loads(r["done"] or "[]")),
+                              stop_x=r.get("stop_x"))
+            actions = EX.decide(pos, tick, self.s)
+            if actions:
+                counts["sold"] += 1
+            if apply_actions(self.db, r, run, tick.mcap, actions, now, pos.stop_x):
                 counts["closed"] += 1
         return counts
 

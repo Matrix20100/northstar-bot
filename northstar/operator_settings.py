@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS operator_settings (
 # never changeable from the browser: secrets, and where the bot keeps its data / listens
 BLOCKED = {"discord_token", "helius_api_key", "pumpportal_api_key", "coingecko_api_key", "dashboard_password",
            "ai_key", "anthropic_api_key", "gemini_api_key", "data_dir", "db_path", "dashboard_host",
-           "dashboard_port", "dashboard_enabled", "tracked_wallets_file"}
+           "dashboard_port", "dashboard_enabled", "tracked_wallets_file", "trade_wallet_private_key"}
 # read once at start: changes apply after a restart
 RESTART_HINTS = ("_seconds", "_interval", "_enabled", "_minutes", "rpc_url", "_rpm", "concurrency", "max_queue",
                  "channel_id", "enable_")

@@ -5,6 +5,7 @@ python-dotenv>=1.0
 discord.py>=2.3,<3
 websockets>=12
 base58>=2.1
+cryptography>=42      # v5.0.0: signs live trades with the bot-only wallet (ed25519)
 # development / tests
 pytest>=8
 pytest-asyncio>=0.23

@@ -360,7 +360,60 @@ def view_calls(c) -> dict:
                          "call_type": "RUNNER" if rep.get("runner") else "EARLY",
                          "events": [{"ts": None, "kind": k} for k in sent]})
         rows.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
-    return {"calls": rows[:80]}
+    rows = rows[:80]
+    _attach_bot_exits(c, rows)
+    return {"calls": rows}
+
+
+def _attach_bot_exits(c, rows: list) -> None:
+    """v5.0.0 (operator: "the Now column ... should show the number at which this bot has exited"): each
+    call's paper trade in the calls account shows where the bot sold - average sell multiple, the reason
+    and the result after fees - or that it still holds."""
+    if not rows or not _table_ok(c, "paper_trades"):
+        return
+    refs = {(f"alert:{r['id']}" if not str(r["id"]).startswith("early:") else str(r["id"])): r for r in rows}
+    marks = ",".join("?" * len(refs))
+    try:
+        trades = c.execute(
+            "SELECT t.ref, t.status, t.exit_reason, t.fills, t.cost_usd, t.proceeds_usd, t.units, t.units_left, "
+            "t.last_mcap, t.entry_mcap, r.fee_pct FROM paper_trades t JOIN paper_runs r ON r.id = t.run_id "
+            f"WHERE COALESCE(r.account, 'calls') = 'calls' AND t.status != 'SKIPPED' AND t.ref IN ({marks}) "
+            "ORDER BY t.id", list(refs)).fetchall()
+    except sqlite3.Error:
+        return
+    from .paper import REASONS
+    for t in trades:
+        t = dict(t)
+        r = refs.get(t["ref"])
+        if r is None or not t["cost_usd"]:
+            continue
+        try:
+            fills = [f for f in json.loads(t["fills"] or "[]") if f.get("kind") != "BUY"]
+        except ValueError:
+            fills = []
+        sold = sum(f.get("sold_pct") or 0 for f in fills)
+        avg = sum((f.get("multiple") or 0) * (f.get("sold_pct") or 0) for f in fills) / sold if sold else None
+        open_value = (t["units_left"] or 0) * (t["last_mcap"] or 0) * (1 - float(t["fee_pct"] or 0) / 100)
+        result = (t["proceeds_usd"] + open_value) / t["cost_usd"] - 1
+        r["bot_exit"] = {"status": t["status"], "avg_x": round(avg, 3) if avg else None,
+                         "reason": REASONS.get(t["exit_reason"] or "", t["exit_reason"]),
+                         "result_pct": round(100 * result, 1), "sold_pct": round(sold, 1),
+                         "steps": [{"kind": f.get("kind"), "x": f.get("multiple"), "pct": f.get("sold_pct")}
+                                   for f in fills][-4:]}
+
+
+def view_trading(c, s) -> dict:
+    """v5.0.0 Trading tab: the bot-only wallet, its switch, limits, positions and today's result."""
+    eng = LIVE.get("engine")
+    live = getattr(eng, "live", None) if eng else None
+    if live is None:
+        has_key = bool(s is not None and getattr(s, "trade_wallet_private_key", None) is not None)
+        return {"configured": False, "attached": eng is not None,
+                "why": ("the wallet key is set; the bot loads it at its next restart" if has_key else
+                        "no wallet key: set NORTHSTAR_TRADE_WALLET_PRIVATE_KEY on the server (a NEW bot-only wallet)")}
+    st = live.status()
+    st["configured"] = live.wallet is not None
+    return st
 
 
 def view_decisions(c) -> dict:
@@ -492,6 +545,8 @@ GROUPS = [
     ("Calls on young coins (Pulse)", ("runner_", "curve_radar", "curve_learn", "early_call", "early_tp", "early_stop",
                                       "early_trail", "early_time", "early_max_entry", "launch_")),
     ("Tracked wallets & attention", ("wallet_", "tracked_wallets", "kol_", "attention_")),
+    ("Live trading (real money)", ("trade_",)),
+    ("Exits (paper and real)", ("exit_",)),
     ("Paper trading", ("paper_",)),
     ("Discord & posting", ("discord_", "dry_run", "free_", "vip_", "early_watch", "max_alerts", "alert_", "embed_")),
     ("Who gets called", ("min_", "max_allowed", "watchlist_", "block_", "require_", "reject_", "max_", "rug_",
@@ -505,7 +560,8 @@ GROUPS = [
                              "dexscreener", "rpc_", "http_", "social")),
     ("Timing & storage", ("", )),
 ]
-SECRETS = {"discord_token", "helius_api_key", "pumpportal_api_key", "coingecko_api_key", "dashboard_password"}
+SECRETS = {"discord_token", "helius_api_key", "pumpportal_api_key", "coingecko_api_key", "dashboard_password",
+           "trade_wallet_private_key"}
 
 
 def view_settings(c, s) -> dict:
@@ -695,6 +751,8 @@ class DashboardServer:
                         return self._send(200, view_social(c, s, now))
                     if u.path == "/api/flow":
                         return self._send(200, view_flow(c, s, now))
+                    if u.path == "/api/trading":
+                        return self._send(200, view_trading(c, s))
                     if u.path == "/api/paper":
                         acct = (parse_qs(u.query).get("account") or ["calls"])[0]
                         return self._send(200, view_paper(c, s, now, acct))
@@ -754,6 +812,8 @@ class DashboardServer:
                     return self._untrack(u.path, self._body())
                 if u.path == "/api/paper/start":
                     return self._paper_start(self._body())
+                if u.path == "/api/trading/kill":
+                    return self._trading_kill()
                 if u.path in ("/api/settings/set", "/api/settings/reset"):
                     return self._setting(u.path, self._body())
                 if u.path == "/api/teach":
@@ -803,6 +863,26 @@ class DashboardServer:
                 finally:
                     db.close()
                 return self._send(200, {"ok": True, **res})
+
+            def _trading_kill(self):
+                """v5.0.0 kill switch: trading off (stored, survives a restart) and sell every open position."""
+                from . import operator_settings as OS
+                from .db import Database
+                s = LIVE.get("settings") or owner.settings
+                if s is None:
+                    return self._send(503, {"ok": False, "error": "settings unavailable"})
+                db = Database(owner.db_path)
+                db.open()
+                try:
+                    OS.set_value(db, s, "trade_enabled", False)
+                finally:
+                    db.close()
+                eng = LIVE.get("engine")
+                live = getattr(eng, "live", None) if eng else None
+                if live is not None:
+                    live.kill()
+                log.warning("dashboard: KILL SWITCH - live trading switched off, selling all open positions")
+                return self._send(200, {"ok": True, "selling": live is not None})
 
             def _paper_start(self, body: dict):
                 """Start a new paper run with the amount typed on the Paper tab."""

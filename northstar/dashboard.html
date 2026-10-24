@@ -112,7 +112,7 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
   </form>
   <nav class="tabs" id="tabs">
     <button data-tab="overview" class="on">Overview</button><button data-tab="pulse">Pulse</button><button data-tab="watching">Watching</button>
-    <button data-tab="calls">Calls</button><button data-tab="paper">Paper</button><button data-tab="learning">Learning</button>
+    <button data-tab="calls">Calls</button><button data-tab="trading">Trading</button><button data-tab="paper">Paper</button><button data-tab="learning">Learning</button>
     <button data-tab="settings">Settings</button><button data-tab="selftest">Self-test</button>
   </nav>
 
@@ -167,7 +167,26 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
 
   <section data-view="calls" class="hide">
     <div class="card"><h2>Calls <span>VIP calls and rug scalps · updates live</span></h2>
-      <div class="tablewrap"><table><thead><tr><th>Coin</th><th>Type</th><th>Called at</th><th>Now</th><th>Peak</th><th>Low</th><th>Plan events</th><th>Status</th><th>Called</th></tr></thead><tbody id="calls"></tbody></table></div></div>
+      <div class="tablewrap"><table><thead><tr><th>Coin</th><th>Type</th><th>Called at</th><th>Bot exit</th><th>Now</th><th>Peak</th><th>Low</th><th>Plan events</th><th>Status</th><th>Called</th></tr></thead><tbody id="calls"></tbody></table></div></div>
+  </section>
+
+  <section data-view="trading" class="hide">
+    <div class="card" style="margin-bottom:14px" id="tradeBanner"></div>
+    <div class="grid g4" style="margin-bottom:14px" id="tradeMetrics"></div>
+    <div class="grid g2" style="margin-bottom:14px">
+      <div class="card"><h2>Controls <span>the bot trades only while this is on</span></h2>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <button class="btn primary" id="tradeOn">Turn trading on</button><button class="btn" id="tradeOff">Turn trading off</button>
+          <button class="btn" id="tradeKill" style="border-color:var(--bad);color:var(--bad)">⛔ Stop &amp; sell everything</button></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">
+          <button class="btn" id="tradeTestOn">Test mode (simulate only)</button>
+          <input id="tradeReal" placeholder="type REAL to trade real money" style="width:220px"><button class="btn" id="tradeTestOff">Use real money</button></div>
+        <p class="sub" id="tradeMsg" style="margin-top:10px"></p>
+        <p class="sub" style="margin:10px 0 0">The bot buys the calls it follows and sells with the exit engine: stop loss, trailing stop, sellers taking over, fading volume, no progress, take profit in steps. New buys stop when the daily loss limit is reached. Limits and exit rules: Settings tab → "Live trading" and "Exits". Not financial advice: only fund this wallet with what you can lose.</p></div>
+      <div class="card"><h2>Limits</h2><div id="tradeLimits"></div></div>
+    </div>
+    <div class="card"><h2>Positions <span>newest first · click a coin for its research</span></h2>
+      <div class="tablewrap"><table><thead><tr><th>Coin</th><th>Bought at</th><th>SOL in</th><th>Sells</th><th>Now / peak</th><th>Result</th><th>Status</th><th>Opened</th></tr></thead><tbody id="tradeRows"></tbody></table></div></div>
   </section>
 
   <section data-view="paper" class="hide">
@@ -183,7 +202,7 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
           <label class="muted" style="display:grid;gap:4px;font-size:11px">FEE + SLIPPAGE PER SIDE (%)<input id="paperFee" type="number" min="0" max="20" step="any" required style="width:120px"></label>
           <button class="btn primary" type="submit">Start new run</button><span id="paperMsg" class="sub"></span>
         </form>
-        <p class="sub" style="margin:10px 0 0" id="paperHelp">Starting a new run resets the balance to this amount. Earlier runs and their trades are kept below. Each call buys at its entry market cap, then sells exactly when the bot posts TP1, TP2, a stop, a time stop, a trailing stop or an exit-now, at the market cap the bot tracked then. Whatever is left when tracking ends is sold at the last market cap seen.</p></div>
+        <p class="sub" style="margin:10px 0 0" id="paperHelp">Starting a new run resets the balance to this amount. Earlier runs and their trades are kept below. Each call buys at its entry market cap. The exit engine then re-reads the coin's chart every few seconds and sells by it: a stop loss at -20%, a trailing stop that only moves up, selling when sellers take over or volume fades, cutting a coin that never got going, and taking profit in steps (35% at 1.5x, 35% at 2.5x). The same engine manages real trades.</p></div>
       <div class="card"><h2>Earlier runs</h2><div class="tablewrap"><table><thead><tr><th>Started</th><th>Start</th><th>End cash</th><th>Trades</th></tr></thead><tbody id="paperRuns"></tbody></table></div></div>
     </div>
     <div class="card"><h2>Trades <span>newest first · click a coin for its research</span></h2>
@@ -254,7 +273,7 @@ document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>go(b.dataset.
 function go(t){if(!document.querySelector(`[data-view="${t}"]`))t='overview';tab=t;location.hash=t;
  document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
  document.querySelectorAll('[data-view]').forEach(v=>v.classList.toggle('hide',v.dataset.view!==t));refresh()}
-async function refresh(){clearTimeout(timer);try{await status();const f={overview:overview,pulse:pulse,watching:watching,calls:calls,paper:paper,learning:learning,settings:settings,selftest:selftest}[tab];await f();
+async function refresh(){clearTimeout(timer);try{await status();const f={overview:overview,pulse:pulse,watching:watching,calls:calls,trading:trading,paper:paper,learning:learning,settings:settings,selftest:selftest}[tab];await f();
  $('updated').textContent='updated '+new Date().toLocaleTimeString()}catch(e){if(e.message!=='auth')$('updated').textContent='connection problem — retrying'}
  const every=tab==='selftest'&&stRunning?2500:(tab==='settings'?60000:15000);timer=setTimeout(()=>{if(!document.hidden)refresh();else timer=setTimeout(refresh,every)},every)}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!$('app').classList.contains('hide'))refresh()});
@@ -328,11 +347,38 @@ async function watching(){const d=await api('/api/watching');$('queueSub').textC
  $('trending').innerHTML=d.trending.length?d.trending.map(t=>`<span class="pill info" style="margin:3px">#${esc(t.rank)} ${esc(t.symbol||t.name||short(t.mint))}</span>`).join(''):'<div class="empty">Nothing trending right now (or the bot isn\'t attached)</div>';
  $('early').innerHTML=d.early.length?d.early.map(e=>{const now=e.entry_market_cap_sol&&e.current_market_cap_sol?e.current_market_cap_sol/e.entry_market_cap_sol:null;return `<tr class="click" data-mint="${esc(e.mint)}"><td>${coin(e.mint)}</td><td>${actPill(e.status)}</td><td class="num">${x(e.peak_multiple)}</td><td class="num">${x(now)}</td><td class="sub num">${ago(e.created_at)}</td></tr>`}).join(''):'<tr><td colspan=5 class="empty">No early watches</td></tr>'}
 
+function botExit(b){if(!b)return'<span class="sub">—</span>';const r=b.result_pct;const cls=r>0?'up':r<0?'down':'';
+ const steps=(b.steps||[]).map(s=>`${s.kind} ${s.x!=null?(+s.x).toFixed(2)+'x':''}`).join(' · ');
+ if(b.status==='OPEN')return `<span class="pill info">holding</span>${b.sold_pct?`<br><span class="sub">${num(b.sold_pct,0)}% sold · ${esc(steps)}</span>`:''}<br><span class="${cls}">${r>0?'+':''}${num(r,1)}%</span>`;
+ return `<b>${x(b.avg_x)}</b> <span class="${cls}">${r>0?'+':''}${num(r,1)}%</span><br><span class="sub" title="${esc(steps)}">${esc(b.reason||'sold')}</span>`}
 async function calls(){const d=await api('/api/calls');
  $('calls').innerHTML=d.calls.length?d.calls.map(c=>{const nowx=c.entry_mcap&&c.current_mcap?c.current_mcap/c.entry_mcap:null;const ev=(c.events||[]).map(e=>`<span class="pill ${/STOP|DANGER|TIME/.test(e.kind)?'bad':/TP|TRAIL/.test(e.kind)?'good':'dim'}" style="margin:1px">${esc(e.kind)}</span>`).join('');
   return `<tr class="click" data-mint="${esc(c.mint)}"><td>${coin(c.mint,c.symbol,c.name)}</td><td>${c.call_type==='RUG_SCALP'?'<span class="pill bad">☠️ SCALP</span>':c.call_type==='RUNNER'?'<span class="pill violet">🎯 RUNNER</span>':c.call_type==='EARLY'?'<span class="pill info">⚡ EARLY</span>':'<span class="pill good">VIP</span>'}</td>
-  <td class="num">${usd(c.entry_mcap)}</td><td class="num">${usd(c.current_mcap)}<br>${x(nowx)}</td><td class="num">${c.peak_mcap?usd(c.peak_mcap)+'<br>':''}${x(c.max_multiple)}</td><td class="num">${x(c.min_multiple)}</td>
-  <td>${ev||'<span class="sub">—</span>'}</td><td>${actPill(c.state||c.status)}</td><td class="sub num">${ago(c.sent_at||c.created_at)}</td></tr>`}).join(''):'<tr><td colspan=9 class="empty">No calls yet</td></tr>'}
+  <td class="num">${usd(c.entry_mcap)}</td><td class="num">${botExit(c.bot_exit)}</td><td class="num sub">${usd(c.current_mcap)}<br>${x(nowx)}</td><td class="num">${c.peak_mcap?usd(c.peak_mcap)+'<br>':''}${x(c.max_multiple)}</td><td class="num">${x(c.min_multiple)}</td>
+  <td>${ev||'<span class="sub">—</span>'}</td><td>${actPill(c.state||c.status)}</td><td class="sub num">${ago(c.sent_at||c.created_at)}</td></tr>`}).join(''):'<tr><td colspan=10 class="empty">No calls yet</td></tr>'}
+
+async function trading(){const d=await api('/api/trading');
+ if(!d.configured){$('tradeBanner').innerHTML=`<b>Live trading is not set up.</b> <span class="sub">${esc(d.why||'')}</span><br><span class="sub">Create a NEW wallet used only by the bot, fund it with what you are prepared to lose, and put its private key in <code>NORTHSTAR_TRADE_WALLET_PRIVATE_KEY</code> on the server yourself. Then restart.</span>`;
+  $('tradeMetrics').innerHTML='';$('tradeLimits').innerHTML='';$('tradeRows').innerHTML='<tr><td colspan=8 class="empty">No wallet</td></tr>';return}
+ const sol=v=>v==null?'—':(+v).toFixed(4)+' SOL';
+ $('tradeBanner').innerHTML=d.enabled?(d.test_mode?'<span class="pill warn">TEST MODE</span> trading is ON but every trade is only simulated on-chain. Nothing is spent.':'<span class="pill bad">REAL MONEY</span> trading is ON with real funds.'):'<span class="pill dim">OFF</span> trading is off. Open positions are still managed by the exit engine.';
+ if(d.last_error)$('tradeBanner').innerHTML+=`<br><span class="down">Last problem: ${esc(d.last_error)}</span>`;
+ if(d.kill_requested)$('tradeBanner').innerHTML+='<br><span class="down">Kill switch: selling everything…</span>';
+ const t=d.today_sol;$('tradeMetrics').innerHTML=[['Wallet',`<code>${esc(short(d.wallet))}</code>`],['Balance',sol(d.balance_sol)],['Today (UTC)',`<span class="${t>0?'up':t<0?'down':''}">${t>0?'+':''}${(+t).toFixed(4)} SOL</span>`],['Mode',d.test_mode?'test (simulated)':'real money']]
+  .map(([k,v])=>`<div class="card metric"><label>${k}</label><strong style="font-size:20px">${v}</strong></div>`).join('');
+ const L=d.limits||{};$('tradeLimits').innerHTML=`<dl class="kv"><dt>Per trade</dt><dd>${L.trade_sol_per_trade} SOL</dd><dt>Max open</dt><dd>${L.trade_max_open}</dd><dt>Daily loss limit</dt><dd>-${L.trade_daily_loss_limit_sol} SOL</dd><dt>Fee reserve</dt><dd>${L.trade_min_sol_reserve} SOL</dd><dt>Slippage</dt><dd>${L.trade_slippage_pct}%</dd><dt>Skip if up since call</dt><dd>${L.trade_max_chase_pct}%</dd><dt>Follows</dt><dd>${L.trade_follow==='all'?'every call (no scalps)':'runner calls'}</dd></dl>`;
+ $('tradeRows').innerHTML=(d.trades||[]).length?d.trades.map(r=>{const sells=(r.fills||[]).filter(f=>f.kind!=='BUY').map(f=>`<span class="pill ${/STOP|SELLERS|FADING|NO_PROGRESS|KILL|TIME/.test(f.kind)?'bad':'good'}" title="${esc(f.why||'')}">${esc(f.kind)} ${x(f.x)}</span>`).join(' ');
+  const held=r.test||!r.tokens?Math.max(0,1-(r.fills||[]).filter(f=>f.kind!=='BUY').reduce((a,f)=>a+(f.share||0),0)):r.tokens_left/r.tokens;
+  const res=r.sol_in?(r.sol_out-r.sol_in+(r.status==='OPEN'&&r.entry_mcap&&r.last_mcap?r.sol_in*held*(r.last_mcap/r.entry_mcap):0)):null;
+  return `<tr class="click" data-mint="${esc(r.mint)}"><td>${coin(r.mint,r.symbol)}${r.test?' <span class="pill warn">test</span>':''}</td><td class="num">${usd(r.entry_mcap)}</td><td class="num">${r.sol_in?(+r.sol_in).toFixed(4):'—'}</td><td>${sells||(r.error?`<span class="sub">${esc(r.error)}</span>`:'<span class="sub">—</span>')}</td>
+  <td class="num">${r.entry_mcap&&r.last_mcap?x(r.last_mcap/r.entry_mcap):'—'} / ${r.entry_mcap&&r.peak_mcap?x(r.peak_mcap/r.entry_mcap):'—'}</td><td class="num ${res>0?'up':res<0?'down':''}">${res==null?'—':(res>0?'+':'')+res.toFixed(4)+' SOL'}</td><td>${actPill(r.status)}</td><td class="sub num">${ago(r.opened_at)}</td></tr>`}).join(''):'<tr><td colspan=8 class="empty">No trades yet</td></tr>'}
+async function setSetting(k,v){return post('/api/settings/set',{key:k,value:String(v)})}
+$('tradeOn').onclick=async()=>{const r=await setSetting('trade_enabled',true);$('tradeMsg').textContent=r.ok?'Trading is on.':(r.error||'failed');trading()};
+$('tradeOff').onclick=async()=>{const r=await setSetting('trade_enabled',false);$('tradeMsg').textContent=r.ok?'Trading is off. Open positions are still sold by the exit engine.':(r.error||'failed');trading()};
+$('tradeTestOn').onclick=async()=>{const r=await setSetting('trade_test_mode',true);$('tradeMsg').textContent=r.ok?'Test mode: trades are simulated, nothing is spent.':(r.error||'failed');trading()};
+$('tradeTestOff').onclick=async()=>{if($('tradeReal').value.trim()!=='REAL'){$('tradeMsg').textContent='Type REAL in the box first.';return}
+ const r=await setSetting('trade_test_mode',false);$('tradeReal').value='';$('tradeMsg').textContent=r.ok?'REAL MONEY: trades now spend the wallet\'s SOL.':(r.error||'failed');trading()};
+$('tradeKill').onclick=async()=>{const r=await post('/api/trading/kill',{});$('tradeMsg').textContent=r.ok?'Kill switch: trading is off and every open position is being sold.':(r.error||'failed');trading()};
 
 let paperFilled=false,paperAcct='calls';
 const ACCT_NOTE={calls:'Follows every call the bot posts, with each call\'s trade plan.',

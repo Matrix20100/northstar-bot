@@ -12,7 +12,8 @@ from northstar import paper as PT
 from northstar import trade_plan as TP
 from northstar.config import Settings
 
-S = Settings(_env_file=None, paper_start_usd=1000, paper_position_pct=10, paper_fee_pct=1)
+S = Settings(_env_file=None, paper_start_usd=1000, paper_position_pct=10, paper_fee_pct=1,
+             paper_exit_mode="plan")      # v5.0.0: these tests cover the plan-following mode
 
 
 def early_call(db, mint, created, entry=40_000.0, runner=True):
@@ -190,7 +191,7 @@ def test_brain_buys_only_its_confident_safe_picks(db):
 
 
 def test_brain_positions_follow_the_standard_plan_on_live_prices(db):
-    s = Settings(_env_file=None)
+    s = Settings(_env_file=None, paper_exit_mode="plan")
     plan = TP.build_plan(500_000.0, s, "standard")
     dex = Dex()
     bt = PT.BrainTrader(s, db, dex)
@@ -208,7 +209,7 @@ def test_brain_positions_follow_the_standard_plan_on_live_prices(db):
 
 
 def test_brain_position_closes_after_the_hold_time_even_without_a_price(db):
-    s = Settings(_env_file=None, paper_brain_hold_hours=1)
+    s = Settings(_env_file=None, paper_brain_hold_hours=1, paper_exit_mode="plan")
     bt = PT.BrainTrader(s, db, Dex())
     t0 = time.time()
     bt.consider(researched(addr("hold")), now=t0)
@@ -240,7 +241,7 @@ def test_dashboard_switches_accounts(db):
 
 # ----------------------------------------------------------------------------- v3.3.2 sanity rails
 def test_brain_skips_junk_pools_and_failed_coins(db):
-    bt = PT.BrainTrader(Settings(_env_file=None), db, Dex())
+    bt = PT.BrainTrader(Settings(_env_file=None, paper_exit_mode="plan"), db, Dex())
     thin = researched(addr("thin"))
     thin.pair = make_pair(base_mint=addr("thin"), market_cap=500_000.0, fdv=500_000.0, liquidity_usd=2_000.0)
     assert "liquidity" in bt.consider(thin)
@@ -270,7 +271,7 @@ def test_brain_prices_from_its_own_pool_and_ignores_bad_quotes(db):
             return out
 
     dex = TwoPools()
-    bt = PT.BrainTrader(Settings(_env_file=None), db, dex)
+    bt = PT.BrainTrader(Settings(_env_file=None, paper_exit_mode="plan"), db, dex)
     m = addr("pools")
     coin = researched(m)
     coin.pair = make_pair(base_mint=m, pair_address="REALPOOL", market_cap=500_000.0, fdv=500_000.0,
