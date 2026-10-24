@@ -643,7 +643,8 @@ class EarlyCallTracker:
                             image_url=ident.get("image_url")), r["channel_id"])
                     except PublishError as e:
                         log.warning("early-call plan ping failed for %s: %s", mint, e)
-                fields["plan_sent"] = json.dumps(sorted(sent))
+                if json.dumps(sorted(sent)) != (r.get("plan_sent") or "[]"):
+                    fields["plan_sent"] = json.dumps(sorted(sent))      # v5.0.0: only a real change edits
             for kind, label in (("STOP", "🛑 stopped out"), ("TIME", "⏱️ time stop — exited"),
                                 ("TRAIL", "🚪 trailing stop — exited"), ("DANGER", "🚨 exit posted"),
                                 ("TP2", "🎯 TP2 hit — trailing the rest"), ("TP1", "🎯 TP1 hit — stop at break-even")):

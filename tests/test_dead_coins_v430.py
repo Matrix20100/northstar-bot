@@ -52,7 +52,7 @@ def test_dead_line_limits_and_off_switch():
 
 # ----------------------------------------------------------------------------- runner calls + paper
 def test_dead_runner_call_closes_silently_and_paper_sells(db, monkeypatch):
-    s, pub, c = TE.caller(db)
+    s, pub, c = TE.caller(db, paper_exit_mode="plan")      # v5.0.0: plan-following mode
     row = asyncio.run(c.consider(TE.outcome(TE.curve_report())))
     assert row["entry_mcap"] == 40_000
     db.execute("UPDATE early_calls SET created_at=? WHERE mint=?", (TE.NOW, TE.MINT))
@@ -61,6 +61,7 @@ def test_dead_runner_call_closes_silently_and_paper_sells(db, monkeypatch):
     P.PaperTrader(s, db).run_once(TE.NOW + 1)
     n_posts = len(pub.sent)
     st, tr = TE.tracker(db, pub, monkeypatch, cap_sol=11.5)            # 11.5 SOL * $200 = $2,300
+    st.paper_exit_mode = "plan"
     counts = asyncio.run(tr.run_once(TE.NOW + 3600))
     r = db.fetchone("SELECT * FROM early_calls WHERE mint=?", (TE.MINT,))
     assert r["status"] == "CLOSED" and counts["dead"] == 1

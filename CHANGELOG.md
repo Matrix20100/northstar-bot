@@ -3,6 +3,52 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.0.0 - The exit engine, and live trading with a bot-only wallet
+
+Operator: "almost every coin dies ... we should sell when we are down, check every chart live ...
+I want to trade with real money in an account for the bot ... stop taking big hits."
+
+- **Exit engine** (`exits.py`): every open position is re-read every 10 s and sold by the chart.
+  - Stop loss at -20%.
+  - A trailing stop from 1.3x that goes to break-even first and only moves up (25% / 20% / 15% give-back).
+  - Sells when sellers take over or volume fades, and cuts a coin that never got going.
+  - Time stop at 3 h; takes profit in steps (35% at 1.5x, 35% at 2.5x).
+  - Holds while the coin makes new highs with buyers in control.
+  - All of it is in Settings → "Exits".
+- **Paper trading** uses the exit engine on both accounts (`paper_exit_mode=engine`; `plan` = the old
+  behaviour). Every sell records its reason.
+- **Calls tab**: a "Bot exit" column shows where the bot sold each call (average multiple, result after
+  fees, reason) or that it still holds.
+- **Live trading** (`live.py`, `solana_tx.py`, docs/LIVE_TRADING.md). It is **off and in test mode by
+  default**.
+  - Uses a new bot-only wallet whose key the owner puts in `.env`.
+  - PumpPortal builds each trade; the bot signs it locally and sends it through its own RPC.
+  - Amounts are read from the confirmed transaction.
+  - Hard limits: SOL per trade, max open, a daily loss limit that stops new buys, a fee reserve, and
+    no chasing a coin already up 25%.
+  - Test mode simulates every trade on-chain without sending.
+- **Trading tab**:
+  - shows the wallet, balance and today's result;
+  - on/off, test/real (type REAL to confirm), and a kill switch that sells everything;
+  - limits and positions with every sell and its reason.
+- Research pauses while the Solana RPC circuit is open (rate-limited); it used to keep failing and
+  overloading the RPC.
+- A coin "not ready" 3 times in a row stops being re-queued.
+- Runner-call Discord messages are only edited on a real change (they were edited every pass, which
+  caused Discord 429s).
+
+## v4.5.1 - Rug blocks only for coins that are really gone; fewer wasted researches
+
+- A coin is blocked as "died" only at $5K or less after a $10K+ high, or after a 90%+ fall. v4.5.0 also
+  blocked coins that fell to 0.3x but were alive ($ChatGPT at $65K after $386K). Coins blocked under
+  that rule are released at startup (back to rejected, not re-queued).
+- When the on-chain mint read fails (RPC rate limit), RugCheck's "revoked" answer now passes the mint
+  and freeze authority checks. Before, only an active authority was taken from RugCheck, so a revoked
+  one stayed unknown and the coin became INSUFFICIENT DATA.
+- The surge radar rejects never-researched pools older than `max_token_age_hours` from its own data
+  (USDC, Magic Eden, Take-Two came from trending feeds and were researched only to be rejected).
+- A coin the radar blocks shows as REJECT in the decisions list, not its previous decision.
+
 ## v4.5.0 - No rugs in the queue, the Watching tab or the radar; the brain obeys the risk system
 
 Operator: "stop even allowing rug coins to show up", "stop tracking coins on the watchlist for super

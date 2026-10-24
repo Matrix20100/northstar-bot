@@ -33,6 +33,7 @@ STATE = "RUGGED"
 RUG_GATES = ("mint_authority", "freeze_authority", "token_extensions", "mint_account", "rugcheck_danger",
              "liquidity_removal", "lp_lock")
 PULLED_MIN_PEAK_LIQ = 5_000.0
+DIED_FRACTION = 0.10        # down 90% or more from the high seen = gone
 
 
 def _f(x) -> Optional[float]:
@@ -61,7 +62,11 @@ def confirmed(mc: Optional[float], liq: Optional[float], pooled: bool, peak_mc: 
               peak_liq: Optional[float], s) -> Optional[str]:
     """Why this coin is a confirmed rug, or None."""
     dead_mc = float(getattr(s, "dead_mcap_usd", B.DEAD_MCAP) or 0)
-    if mc and peak_mc and B.is_dead(mc, peak_mc, dead_mc):
+    # v4.5.1: blocking for good needs the coin to be really gone - at the dead market cap ($5K) after a
+    # high of twice that, or down 90%+. A 70-80% fall is a rug for the learners (0.3x) but not proof the
+    # coin is finished: $ChatGPT was blocked at $65K after $386K.
+    if mc and peak_mc and ((dead_mc and mc <= dead_mc and peak_mc >= B.DEAD_MIN_ENTRY_X * dead_mc)
+                           or mc <= peak_mc * DIED_FRACTION):
         return f"died: market cap ${mc:,.0f} after a ${peak_mc:,.0f} high"
     if pooled and liq is not None:
         pulled = float(getattr(s, "rug_pulled_liquidity_pct", 90.0) or 0)
@@ -122,6 +127,37 @@ def block(db, mint: str, why: str, now: Optional[float] = None, **fields) -> Non
     reasons = [f"confirmed rug: {why}"] + list(fields.pop("reasons", None) or [])[:19]
     db.set_state(mint, STATE, next_research_at=None, reasons=reasons, **fields)
     log.info("confirmed rug %s: %s (blocked)", mint, why)
+
+
+_DIED_RE = None
+
+
+def release_wrong_blocks(db, s) -> int:
+    """v4.5.1: v4.5.0 also blocked coins that fell to 0.3x but were still alive ($ChatGPT at $65K after
+    $386K). Coins blocked as "died" that today's rule would not block go back to REJECTED (not re-queued:
+    new information - a surge, migration or listing - brings them back as usual). Never raises."""
+    import re
+    global _DIED_RE
+    _DIED_RE = _DIED_RE or re.compile(r"died: market cap \$([\d,]+) after a \$([\d,]+) high")
+    try:
+        rows = db.fetchall("SELECT mint, reasons FROM candidates WHERE state = ? AND reasons LIKE ?",
+                           (STATE, "%confirmed rug: died%"))
+    except Exception:  # noqa: BLE001
+        return 0
+    n = 0
+    for r in rows:
+        m = _DIED_RE.search(r.get("reasons") or "")
+        if not m:
+            continue
+        mc, peak = (float(x.replace(",", "")) for x in m.groups())
+        if confirmed(mc, None, False, peak, None, s):
+            continue
+        db.set_state(r["mint"], "REJECTED", next_research_at=None,
+                     reasons=[f"unblocked: a fall to ${mc:,.0f} from ${peak:,.0f} is not proof the coin is gone"])
+        n += 1
+    if n:
+        log.info("rugs: %d coin(s) blocked under the old 0.3x rule are no longer blocked", n)
+    return n
 
 
 def blocked_since(db, since: float) -> int:

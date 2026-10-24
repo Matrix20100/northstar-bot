@@ -395,6 +395,34 @@ class Settings(BaseSettings):
     paper_brain_max_rug: float = 0.3       # skip coins whose rug odds are at least this
     paper_brain_max_open: int = 10
     paper_brain_hold_hours: float = 24.0
+    # v5.0.0 LIVE TRADING with real money (live.py). OFF by default; TEST MODE (simulate only) by default.
+    trade_enabled: bool = False
+    trade_test_mode: bool = True             # build, sign and SIMULATE every trade; never send. Switch off for real money
+    trade_wallet_private_key: Optional[SecretStr] = None   # a NEW bot-only wallet; set on the server by the owner only
+    trade_follow: str = "runner"             # "runner" = runner calls; "all" = every call except rug scalps
+    trade_sol_per_trade: float = 0.1
+    trade_max_open: int = 3
+    trade_daily_loss_limit_sol: float = 0.5  # no new buys once today's (UTC) result reaches -this
+    trade_min_sol_reserve: float = 0.03      # always kept in the wallet for fees
+    trade_slippage_pct: float = 15.0
+    trade_priority_fee_sol: float = 0.0005
+    trade_max_chase_pct: float = 25.0        # skip a call whose coin is already up this much since the call
+    # v5.0.0 exit engine (exits.py): every open position, paper or real, is re-read every exit_poll_seconds
+    paper_exit_mode: str = "engine"          # "engine" = the live exit engine; "plan" = follow the posted trade plan
+    exit_poll_seconds: float = 10.0
+    exit_stop_pct: float = 20.0              # sell everything when down this much from the entry
+    exit_trail_start_x: float = 1.3          # from this high on, the stop trails the high (first to break even)
+    exit_trail_pct: float = 25.0             # most of the high given back below 2x (20% from 2x, 15% from 5x)
+    exit_breakeven_buffer_pct: float = 2.0   # the trailing stop never sits under entry + this (fees)
+    exit_sell_pressure: float = 1.5          # sells per buy in 5 min that, with a dump, mean sellers took over
+    exit_dump_m5_pct: float = 10.0
+    exit_fade_ratio: float = 0.25            # 5-min volume under this share of the hour's pace = the move is over
+    exit_no_progress_minutes: float = 8.0    # never above 1.15x and under 0.92x after this long = sell
+    exit_max_hold_minutes: float = 180.0
+    exit_tp1_x: float = 1.5
+    exit_tp1_sell_pct: float = 35.0
+    exit_tp2_x: float = 2.5
+    exit_tp2_sell_pct: float = 35.0
     early_call_min_mc: float = 30_000
     early_call_max_mc: float = 50_000
     early_call_min_ai_score: int = 70
@@ -503,6 +531,62 @@ class Settings(BaseSettings):
     @classmethod
     def _non_negative_int(cls, v: int) -> int:
         return max(0, int(v))
+
+    @field_validator("trade_follow")
+    @classmethod
+    def _trade_follow(cls, v: str) -> str:
+        v = str(v).strip().lower()
+        if v not in ("runner", "all"):
+            raise ValueError('trade_follow must be "runner" or "all"')
+        return v
+
+    @field_validator("trade_sol_per_trade")
+    @classmethod
+    def _trade_size(cls, v: float) -> float:
+        v = float(v)
+        if not 0.001 <= v <= 100:
+            raise ValueError("trade_sol_per_trade must be between 0.001 and 100 SOL")
+        return v
+
+    @field_validator("trade_max_open")
+    @classmethod
+    def _trade_open(cls, v: int) -> int:
+        return max(1, min(int(v), 50))
+
+    @field_validator("trade_daily_loss_limit_sol", "trade_min_sol_reserve", "trade_priority_fee_sol")
+    @classmethod
+    def _trade_nonneg(cls, v: float) -> float:
+        return max(0.0, float(v))
+
+    @field_validator("trade_slippage_pct", "trade_max_chase_pct")
+    @classmethod
+    def _trade_pct(cls, v: float) -> float:
+        v = float(v)
+        if not 0 < v <= 100:
+            raise ValueError("must be between 0 and 100 (%)")
+        return v
+
+    @field_validator("paper_exit_mode")
+    @classmethod
+    def _exit_mode(cls, v: str) -> str:
+        v = str(v).strip().lower()
+        if v not in ("engine", "plan"):
+            raise ValueError('paper_exit_mode must be "engine" or "plan"')
+        return v
+
+    @field_validator("exit_stop_pct", "exit_trail_pct", "exit_dump_m5_pct", "exit_tp1_sell_pct", "exit_tp2_sell_pct",
+                     "exit_breakeven_buffer_pct")
+    @classmethod
+    def _exit_pct(cls, v: float) -> float:
+        v = float(v)
+        if not 0 <= v <= 95:
+            raise ValueError("must be between 0 and 95 (%)")
+        return v
+
+    @field_validator("exit_poll_seconds")
+    @classmethod
+    def _exit_poll(cls, v: float) -> float:
+        return max(3.0, float(v))
 
     @field_validator("dead_mcap_usd")
     @classmethod
