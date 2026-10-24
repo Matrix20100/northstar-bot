@@ -28,6 +28,9 @@ the coin and likelihood of succeeding in the trade, we need to take educated ris
   doing right now ("holding through a dip ... 60 s left"), and the Paper tab adds **results by grade**: the bot's own
   closed trades split by A/B/C, which is how to tell whether the grading pays. No win rate is claimed before that.
 - `exit_conviction_enabled=false` restores the v5.0.0 engine exactly.
+- Fix: the "early call ... dead at $X market cap" log line used `%,.0f`, which logging cannot format, so the line
+  was never printed and the dashboard self-test's code check failed (`test_dead_runner_call_closes_silently_and_paper_sells`).
+  A new test checks every log call's format against its arguments.
 
 ## v5.0.0 - The exit engine, and live trading with a bot-only wallet
 
