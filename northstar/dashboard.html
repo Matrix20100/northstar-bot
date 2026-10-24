@@ -152,10 +152,11 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
 
   <section data-view="watching" class="hide">
     <div class="grid g2">
-      <div class="card"><h2>Research queue <span id="queueSub"></span></h2>
-        <div class="tablewrap"><table><thead><tr><th>Coin</th><th>State</th><th>Priority</th><th>Found by</th><th>Last score</th><th>Next look</th></tr></thead><tbody id="queue"></tbody></table></div></div>
+      <div class="card"><h2>Watching <span id="queueSub"></span></h2>
+        <div class="sub" id="rugSub" style="margin:-4px 0 10px"></div>
+        <div class="tablewrap"><table><thead><tr><th>Coin</th><th>Score</th><th>Why it is watched</th><th>Found by</th><th>Next check</th></tr></thead><tbody id="queue"></tbody></table></div></div>
       <div class="grid" style="align-content:start">
-        <div class="card"><h2>Surge radar <span>last 6 hours</span></h2>
+        <div class="card"><h2>Surge radar <span>last 6 hours · safe coins only</span></h2>
           <div class="tablewrap"><table><thead><tr><th>Coin</th><th>Spike</th><th>5m vol</th><th>Buys/sells</th><th>When</th></tr></thead><tbody id="surges"></tbody></table></div></div>
         <div class="card"><h2>Trending on CoinGecko <span>attention feed</span></h2><div id="trending"></div></div>
         <div class="card"><h2>Early watches <span>pre-migration</span></h2>
@@ -319,9 +320,10 @@ function drawFunnel(f){const el=$('funnel');if(!el)return;if(!f||f.error){el.inn
  const top=((f.top_reasons||{}).REJECT||[]).slice(0,4);
  if(top.length)h+=`<div class="sub" style="margin-top:8px;font-size:12px">Top reject reasons</div>`+top.map(t=>`<div class="reason">${num(t.count)} × ${esc(t.example)}</div>`).join('');
  el.innerHTML=h}
-async function watching(){const d=await api('/api/watching');$('queueSub').textContent=`${num(d.watched)} on the watch list · ${num(d.queued)} queued for research · ${num(d.waiting_launches)} new launches waiting for real buying (not watched)`;
- $('queue').innerHTML=d.queue.length?d.queue.map(r=>`<tr class="click" data-mint="${esc(r.mint)}"><td>${coin(r.mint,r.symbol,r.name)}</td><td>${actPill(r.state)}</td><td class="num">${num(r.priority,1)}</td>
-  <td class="sub">${esc((r.sources||[]).slice(-3).join(', '))}</td><td class="num">${num(r.last_score,1)}</td><td class="sub num">${ago(r.next_research_at)}</td></tr>`).join(''):'<tr><td colspan=6 class="empty">Queue empty</td></tr>';
+async function watching(){const d=await api('/api/watching');$('queueSub').textContent=`${num(d.watched)} live coins that passed safety`;
+ $('rugSub').textContent=`Research queue: ${num(d.due)} due now · ${num(d.queued)} scheduled · ${num(d.waiting_launches)} new launches waiting for real buying · 🚫 ${num(d.rugs_blocked_24h)} confirmed rugs blocked today (${num(d.rugs_blocked)} kept out in total) · ${num(d.flagged_hidden)} flagged coins hidden`;
+ $('queue').innerHTML=d.queue.length?d.queue.map(r=>`<tr class="click" data-mint="${esc(r.mint)}"><td>${coin(r.mint,r.symbol,r.name)} ${actPill(r.last_action||r.state)}</td><td class="num">${num(r.last_score,1)}</td>
+  <td class="sub">${esc(r.why||'')}</td><td class="sub">${esc((r.sources||[]).slice(-3).join(', '))}</td><td class="sub num">${r.next_research_at?ago(r.next_research_at):'—'}</td></tr>`).join(''):'<tr><td colspan=5 class="empty">No safe coins on the watch list right now</td></tr>';
  $('surges').innerHTML=d.surges.length?d.surges.map(s=>{const m=s.metrics||{};return `<tr class="click" data-mint="${esc(s.mint)}"><td>${coin(s.mint,s.symbol)}${s.fired?' <span class="pill good">SURGE</span>':' <span class="pill dim">near miss</span>'}</td><td class="num">${num(m.spike,1)}x</td><td class="num">${usd(m.vol_m5)}</td><td class="num">${num(m.buys)}/${num(m.sells)}</td><td class="sub num">${ago(s.ts)}</td></tr>`}).join(''):'<tr><td colspan=5 class="empty">No surges in the last 6 hours</td></tr>';
  $('trending').innerHTML=d.trending.length?d.trending.map(t=>`<span class="pill info" style="margin:3px">#${esc(t.rank)} ${esc(t.symbol||t.name||short(t.mint))}</span>`).join(''):'<div class="empty">Nothing trending right now (or the bot isn\'t attached)</div>';
  $('early').innerHTML=d.early.length?d.early.map(e=>{const now=e.entry_market_cap_sol&&e.current_market_cap_sol?e.current_market_cap_sol/e.entry_market_cap_sol:null;return `<tr class="click" data-mint="${esc(e.mint)}"><td>${coin(e.mint)}</td><td>${actPill(e.status)}</td><td class="num">${x(e.peak_multiple)}</td><td class="num">${x(now)}</td><td class="sub num">${ago(e.created_at)}</td></tr>`}).join(''):'<tr><td colspan=5 class="empty">No early watches</td></tr>'}

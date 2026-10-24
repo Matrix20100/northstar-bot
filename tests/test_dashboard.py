@@ -88,7 +88,8 @@ def test_login_views_and_no_secret_ever_served(seeded):
     for secret in (b"SECRET-DISCORD", b"SECRET-HELIUS", b"SECRET-CG", b"pw-correct"):
         assert secret not in body
     w = json.loads(c.req("/api/watching")[1])
-    assert w["queue_total"] == 1 and w["surges"][0]["metrics"]["spike"] == 4.2
+    # v4.5.0: a scheduled (not yet watched) coin is counted in the research queue, not listed as watched
+    assert w["queued"] == 1 and w["watched"] == 0 and w["surges"][0]["metrics"]["spike"] == 4.2
     d = json.loads(c.req("/api/decisions")[1])["decisions"][0]
     assert d["last_action"] == "WATCHLIST" and d["reasons"] == ["score 55 < 60"]
     assert c.req("/api/logout", {})[0] == 200 and c.req("/api/status")[0] == 401

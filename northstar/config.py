@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     post_drawdowns: bool = False          # v4.0.0: stop/exit/drawdown messages are recorded, not posted
     free_milestones: str = "2,3,5,10"  # free channel gets selected milestones only
     discord_warning_channel_id: Optional[int] = None  # defaults to main/VIP channel
+    discord_scalp_channel_id: Optional[int] = None    # v4.5.0: rug scalps post ONLY here (none set = scalps are not posted)
     dry_run: bool = False  # True = never post; write embeds to data/dry_run_alerts.jsonl
 
     # ---------------------------------------------------------------- API keys
@@ -96,6 +97,8 @@ class Settings(BaseSettings):
     launch_check_enabled: bool = True
     launch_max_first_jump_x: float = 6.0    # price multiple reached in the first 2 trading minutes
     launch_max_drawdown_x: float = 0.35     # price at or under this share of its high since launch = dumped
+    watchlist_max_hours: float = 2.0         # v4.5.0: a coin leaves the watch list after this long without becoming a call
+    watchlist_min_mcap_usd: float = 8000.0   # v4.5.0: a coin under this market cap leaves the watch list (dead or never started)
     watchlist_max_rechecks: int = 12        # a watched coin is re-checked at most this many times
     # v2.5.9 rug filters (operator request 22 Oct). Each is a risk threshold: a FAIL rejects the coin.
     launch_trades_enabled: bool = True       # read the first trades on the pump.fun curve (launch_trades.py)
@@ -446,6 +449,10 @@ class Settings(BaseSettings):
     severe_drawdown_pct: float = 50.0
     max_tracking_hours: float = 72.0
     free_proof_multiple: float = 2.0       # v3.0.0: a call is posted to the free channel once it reaches this
+    rug_dead_liquidity_usd: float = 1000.0  # v4.5.0: a DEX pool under this liquidity is a confirmed (dead) rug, blocked for good
+    rug_pulled_liquidity_pct: float = 90.0  # v4.5.0: liquidity down this much from the high seen (high $5K+) = pulled, blocked
+    rug_flag_odds: float = 0.6              # v4.5.0: learned rug odds at or above this flag a coin (hidden from Watching, not blocked)
+    trade_requeue_min_seconds: float = 60.0 # v4.5.0: a pump.fun trade pulls a scheduled coin forward at most this often
     dead_mcap_usd: float = 5000.0          # v4.3.0: a coin judged at 2x this or more that falls to this market cap or lower is dead/rugged (0 = off)
     callout_rug_close_x: float = 0.3       # v2.5.10: a call at or under this x of its call market cap is closed as rugged (0 = off)
     early_watch_rug_close_x: float = 0.3   # end an early watch once it trades at or under this x of the call price (0 = off)
@@ -603,6 +610,9 @@ class Settings(BaseSettings):
         Reported loudly at startup; never auto-corrected, because thresholds are the owner's call.
         """
         problems: list[str] = []
+        if self.scalp_enabled and not self.discord_scalp_channel_id:
+            problems.append("rug scalps are on (NORTHSTAR_SCALP_ENABLED) but NORTHSTAR_DISCORD_SCALP_CHANNEL_ID is not "
+                            "set: scalps post only in their own channel, so none will be posted")
         if self.min_narrative_score > 25:
             needed = self.min_narrative_score * self.w_narrative / 25
             problems.append(

@@ -114,6 +114,20 @@ def parse(msg: dict, is_mint: Optional[Callable[[str], bool]] = None) -> dict:
     return {"mints": mints[:5], "tickers": tickers[:10], "account": account, "words": words, "text": text[:600]}
 
 
+def split(msg: dict) -> list[tuple[str, dict]]:
+    """v4.5.0: the Vision forwarder sends up to 5 posts per message, one embed each. Every embed is its
+    own post (its own account, coins and words); a message with one embed or none stays whole.
+    Returns [(stored message id, message part)]: "<id>" for a whole message, "<id>:<n>" for a part."""
+    mid = str(msg.get("id"))
+    embeds = [e for e in msg.get("embeds") or [] if isinstance(e, dict)]
+    if len(embeds) <= 1:
+        return [(mid, msg)]
+    parts = [(f"{mid}:{i}", {"id": mid, "content": "", "embeds": [e]}) for i, e in enumerate(embeds)]
+    if str(msg.get("content") or "").strip():
+        parts.insert(0, (mid, {"id": mid, "content": msg.get("content"), "embeds": []}))
+    return parts
+
+
 class TwitterFeed:
     """Reads the operator's tracker channels. `fetch(url, headers)` -> (status, json) is injectable."""
 
@@ -143,6 +157,22 @@ class TwitterFeed:
                 return r.status_code, r.json()
             except ValueError:
                 return r.status_code, None
+
+    def _store(self, ch: str, mid: str, msg: dict, now: float, signals: list) -> None:
+        """One post: store it and turn a newly posted contract address into a research signal."""
+        p = parse(msg, self.is_mint)
+        if not p["text"].strip():
+            return
+        self.db.execute("INSERT OR IGNORE INTO social_mentions(ts, channel, msg_id, account, mints, tickers, "
+                        "words, text) VALUES (?,?,?,?,?,?,?,?)",
+                        (now, ch, mid, p["account"], json.dumps(p["mints"]), json.dumps(p["tickers"]),
+                         json.dumps(p["words"]), p["text"]))
+        for mint in p["mints"]:
+            if now - self._seen_mints.get(mint, 0) < 600:
+                continue
+            self._seen_mints[mint] = now
+            who = f"@{p['account']}" if p["account"] else "your Twitter tracker"
+            signals.append({"mint": mint, "account": p["account"], "why": f"{who} posted its contract address"})
 
     async def poll(self, now: Optional[float] = None) -> list[dict]:
         """Read new messages on every channel. Returns new contract-address mentions [{"mint", "account", "why"}]."""
@@ -174,20 +204,12 @@ class TwitterFeed:
             empty = 0
             for m in msgs:
                 self.last_id[ch] = str(m.get("id"))
-                p = parse(m, self.is_mint)
-                if not p["text"].strip():
+                parts = split(m)
+                if not any(parse(x, self.is_mint)["text"].strip() for _, x in parts):
                     empty += 1
                     continue
-                self.db.execute("INSERT OR IGNORE INTO social_mentions(ts, channel, msg_id, account, mints, tickers, "
-                                "words, text) VALUES (?,?,?,?,?,?,?,?)",
-                                (now, ch, str(m.get("id")), p["account"], json.dumps(p["mints"]),
-                                 json.dumps(p["tickers"]), json.dumps(p["words"]), p["text"]))
-                for mint in p["mints"]:
-                    if now - self._seen_mints.get(mint, 0) < 600:
-                        continue
-                    self._seen_mints[mint] = now
-                    who = f"@{p['account']}" if p["account"] else "your Twitter tracker"
-                    signals.append({"mint": mint, "account": p["account"], "why": f"{who} posted its contract address"})
+                for mid, part in parts:
+                    self._store(ch, mid, part, now, signals)
             if msgs and empty == len(msgs):
                 log.warning("twitter feed: channel %s: %d message(s) with no readable text. Switch on 'Message "
                             "Content Intent' for the bot (Discord Developer Portal -> Bot -> Privileged Gateway "

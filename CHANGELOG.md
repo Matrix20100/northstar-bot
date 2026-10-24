@@ -3,6 +3,40 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v4.5.0 - No rugs in the queue, the Watching tab or the radar; the brain obeys the risk system
+
+Operator: "stop even allowing rug coins to show up", "stop tracking coins on the watchlist for super
+long", "the brain chose to trade a coin that was so obviously a rug", "the uxento bot cannot keep up".
+
+- **Confirmed rugs are blocked for good** (`northstar/rugs.py`, new state RUGGED). Three cases:
+  - died: back at $5K after a $10K+ high;
+  - liquidity pulled: down 90% from the high seen, which was $5K+;
+  - dead pool: under $1,000 liquidity.
+
+  A blocked coin is never researched or shown again and is remembered 30 days. Its research stays, so
+  the learners keep it as a rug. The surge radar blocks such coins on sight, without research. Coins
+  that are only flagged (mint authority, RugCheck danger, rug odds 60%+) can still be re-checked, but
+  never show on the Watching tab.
+- **Research queue**:
+  - A pump.fun trade only brings forward a coin that is already scheduled, at most once a minute.
+    Before, every trade queued any coin within 2 s, rejected and dead ones included: ~30,000 "not ready"
+    researches a day.
+  - Watch list: a coin leaves it after 2 hours (`watchlist_max_hours`), or once its market cap is
+    under $8K (`watchlist_min_mcap_usd`).
+- **Watching tab**: only live coins that passed safety, with why each is watched. Surges, trending
+  coins and early watches are filtered the same way, and rugs blocked and flagged coins hidden are
+  counted.
+- **Rug scalps** post only in `NORTHSTAR_DISCORD_SCALP_CHANNEL_ID`, never in VIP. With no scalp channel
+  set, scalps are not posted. Their follow-ups go to the same channel.
+- **The brain's paper account obeys the risk system**:
+  - no buy at HIGH/CRITICAL risk, on a failed launch/holder check, on any rug flag, or on a
+    risk-threshold reject;
+  - it buys on runner odds x (1 - rug odds);
+  - the rug brain's odds and the risk level are offered to the runner brain as signals, kept only if
+    they improve its accuracy.
+- **Vision forwarder 1.1.0**: up to 5 posts per Discord message (waits at most 4 s to fill a bundle,
+  stays under Discord's 6,000-character limit). The bot reads each post in a bundle separately.
+
 ## v4.4.0 - Uxento Vision forwarder
 
 `tools/vision-forwarder`: a Chrome extension that forwards every post shown in your Uxento Vision

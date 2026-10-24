@@ -180,10 +180,44 @@ class SurgeRadar:
             (now - self.s.radar_lookback_hours * 3600, self.s.radar_max_tokens))
         return [r["mint"] for r in rows]
 
+    def _dead(self, best: dict, now: float) -> set:
+        """v4.5.0: coins the radar's own prices prove are confirmed rugs (died, liquidity pulled, dead
+        pool) are blocked on the spot: no research, no surge, never watched again."""
+        from . import rugs as RG
+        if not best:
+            return set()
+        marks = ",".join("?" * len(best))
+        try:
+            known = {r["mint"]: r for r in self.db.fetchall(
+                f"SELECT mint, state, peak_mcap, peak_liq FROM candidates WHERE mint IN ({marks})", list(best))}
+        except Exception:  # noqa: BLE001
+            return set()
+        out = set()
+        for mint, pair in best.items():
+            cand = known.get(mint)
+            if cand is None or cand["state"] in ("PUBLISHED", "WARNING", "CLOSED", "QUALIFIED", "IGNORED"):
+                continue            # unknown here (trending only) or a call: the monitor follows calls
+            if cand["state"] == RG.STATE:
+                out.add(mint)
+                continue
+            mc, liq = pair.market_cap or pair.fdv, pair.liquidity_usd
+            prior = max([x for x in (cand.get("peak_mcap"), RG.recorded_peak(self.db, mint)) if x], default=None)
+            why = RG.confirmed(mc, liq, True, prior, cand.get("peak_liq"), self.s)
+            if why:
+                RG.block(self.db, mint, f"{why} (seen by the surge radar)", now)
+                out.add(mint)
+        return out
+
     async def run_once(self, now: Optional[float] = None) -> list[Surge]:
         now = now or time.time()
         await self._refresh_trending(now)
         mints = list(dict.fromkeys(self._watchlist(now) + list(self.trending)))
+        if self.trending:
+            try:
+                blocked = {r["mint"] for r in self.db.fetchall("SELECT mint FROM candidates WHERE state = 'RUGGED'")}
+            except Exception:  # noqa: BLE001
+                blocked = set()
+            mints = [m for m in mints if m not in blocked]
         if not mints or self.dex is None:
             return []
         try:
@@ -199,7 +233,10 @@ class SurgeRadar:
             if cur is None or (p.liquidity_usd or 0) > (cur.liquidity_usd or 0):
                 best[p.base_mint] = p
         out = []
+        dead = self._dead(best, now)
         for mint, pair in best.items():
+            if mint in dead:
+                continue
             if self.s.radar_learning:
                 self._observe(mint, pair, now)
             if now - self._last_trigger.get(mint, 0) < self.s.radar_cooldown_minutes * 60:

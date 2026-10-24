@@ -43,6 +43,14 @@ def v3_call_embed(report: dict, plan: Optional[list] = None) -> dict:
     return compact_call_embed(report, call, kind=kind)
 
 
+def call_channel(s, call_type: Optional[str]) -> Optional[int]:
+    """v4.5.0 (operator: rug scalps "post in a separate channel"): a scalp goes ONLY to
+    `discord_scalp_channel_id`; every other call to the default (VIP) channel (None)."""
+    if call_type == "RUG_SCALP":
+        return getattr(s, "discord_scalp_channel_id", None)
+    return None
+
+
 def wants_free_copy(call_type: str, report: dict) -> bool:
     """v4.0.0 (operator: "the free channel gets VIP callouts 20 minutes later, with all milestones posting
     at once"): every VIP call gets a delayed free copy, except rug scalps (a minutes-long trade on a rug
@@ -128,6 +136,12 @@ class AlertService:
         assert manual or out.action == Action.AUTO_POST or call_type == "RUG_SCALP"
         profile = "scalp" if call_type == "RUG_SCALP" else "standard"
         self.last_hold = None
+        if call_type == "RUG_SCALP" and not call_channel(self.s, call_type):
+            # v4.5.0: a coin that failed safety is never posted in the VIP channel
+            self.last_hold = ("rug scalps post only in their own channel: set NORTHSTAR_DISCORD_SCALP_CHANNEL_ID "
+                              "(not posted)")
+            log.info("rug scalp %s not posted: no scalp channel set (NORTHSTAR_DISCORD_SCALP_CHANNEL_ID)", out.mint)
+            return None
 
         hold_reason = await self.preflight(out)
 
@@ -223,6 +237,7 @@ class AlertService:
         delivered = await self._send(
             alert_id,
             v3_call_embed(out.report, self._callout_plan(out.report, plan_vals)),
+            channel=call_channel(self.s, call_type),
         )
 
         # The VIP channel receives the qualified call first.
@@ -685,6 +700,7 @@ class AlertService:
         self,
         alert_id: int,
         embed: dict,
+        channel: Optional[int] = None,
     ) -> Optional[int]:
         """Send an alert while recording delivery state for recovery."""
         alert = self.db.get_alert(alert_id)
@@ -704,7 +720,7 @@ class AlertService:
         )
 
         try:
-            channel_id, message_id = await self.pub.publish(embed)
+            channel_id, message_id = await self.pub.publish(embed, channel)
 
         except PublishError as exc:
             if exc.uncertain:
@@ -790,7 +806,7 @@ class AlertService:
         for alert in self.db.pending_alerts():
             try:
                 found_message_id = await self.pub.find_message_with(
-                    f"mint:{alert['mint']}"
+                    f"mint:{alert['mint']}", call_channel(self.s, alert.get("call_type"))
                 )
 
             except PublishError as exc:
@@ -812,6 +828,7 @@ class AlertService:
                     message_id=found_message_id,
                     channel_id=(
                         alert["channel_id"]
+                        or call_channel(self.s, alert.get("call_type"))
                         or self.s.discord_channel_id
                     ),
                     sent_at=time.time(),
@@ -902,6 +919,7 @@ class AlertService:
                 delivered = await self._send(
                     alert["id"],
                     v3_call_embed(report, self._callout_plan(report, values)),
+                    channel=call_channel(self.s, report["call_type"]),
                 )
                 if delivered and wants_free_copy(report["call_type"], report) and self.s.discord_free_channel_id:
                     self.db.schedule_free_channel_post(

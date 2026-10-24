@@ -56,6 +56,9 @@ the dashboard (Settings).
 
 ## How delivery works
 
+- Posts go out in bundles of up to 5 per Discord message (1.1.0). The forwarder waits at most 4 s for
+  a bundle to fill and keeps each message under Discord's 6,000-character limit. The bot reads every
+  post in a bundle on its own.
 - Each post has a key (`feed:type:id`). The service worker keeps the last 20,000 forwarded keys in
   `chrome.storage.local`, so a page reload, an Ably reconnect or a Chrome restart never reposts.
 - On the very first run, the backlog Vision loads from its history is recorded and not posted. After

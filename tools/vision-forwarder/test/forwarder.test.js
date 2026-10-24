@@ -133,12 +133,13 @@ test("forwards once: reconnects and page reloads never post twice", async () => 
   await h.s.drain();
   await h.s.enqueue([post(1), post(2), post(3)]);          // the page was reloaded
   await h.s.drain();
-  assert.equal(h.calls.length, 3);
+  assert.equal(h.calls.length, 2, "posts 1+2 in one bundle, then post 3 alone");
+  assert.equal(h.calls[0].body.embeds.length, 2);
   assert.ok(h.calls[0].url.endsWith("?wait=true"));
   const fresh = new Sender({ store: h.s.store, fetchFn: h.s.fetch, lib: L, now: h.s.now, sleep: h.s.sleep });   // worker restarted
   await fresh.enqueue([post(1), post(3)]);
   await fresh.drain();
-  assert.equal(h.calls.length, 3);
+  assert.equal(h.calls.length, 2);
   assert.equal((await fresh.status()).forwarded, 3);
 });
 
@@ -166,19 +167,61 @@ test("429 waits the time Discord asks, then sends", async () => {
 });
 
 test("a refused embed is resent as text, and kept as failed if that is refused too", async () => {
-  const h = harness([{ status: 400, body: { message: "Invalid Form Body" } }, { status: 204 },
+  // bundle refused -> one by one: post 1 embed refused, post 1 as text OK; post 2 embed and text refused
+  const h = harness([{ status: 400, body: { message: "Invalid Form Body" } }, { status: 400 }, { status: 204 },
                      { status: 400 }, { status: 400 }]);
   await h.s.configure({ webhook: HOOK });
   h.tick(60000);
   await h.s.enqueue([post(1), post(2)]);
   await h.s.drain();
-  assert.ok(h.calls[1].body.content && !h.calls[1].body.embeds, "second try is plain text");
+  assert.equal(h.calls[0].body.embeds.length, 2, "first try is the bundle");
+  assert.equal(h.calls[1].body.embeds.length, 1, "then one by one");
+  assert.ok(h.calls[2].body.content && !h.calls[2].body.embeds, "then as plain text");
   const st = await h.s.status();
   assert.equal(st.forwarded, 1);
   assert.equal(st.failed, 1);
   assert.equal(await h.s.retryFailed(), 1);
   await h.s.drain();
   assert.equal((await h.s.status()).forwarded, 2);
+});
+
+test("bundles: up to 5 posts per Discord message, waiting briefly for a bundle to fill", async () => {
+  const h = harness([]);
+  await h.s.configure({ webhook: HOOK });
+  h.tick(60000);
+  await h.s.enqueue([1, 2, 3, 4, 5, 6, 7].map((n) => post(n)));
+  await h.s.drain();
+  assert.deepEqual(h.calls.map((c) => c.body.embeds.length), [5, 2]);
+  assert.deepEqual(h.calls[0].body.allowed_mentions, { parse: [] });
+  const st = await h.s.status();
+  assert.equal(st.forwarded, 7);
+  assert.equal(st.messages, 2);
+  // a lone post waits up to 4 s for company, then goes alone
+  const t0 = h.s.now();
+  await h.s.enqueue([post(8)]);
+  await h.s.drain();
+  assert.equal(h.calls.length, 3);
+  assert.ok(h.s.now() - t0 >= 4000 && h.s.now() - t0 < 5000);
+});
+
+test("bundles stay under Discord's 6,000-character limit and never mix webhooks", async () => {
+  const h = harness([]);
+  await h.s.configure({ webhook: HOOK, routes: { "Fomo Trades": "https://discord.com/api/webhooks/9/zz" } });
+  h.tick(60000);
+  const big = (n) => ({ ...L.normalize({ ...tweet, id: "18490000000000002" + String(n).padStart(2, "0"),
+                                         body: { text: "y".repeat(1400), urls: [] } }, "X Tracker") });
+  await h.s.enqueue([big(1), big(2), big(3), big(4), big(5), L.normalize(callout, "Fomo Trades")]);
+  await h.s.drain();
+  for (const c of h.calls) {
+    const chars = c.body.embeds.reduce((s, e) => s + (e.description || "").length + (e.title || "").length
+      + ((e.footer || {}).text || "").length + ((e.author || {}).name || "").length
+      + (e.fields || []).reduce((a, f) => a + f.name.length + f.value.length, 0), 0);
+    assert.ok(chars <= 6000, `bundle of ${chars} characters`);
+  }
+  assert.ok(h.calls.length >= 3);
+  const last = h.calls[h.calls.length - 1];
+  assert.ok(last.url.startsWith("https://discord.com/api/webhooks/9/zz") && last.body.embeds.length === 1);
+  assert.equal((await h.s.status()).forwarded, 6);
 });
 
 test("network errors and 5xx back off and retry; a bad webhook pauses but keeps the queue", async () => {

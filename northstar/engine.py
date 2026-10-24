@@ -407,6 +407,12 @@ class Engine:
                  total, counts, self.discovery.pumpportal_events)
 
     async def _schedule(self) -> None:
+        now = time.time()
+        if now - self.__dict__.get("_watch_swept", 0) >= 60:
+            self._watch_swept = now
+            gone = self.db.expire_watchlist(float(getattr(self.s, "watchlist_max_hours", 2.0) or 0), now)
+            if gone:
+                log.info("watch list: %d coin(s) watched too long without becoming a call - taken off", gone)
         free = self.s.max_queue_size - self.queue.qsize()
         if free <= 0:
             return
@@ -771,6 +777,13 @@ class Engine:
                 self.stats["errors"] += 1
                 log.exception("surge research failed for %s", mint)
 
+    def _leave_watchlist(self, mc: Optional[float]) -> Optional[str]:
+        """v4.5.0: why a coin should not stay on the watch list (None = keep watching)."""
+        floor = float(getattr(self.s, "watchlist_min_mcap_usd", 8000.0) or 0)
+        if floor and mc is not None and mc < floor:
+            return f"market cap ${mc:,.0f} is under the watch-list minimum ${floor:,.0f}"
+        return None
+
     async def process(self, mint: str) -> None:
         if mint in self._inflight:      # the radar and a queue worker can pick the same coin
             return
@@ -789,7 +802,8 @@ class Engine:
             except Exception:  # noqa: BLE001
                 log.debug("rescan snapshot failed for %s", mint, exc_info=True)
         cand = self.db.get_candidate(mint)
-        if not cand or cand["state"] in ("PUBLISHED", "WARNING", "CLOSED", "QUALIFIED", "STALE", "IGNORED", "DROPPED"):
+        if not cand or cand["state"] in ("PUBLISHED", "WARNING", "CLOSED", "QUALIFIED", "STALE", "IGNORED", "DROPPED",
+                                         "RUGGED"):
             return
         prev_state = cand["state"]
         self.db.set_state(mint, "RESEARCHING")
@@ -843,6 +857,22 @@ class Engine:
         brain_p = self._apply_brain(out)
         await self._apply_ai_narrative(out)
         self._finalize(out)
+        # v4.5.0: remember the highest market cap / liquidity seen and the live rug flags; a CONFIRMED
+        # rug (died, liquidity pulled, dead pool) is blocked for good. Its research stays for learning.
+        from . import rugs as RG
+        mc, liq, pooled = RG.numbers(out.report, out.pair)
+        peak_mc, peak_liq = RG.peaks(cand, mc, liq)
+        common.update(peak_mcap=peak_mc, peak_liq=peak_liq, rug_flags=json.dumps(RG.flags(out.report, self.s)))
+        prior_peak = max([x for x in (cand.get("peak_mcap"), RG.recorded_peak(self.db, mint)) if x], default=None)
+        rug_why = RG.confirmed(mc, liq, pooled, prior_peak, cand.get("peak_liq"), self.s)
+        if rug_why:
+            self.stats["rugs_blocked"] = self.stats.get("rugs_blocked", 0) + 1
+            out.report.setdefault("tracking", {})["recheck"] = f"blocked for good: confirmed rug ({rug_why})"
+            self._record_shadow(mint, out, None, out.report.get("surge"), brain_p)
+            T.record_outcome(self.db, out, now)
+            RG.block(self.db, mint, rug_why, now, **{k: v for k, v in common.items() if k != "reasons"},
+                     reasons=common.get("reasons"))
+            return
         self._brain_paper(out)
         # candidate state must carry the FINAL values, not the pre-brain/AI ones
         common.update(last_action=out.action.value, last_score=out.score, last_risk=out.risk.value,
@@ -879,7 +909,13 @@ class Engine:
                     delay = self.early.recheck_delay(row["checks"] if row else 1)
                     log.info("runner %s: rescanning in %ds (%s)", mint, int(delay), why)
                     self.__dict__.setdefault("_rescan", set()).add(mint)
-                    self.db.set_state(mint, "WATCHLIST", **{**common, "next_research_at": now + delay})
+                    leave = self._leave_watchlist(mc)
+                    if leave:
+                        self.db.set_state(mint, "STALE", **{**common, "next_research_at": None, "reasons":
+                                                            [f"left the watch list: {leave}"]
+                                                            + list(common.get("reasons") or [])[:19]})
+                    else:
+                        self.db.set_state(mint, "WATCHLIST", **{**common, "next_research_at": now + delay})
                 else:
                     self.stats["runner_dropped"] = self.stats.get("runner_dropped", 0) + 1
                     log.info("runner %s: dropped from tracking (%s)", mint, why)
@@ -920,6 +956,10 @@ class Engine:
             # that has not become a call after `watchlist_max_rechecks` looks leaves the watch list
             interval = self.s.watchlist_recheck_seconds / (2 if (out.score or 0) >= 75 else 1)
             again = common["research_count"] < int(getattr(self.s, "watchlist_max_rechecks", 12) or 0)
+            leave = self._leave_watchlist(mc)
+            if leave:
+                again = False
+                common["reasons"] = [f"left the watch list: {leave}"] + list(common.get("reasons") or [])[:19]
             # STALE leaves the watch list; a surge or a new listing brings the coin back
             self.db.set_state(mint, "WATCHLIST" if again else "STALE",
                               next_research_at=now + interval if again else None, **common)
@@ -1108,7 +1148,7 @@ class Engine:
         (every safety check still applies)."""
         mint = sig["mint"]
         cand = self.db.get_candidate(mint)
-        if cand and cand["state"] in ("PUBLISHED", "WARNING", "CLOSED", "QUALIFIED", "IGNORED", "DROPPED"):
+        if cand and cand["state"] in ("PUBLISHED", "WARNING", "CLOSED", "QUALIFIED", "IGNORED", "DROPPED", "RUGGED"):
             return
         source = sig.get("source") or "wallet_flow"
         key = "twitter_signals" if source == "twitter_feed" else "wallet_signals"
