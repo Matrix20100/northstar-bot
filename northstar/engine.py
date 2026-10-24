@@ -236,6 +236,11 @@ class Engine:
         from . import brain as _B
         _B.DEAD_MCAP = float(getattr(s, "dead_mcap_usd", _B.DEAD_MCAP) or 0)     # v4.3.0
         try:
+            from . import rugs as _RG
+            _RG.release_wrong_blocks(db, s)                                       # v4.5.1
+        except Exception:  # noqa: BLE001
+            log.debug("release of old rug blocks failed", exc_info=True)
+        try:
             from . import operator_settings as OS
             applied_op = OS.apply(db, s)
             self._operator_keys = set(applied_op)

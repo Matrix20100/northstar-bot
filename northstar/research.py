@@ -468,13 +468,24 @@ class Researcher:
                 ("mint_authority", ma),
                 ("freeze_authority", fa),
             ):
+                g1 = [g for g in g1 if g.name != name]
                 if val:
-                    g1 = [g for g in g1 if g.name != name]
                     g1.append(
                         GateResult(
                             name,
                             GateStatus.FAIL,
                             f"{name} active per RugCheck",
+                        )
+                    )
+                else:
+                    # v4.5.1: revoked per RugCheck while the on-chain read failed (usually an RPC rate
+                    # limit). Before, the check stayed UNKNOWN and the coin became INSUFFICIENT DATA.
+                    g1.append(
+                        GateResult(
+                            name,
+                            GateStatus.PASS,
+                            f"{name.split('_')[0]} authority revoked per RugCheck "
+                            "(on-chain read unavailable)",
                         )
                     )
 

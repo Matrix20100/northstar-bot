@@ -189,7 +189,8 @@ class SurgeRadar:
         marks = ",".join("?" * len(best))
         try:
             known = {r["mint"]: r for r in self.db.fetchall(
-                f"SELECT mint, state, peak_mcap, peak_liq FROM candidates WHERE mint IN ({marks})", list(best))}
+                f"SELECT mint, state, peak_mcap, peak_liq, last_research_at FROM candidates WHERE mint IN ({marks})",
+                list(best))}
         except Exception:  # noqa: BLE001
             return set()
         out = set()
@@ -201,10 +202,21 @@ class SurgeRadar:
                 out.add(mint)
                 continue
             mc, liq = pair.market_cap or pair.fdv, pair.liquidity_usd
+            max_age = float(getattr(self.s, "max_token_age_hours", 0) or 0)
+            created = getattr(pair, "pair_created_at", None)
+            if (max_age and created and cand["state"] == "DISCOVERED" and not cand.get("last_research_at")
+                    and (now - created) / 3600 > max_age):
+                # v4.5.1: a trending/boosted coin whose pool is older than the limit would only be researched
+                # to be rejected by the prefilter ("pool age 19207h exceeds max 8h"): reject it here for free
+                age = (now - created) / 3600
+                self.db.set_state(mint, "REJECTED", next_research_at=None, last_action="REJECT",
+                                  reasons=[f"prefilter: pool age {age:.0f}h exceeds max {max_age:.0f}h (seen by the radar)"])
+                out.add(mint)
+                continue
             prior = max([x for x in (cand.get("peak_mcap"), RG.recorded_peak(self.db, mint)) if x], default=None)
             why = RG.confirmed(mc, liq, True, prior, cand.get("peak_liq"), self.s)
             if why:
-                RG.block(self.db, mint, f"{why} (seen by the surge radar)", now)
+                RG.block(self.db, mint, f"{why} (seen by the surge radar)", now, last_action="REJECT")
                 out.add(mint)
         return out
 

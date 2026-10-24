@@ -3,6 +3,18 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v4.5.1 - Rug blocks only for coins that are really gone; fewer wasted researches
+
+- A coin is blocked as "died" only at $5K or less after a $10K+ high, or after a 90%+ fall. v4.5.0 also
+  blocked coins that fell to 0.3x but were alive ($ChatGPT at $65K after $386K). Coins blocked under
+  that rule are released at startup (back to rejected, not re-queued).
+- When the on-chain mint read fails (RPC rate limit), RugCheck's "revoked" answer now passes the mint
+  and freeze authority checks. Before, only an active authority was taken from RugCheck, so a revoked
+  one stayed unknown and the coin became INSUFFICIENT DATA.
+- The surge radar rejects never-researched pools older than `max_token_age_hours` from its own data
+  (USDC, Magic Eden, Take-Two came from trending feeds and were researched only to be rejected).
+- A coin the radar blocks shows as REJECT in the decisions list, not its previous decision.
+
 ## v4.5.0 - No rugs in the queue, the Watching tab or the radar; the brain obeys the risk system
 
 Operator: "stop even allowing rug coins to show up", "stop tracking coins on the watchlist for super
