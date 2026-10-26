@@ -1,6 +1,6 @@
 """Northstar application slash commands. Commands are read-only except watchlist and admin controls."""
 from __future__ import annotations
-import asyncio, json, logging, threading, time
+import asyncio, json, logging, threading, time, sqlite3
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -13,13 +13,72 @@ log = logging.getLogger('northstar.discord.commands')
 
 class NorthstarCommands(commands.Bot):
     def __init__(self, settings, db_path: str):
-        intents = discord.Intents.none(); intents.guilds = True
+        intents = discord.Intents.none(); intents.guilds = True; intents.members = True
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.settings, self.db_path = settings, db_path
         self.started_at = time.time()
         self.paused = False
+        self._vip_expiry_task = None
+
+    def init_vip_storage(self):
+        # Keep VIP expiry data in the existing Northstar SQLite database.
+        with sqlite3.connect(self.db_path, timeout=15) as conn:
+            conn.execute('''CREATE TABLE IF NOT EXISTS northstar_temporary_roles (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                role_id INTEGER NOT NULL,
+                expires_at REAL NOT NULL,
+                granted_by INTEGER,
+                PRIMARY KEY (guild_id, user_id, role_id)
+            )''')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_northstar_temporary_roles_expiry ON northstar_temporary_roles(expires_at)')
+            conn.commit()
+
+    async def vip_expiry_worker(self):
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                now = time.time()
+                with sqlite3.connect(self.db_path, timeout=15) as conn:
+                    conn.row_factory = sqlite3.Row
+                    rows = conn.execute(
+                        'SELECT guild_id,user_id,role_id FROM northstar_temporary_roles WHERE expires_at <= ?',
+                        (now,)
+                    ).fetchall()
+                for row in rows:
+                    guild = self.get_guild(int(row['guild_id']))
+                    role = guild.get_role(int(row['role_id'])) if guild else None
+                    if guild and role:
+                        try:
+                            member = await guild.fetch_member(int(row['user_id']))
+                            if role in member.roles:
+                                await member.remove_roles(role, reason='Temporary Northstar VIP role expired')
+                        except discord.NotFound:
+                            pass
+                        except discord.Forbidden:
+                            log.error('Cannot remove expired VIP role %s in guild %s: missing permissions',
+                                      row['role_id'], row['guild_id'])
+                            continue
+                        except Exception:
+                            log.exception('Failed to expire VIP role for user %s', row['user_id'])
+                            continue
+                    # Expiry is final even if the member left the server or the role was deleted.
+                    with sqlite3.connect(self.db_path, timeout=15) as conn:
+                        conn.execute(
+                            'DELETE FROM northstar_temporary_roles WHERE guild_id=? AND user_id=? AND role_id=?',
+                            (row['guild_id'], row['user_id'], row['role_id'])
+                        )
+                        conn.commit()
+            except Exception:
+                log.exception('Temporary VIP role expiry check failed')
+            await asyncio.sleep(60)
 
     async def setup_hook(self):
+        try:
+            self.init_vip_storage()
+            self._vip_expiry_task = asyncio.create_task(self.vip_expiry_worker())
+        except Exception:
+            log.exception('Temporary VIP role system could not initialize')
         try:
             synced = await self.tree.sync()
             log.info('Synced %d Northstar slash commands', len(synced))
@@ -263,6 +322,58 @@ def install_commands(bot: NorthstarCommands):
             await _reply(interaction, content='Command failed. The error was logged; no data was fabricated.')
         except Exception:
             log.exception('could not report slash command failure')
+
+    @bot.tree.command(name='viprole', description='Admin: assign a role that expires after a number of days')
+    @app_commands.describe(member='Member receiving VIP access', role='VIP role to assign', days='How many days the role lasts (1–365)')
+    async def viprole(interaction: discord.Interaction, member: discord.Member, role: discord.Role, days: app_commands.Range[int, 1, 365]):
+        if not bot.admin_only(interaction):
+            return await _reply(interaction, content='Administrator permission required.')
+        if interaction.guild is None:
+            return await _reply(interaction, content='Use this command inside your Discord server.')
+        if role.is_default() or role.managed:
+            return await _reply(interaction, content='Choose a normal, assignable server role.')
+        if role >= interaction.guild.me.top_role:
+            return await _reply(interaction, content='Move the Northstar bot role above the VIP role in Server Settings → Roles.')
+        await _ack(interaction)
+        expires_at = time.time() + int(days) * 86400
+        try:
+            await member.add_roles(role, reason=f'Temporary VIP role for {days} day(s), assigned by {interaction.user}')
+            with sqlite3.connect(bot.db_path, timeout=15) as conn:
+                conn.execute('''INSERT INTO northstar_temporary_roles
+                    (guild_id,user_id,role_id,expires_at,granted_by) VALUES (?,?,?,?,?)
+                    ON CONFLICT(guild_id,user_id,role_id) DO UPDATE SET
+                    expires_at=excluded.expires_at, granted_by=excluded.granted_by''',
+                    (interaction.guild.id, member.id, role.id, expires_at, interaction.user.id))
+                conn.commit()
+        except discord.Forbidden:
+            return await _reply(interaction, content='Discord denied the role change. Check the bot role hierarchy and Manage Roles permission.')
+        except Exception:
+            log.exception('Could not save temporary VIP role')
+            return await _reply(interaction, content='Could not save the VIP expiry. Check the server logs.')
+        expiry_text = discord.utils.format_dt(discord.utils.utcnow().fromtimestamp(expires_at, tz=discord.utils.utcnow().tzinfo), style='F')
+        await _reply(interaction, embed=_embed('⏳ TEMPORARY VIP ROLE',
+            f'{member.mention} received {role.mention}.\nDuration: **{days} day(s)**\nExpires: {expiry_text}'))
+
+    @bot.tree.command(name='viptime', description='Admin: check when a member’s temporary VIP role expires')
+    @app_commands.describe(member='Member to check')
+    async def viptime(interaction: discord.Interaction, member: discord.Member):
+        if not bot.admin_only(interaction):
+            return await _reply(interaction, content='Administrator permission required.')
+        if interaction.guild is None:
+            return await _reply(interaction, content='Use this command inside your Discord server.')
+        with sqlite3.connect(bot.db_path, timeout=15) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute('''SELECT role_id,expires_at FROM northstar_temporary_roles
+                WHERE guild_id=? AND user_id=? ORDER BY expires_at''',
+                (interaction.guild.id, member.id)).fetchall()
+        if not rows:
+            return await _reply(interaction, content=f'No active temporary VIP expiry is recorded for {member.mention}.')
+        lines = []
+        for row in rows:
+            role = interaction.guild.get_role(int(row['role_id']))
+            role_name = role.mention if role else f"Deleted role ({row['role_id']})"
+            lines.append(f'{role_name} — expires {discord.utils.format_dt(discord.utils.utcnow().fromtimestamp(float(row["expires_at"]), tz=discord.utils.utcnow().tzinfo), style="F")}')
+        await _reply(interaction, embed=_embed('⏳ VIP EXPIRY', f'{member.mention}\n' + '\n'.join(lines)))
 
     @bot.tree.command(name='research', description='Research a Solana token address')
     @app_commands.describe(token='Solana mint address')
