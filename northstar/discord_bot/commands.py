@@ -72,31 +72,82 @@ class NorthstarCommands(commands.Bot):
             except Exception:
                 log.exception('Temporary VIP role expiry check failed')
             await asyncio.sleep(60)
-
+```python
     async def setup_hook(self):
+        # Initialize temporary VIP role storage and expiry worker.
         try:
             self.init_vip_storage()
-            self._vip_expiry_task = asyncio.create_task(self.vip_expiry_worker())
+
+            if self._vip_expiry_task is None or self._vip_expiry_task.done():
+                self._vip_expiry_task = asyncio.create_task(
+                    self.vip_expiry_worker()
+                )
+
         except Exception:
-            log.exception('Temporary VIP role system could not initialize')
+            log.exception(
+                "Temporary VIP role system could not initialize"
+            )
+
+        # Sync slash commands globally.
         try:
             synced = await self.tree.sync()
-            log.info('Synced %d Northstar slash commands', len(synced))
+
+            log.info(
+                "Synced %d global Northstar slash commands: %s",
+                len(synced),
+                [command.name for command in synced],
+            )
+
         except Exception:
-            log.exception('Slash command sync failed')
+            log.exception("Global slash command sync failed")
+
+        # Sync commands directly to your Discord server.
+        try:
+            import os
+
+            guild_id = os.getenv("DISCORD_GUILD_ID")
+
+            if not guild_id:
+                log.warning(
+                    "DISCORD_GUILD_ID is missing. "
+                    "Server-specific slash command sync skipped."
+                )
+                return
+
+            guild = discord.Object(id=int(guild_id))
+
+            # Copy global command definitions to the target server.
+            self.tree.copy_global_to(guild=guild)
+
+            guild_synced = await self.tree.sync(guild=guild)
+
+            log.info(
+                "Synced %d server-specific Northstar slash commands: %s",
+                len(guild_synced),
+                [command.name for command in guild_synced],
+            )
+
+        except Exception:
+            log.exception("Server-specific slash command sync failed")
 
     async def on_ready(self):
-        log.info('Northstar commands online as %s', self.user)
+        log.info("Northstar commands online as %s", self.user)
 
     def db(self):
-        d = Database(self.db_path); d.open(); return d
+        d = Database(self.db_path)
+        d.open()
+        return d
 
     async def adb(self):
-        """Open the database off the event loop (integrity check + schema write can be slow)."""
+        """Open the database off the event loop."""
         return await asyncio.to_thread(self.db)
 
     def admin_only(self, interaction: discord.Interaction) -> bool:
-        return bool(interaction.guild and interaction.user.guild_permissions.administrator)
+        return bool(
+            interaction.guild
+            and interaction.user.guild_permissions.administrator
+        )
+```
 
 
 bot_ref = None
