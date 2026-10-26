@@ -72,7 +72,7 @@ class NorthstarCommands(commands.Bot):
             except Exception:
                 log.exception('Temporary VIP role expiry check failed')
             await asyncio.sleep(60)
-```python
+python
     async def setup_hook(self):
         # Initialize temporary VIP role storage and expiry worker.
         try:
@@ -147,7 +147,6 @@ class NorthstarCommands(commands.Bot):
             interaction.guild
             and interaction.user.guild_permissions.administrator
         )
-```
 
 
 bot_ref = None
