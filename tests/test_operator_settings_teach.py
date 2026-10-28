@@ -132,3 +132,19 @@ async def test_engine_applies_dashboard_values_over_learned_ones(settings, db):
     assert settings.min_opportunity_score == 42
     await eng._learning_sync()                      # the learned 70 never overwrites the operator's 42
     assert settings.min_opportunity_score == 42
+
+
+def test_text_setting_made_of_digits_stays_text(db, settings):
+    """v4.4.1 live report: saving a Discord channel id in twitter_feed_channel_ids was refused
+    ("Input should be a valid string") because the digits were read as a number."""
+    from northstar import operator_settings as OS
+    v = OS.set_value(db, settings, "twitter_feed_channel_ids", "1563216711522721856")
+    assert v == "1563216711522721856" and settings.twitter_feed_channel_ids == "1563216711522721856"
+    v = OS.set_value(db, settings, "twitter_feed_channel_ids", " 1563216711522721856, 1563216711522721857 ")
+    assert v == "1563216711522721856, 1563216711522721857"
+    settings.twitter_feed_channel_ids = ""
+    assert OS.apply(db, settings)["twitter_feed_channel_ids"] == "1563216711522721856, 1563216711522721857"
+    from northstar import social_feed as SF
+    assert SF.channels(settings) == ["1563216711522721856", "1563216711522721857"]
+    # number settings still read numbers
+    assert OS.set_value(db, settings, "twitter_feed_seconds", "5") == 5.0

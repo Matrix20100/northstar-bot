@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Optional
+from typing import Any, Optional, get_args
 
 log = logging.getLogger("northstar.operator_settings")
 
@@ -54,13 +54,26 @@ def needs_restart(key: str) -> bool:
     return any(h in key for h in RESTART_HINTS)
 
 
+def _wants_text(s, key: str) -> bool:
+    """True for a plain text setting (str, or Optional[str]): its value is never read as JSON."""
+    ann = type(s).model_fields[key].annotation
+    if ann is str:
+        return True
+    args = set(get_args(ann))
+    return bool(args) and str in args and args <= {str, type(None)}
+
+
 def validate(s, key: str, raw: Any) -> Any:
     """The value as the bot would hold it, validated like a .env value. Raises ValueError."""
     if not editable(s, key):
         raise ValueError(f"{key} cannot be changed from the dashboard")
     if isinstance(raw, str):
         txt = raw.strip()
-        if txt.lower() in ("", "none", "null"):
+        if _wants_text(s, key):
+            # v4.4.1: a text setting keeps what was typed. "1563216711522721856" (a channel id list) must
+            # not become a number: the field only accepts text and the value was refused
+            raw = txt
+        elif txt.lower() in ("", "none", "null"):
             raw = None
         else:
             try:
