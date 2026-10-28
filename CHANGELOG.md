@@ -3,6 +3,16 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.1.2 - Test mode needs a funded wallet, and says so
+
+- Every simulated buy failed with "simulation failed: AccountNotFound": the bot's wallet had 0 SOL. A simulation spends
+  nothing, but Solana runs it against the wallet's real balance, and an empty wallet does not exist on-chain yet.
+  The balance check (trade + fee reserve) now applies in test mode too, so the Trading tab shows "wallet balance 0 SOL
+  under 0.13 ... test mode spends nothing, but a simulated buy still needs the SOL in the wallet" instead of a failed
+  simulation, and an AccountNotFound simulation error is explained in plain words.
+- Tests: the fake Discord bot in tests/test_commands.py gained `event`, `copy_global_to` and `sync(guild=...)`, used by
+  the VIP role commands; the 15 command tests run again.
+
 ## v5.1.0 - Conviction-graded exits: educated risks
 
 Operator: "the bot was down on coins and sold, now it ran to 2x. A bot should have a risk factor by analysing

@@ -183,3 +183,26 @@ def test_a_trailing_exit_under_the_entry_does_not_claim_a_profit():
     assert "TRAIL" in ev and "keep the profit" not in ev["TRAIL"] and "below your entry" in ev["TRAIL"]
     ev = dict(TP.evaluate(p, 2.8, 5.0, 600, {"TP1", "TP2"}, lambda v: f"${v:,.0f}"))
     assert "keep the profit" in ev["TRAIL"]
+
+
+def test_test_mode_needs_a_funded_wallet_and_says_so(db, monkeypatch):
+    from test_exits_live_v500 import _call, _live
+    t, chain, built, dex, m = _live(db, test_mode=True)
+    chain.balance = 0.0                                           # a new, empty wallet
+    monkeypatch.setattr(PT, "calls_since", lambda *_a, **_k: _call(m))
+    assert asyncio.run(t.run_once())["bought"] == 0
+    row = db.fetchone("SELECT * FROM live_trades")
+    assert row["status"] == "SKIPPED" and "test mode spends nothing" in row["error"]
+    assert "simulateTransaction" not in chain.calls               # no doomed simulation
+
+
+def test_account_not_found_is_explained(db):
+    from test_exits_live_v500 import _live
+    from northstar.live import TradeError
+    t, chain, *_ = _live(db, test_mode=True)
+
+    async def sim(method, params, cache_ttl=0):
+        return {"value": {"err": "AccountNotFound", "logs": []}}
+    chain.call = sim
+    with pytest.raises(TradeError, match="no SOL on-chain"):
+        asyncio.run(t._send(b"x", simulate=True))

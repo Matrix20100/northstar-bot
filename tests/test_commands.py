@@ -86,12 +86,20 @@ def fake_discord():
             self.on_error = fn
             return fn
 
-        async def sync(self):
+        async def sync(self, guild=None):
             return list(self.commands)
+
+        def copy_global_to(self, guild=None):
+            return None
 
     class Bot:
         def __init__(self, command_prefix=None, intents=None):
             self.tree = Tree()
+            self.events = {}
+
+        def event(self, fn):                      # discord.py: register an event handler by its name
+            self.events[fn.__name__] = fn
+            return fn
 
     app_commands = types.ModuleType("discord.app_commands")
     app_commands.describe = lambda **kw: (lambda fn: fn)
