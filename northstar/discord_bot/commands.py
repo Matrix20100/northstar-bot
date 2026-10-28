@@ -469,7 +469,8 @@ def install_commands(bot: NorthstarCommands):
                 pass
 
     bot.on_more_info = on_interaction
-    bot.event(on_interaction)
+    if hasattr(bot, "event"):          # the test double has no .event; a real discord Bot always does
+        bot.event(on_interaction)
 
     @bot.tree.error
     async def on_tree_error(interaction: discord.Interaction, error):
