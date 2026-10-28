@@ -263,30 +263,47 @@ def _red_flags(r: dict) -> list:
     return [x.get("key") for x in v.get("red") or [] if isinstance(x, dict) and x.get("key")]
 
 
-def discrimination(rows: list[dict], base: dict, keyfn) -> list[dict]:
-    """For each gate/flag: does it fire more on rugs than on runners, relative to the base rates?
+def discrimination(rows: list[dict], keyfn, population=None) -> list[dict]:
+    """For each gate/flag: among coins where it COULD fire, does it fire more on rugs than on runners?
 
-    lift_rug    = rug rate among coins with the signal / overall rug rate     (>1 = catches rugs)
-    lift_runner = runner rate among coins with it    / overall runner rate   (>1 = blocks runners)
-    A signal with lift_runner >= 1 and lift_rug <= 1 rejects good coins without catching rugs.
+    Compares coins WITH the signal against coins WITHOUT it inside the same population (the coins
+    that reached the stage where the signal is evaluated). v2.5.1 compared against every decision,
+    which is dominated by dead low-liquidity coins, so any active coin looked "riskier and better"
+    and almost every signal came out as a "weak signal".
+
+    lift_rug    = rug rate with the signal / rug rate without it       (>1 = catches rugs)
+    lift_runner = runner rate with it      / runner rate without it    (>1 = blocks runners)
     """
     out = []
-    for name, st in _group(rows, keyfn).items():
-        if name == "(none)":
-            continue
+    pop = [r for r in rows if population(r)] if population else list(rows)
+    names = sorted({k for r in pop for k in (keyfn(r) or []) if k != "(none)"})
+    for name in names:
+        w = [r for r in pop if name in (keyfn(r) or [])]
+        wo = [r for r in pop if name not in (keyfn(r) or [])]
+        st, base = _rates(w), _rates(wo)
         lr = (st["rug_pct"] / base["rug_pct"]) if base.get("rug_pct") else None
         lw = (st["runner_pct"] / base["runner_pct"]) if base.get("runner_pct") else None
-        if st["small_sample"] or lr is None or lw is None:
+        if st["small_sample"] or base["small_sample"] or lr is None or lw is None:
             verdict = "too few to judge"
+        elif lr >= 1.25 and lw <= 0.8:
+            verdict = "catches rugs"
         elif lw >= 1 and lr <= 1:
             verdict = "blocks runners, does not catch rugs"
-        elif lr >= 1.25 and lw < 1:
-            verdict = "catches rugs"
         else:
-            verdict = "weak signal"
-        out.append({"signal": name, **st, "lift_rug": None if lr is None else round(lr, 2),
+            verdict = "no clear effect"
+        out.append({"signal": name, **st, "without": {k: base[k] for k in ("n", "runner_pct", "rug_pct")},
+                    "lift_rug": None if lr is None else round(lr, 2),
                     "lift_runner": None if lw is None else round(lw, 2), "verdict": verdict})
     return out
+
+
+def _gate_population(r: dict) -> bool:
+    return bool((r.get("report") or {}).get("gates"))
+
+
+def _flag_population(r: dict) -> bool:
+    rep = r.get("report") or {}
+    return bool((rep.get("verdict") or {}).get("level")) and bool(rep.get("holders")) and bool(rep.get("trades"))
 
 
 # ----------------------------------------------------------------------------- replay
@@ -376,8 +393,8 @@ def audit(path: str, s: Any = None) -> dict:
         "decisions_by_action": _group(decided, "action"),
         "rejections_by_reason": _group(rejected, lambda r: [reason_family(_reasons_of(r))]),
         "rejections_by_stage": _group(rejected, "stage"),
-        "gate_discrimination": discrimination(decided, base, lambda r: _failed_gates(r) or ["(none)"]),
-        "flag_discrimination": discrimination(decided, base, lambda r: _red_flags(r) or ["(none)"]),
+        "gate_discrimination": discrimination(decided, _failed_gates, _gate_population),
+        "flag_discrimination": discrimination(decided, _red_flags, _flag_population),
         "false_rejections": sum(1 for r in rejected if r["label"] == RUNNER),
         "rugs_called": sum(1 for r in calls if r["label"] == RUG),
     }
@@ -415,7 +432,8 @@ def format_audit(a: dict) -> str:
     L += [_line(k, v) for k, v in a["rejections_by_reason"].items()]
     for title, key in (("FAILED GATES — do they separate rugs from runners?", "gate_discrimination"),
                        ("RUG-CHECK RED FLAGS", "flag_discrimination")):
-        L += ["", title, f"  {'signal':<30}{'coins':>6}{'runner':>9}{'rug':>9}{'rug lift':>10}{'run lift':>10}  verdict"]
+        L += ["", title + " (with vs without, same stage)",
+              f"  {'signal':<30}{'coins':>6}{'runner':>9}{'rug':>9}{'rug lift':>10}{'run lift':>10}  verdict"]
         for d in sorted(a[key], key=lambda d: -d["n"])[:25]:
             L.append(f"  {d['signal'][:30]:<30}{d['n']:>6}{(d['runner_pct'] or 0):>8.1f}%{(d['rug_pct'] or 0):>8.1f}%"
                      f"{(d['lift_rug'] or 0):>10.2f}{(d['lift_runner'] or 0):>10.2f}  {d['verdict']}")

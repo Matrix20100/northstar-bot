@@ -193,6 +193,15 @@ class Settings(BaseSettings):
     # true = v2.4 behaviour: too few narrative evidence items REJECTS the coin. false (default):
     # it caps the decision at WATCH and lowers confidence — missing optional data is not danger.
     u_narrative_blocks: bool = False
+    # v2.5.2 (operator decision 21 Oct): LP that is measured as NOT locked/burned.
+    #   warn  = callable, shown as a warning on the post, risk never LOW (live history: 131 such
+    #           coins, 40 ran, 37 rugged - fewer rugs than average)
+    #   block = v2.5.1 behaviour: never called
+    lp_unlocked_policy: str = "warn"
+    # v2.5.2: holder-concentration gate caps at WATCH instead of rejecting (live history: failing
+    # coins ran 20% / rugged 25% vs 26% / 31% for passing ones - it did not catch rugs). RugCheck's
+    # own holder dangers (single holder, top-10 ownership) still reject: those did catch rugs.
+    u_holder_concentration_blocks: bool = False
     # exit cost at the largest Jupiter-tested sell size that filled (default sizes 100/500/1000)
     u_exit_impact_warn_pct: float = 5.0    # serious warning: caps the decision at WATCH
     u_exit_impact_block_pct: float = 15.0  # this much impact disqualifies a call
@@ -246,7 +255,9 @@ class Settings(BaseSettings):
     # Posted with a loud RUG banner and this much tighter plan. Coins that can trap you
     # (mint/freeze authority, transfer fees, LP that can be pulled, liquidity already being pulled)
     # are never posted, not even as a scalp.
-    scalp_enabled: bool = True
+    # v2.5.2: off by default. On the live history (17-21 Oct) rug scalps were 37 of 41 calls and
+    # lost ~7% per call on their real price paths with the learned scalp plan (10 wins of 28).
+    scalp_enabled: bool = False
     scalp_min_market_cap: float = 50_000.0
     scalp_min_liquidity: float = 15_000.0
     scalp_require_surge: bool = True        # only when the radar sees money flowing in right now
@@ -321,6 +332,14 @@ class Settings(BaseSettings):
     db_filename: str = "northstar.db"
     log_level: str = "INFO"
     log_json: bool = True
+
+    @field_validator("lp_unlocked_policy")
+    @classmethod
+    def _lp_policy(cls, v: str) -> str:
+        v = str(v).strip().lower()
+        if v not in {"warn", "block"}:
+            raise ValueError("lp_unlocked_policy must be warn or block")
+        return v
 
     @field_validator("max_allowed_risk")
     @classmethod

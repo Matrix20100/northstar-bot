@@ -119,7 +119,7 @@ SECURITY_GATES = {"mint_authority", "freeze_authority", "token_extensions", "min
 # A FAIL here means a configured threshold was crossed. Serious, but not proof of a trap, so it
 # warns and caps the decision instead of rejecting outright.
 THRESHOLD_GATES = {"holder_concentration", "creator_holdings", "creator_dumping", "launch_bundle",
-                   "liquidity", "price_fresh", "bundled_supply"}
+                   "liquidity", "price_fresh", "bundled_supply", "source_consistency"}
 
 # One fact, one entry. The gate, the verdict flag AND the scoring check that describe the same
 # thing share a canonical key: once a hazard is vetoed (at any severity) its scoring check is
@@ -145,7 +145,8 @@ HAZARD_ALIASES = {
     "flag:serial_launcher": "haz:serial", "dev:volume": "haz:serial",
     "gate:launch_bundle": "haz:bundle", "flag:bundle": "haz:bundle", "flag:bundle_big": "haz:bundle",
     # liquidity / LP / exit
-    "gate:lp_lock": "haz:lp", "flag:lp_not_locked": "haz:lp", "flag:lp_partial": "haz:lp",
+    "gate:lp_lock": "haz:lp", "gate:lp_unlocked_rugcheck": "haz:lp",
+    "flag:lp_not_locked": "haz:lp", "flag:lp_partial": "haz:lp",
     "flag:lp_concentrated": "haz:lp", "lp:withdrawable": "haz:lp", "clean:lp": "haz:lp",
     "gate:liquidity_removal": "haz:liq_removal", "flag:liquidity_removal": "haz:liq_removal",
     "clean:liquidity_removal": "haz:liq_removal",
@@ -323,18 +324,46 @@ def _cause(report: dict, gate_name: str) -> str:
     return CAUSE_NOT_MEASURED
 
 
+LP_WARN_TAG = "LP NOT LOCKED (allowed with a warning) — "
+LP_WARN_GATES = ("lp_lock", "lp_unlocked_rugcheck")
+
+
+def lp_warning_mode(report: dict, s: Any = None) -> bool:
+    """True when a measured unlocked LP is to be treated as a callable warning.
+
+    The research step marks the lp_lock FAIL non-critical under NORTHSTAR_LP_UNLOCKED_POLICY=warn;
+    a critical lp_lock FAIL (policy block, or a report from older code) stays a hard veto.
+    """
+    if str(getattr(s, "lp_unlocked_policy", "block")).lower() != "warn":
+        return False
+    gates = [g for g in report.get("gates") or [] if isinstance(g, dict) and g.get("name") in LP_WARN_GATES
+             and g.get("status") == "FAIL"]
+    # a critical LP failure anywhere (policy block, older report) keeps the hard veto
+    return bool(gates) and all(g.get("critical") is False for g in gates)
+
+
 def build_vetoes(report: dict, led: Ledger, s: Any = None) -> None:
     """Hazards, graded. Nothing here is compensatory and nothing here can be outscored."""
     gates = [g for g in report.get("gates") or [] if isinstance(g, dict)]
     verdict = report.get("verdict") if isinstance(report.get("verdict"), dict) else {}
+    lp_warn = lp_warning_mode(report, s)
 
     for g in gates:
         name, status, reason = g.get("name") or "gate", g.get("status"), g.get("reason") or ""
         critical = bool(g.get("critical", True))
+        if status == "FAIL" and name in LP_WARN_GATES and lp_warn and g.get("critical") is False:
+            # measured unlocked LP under NORTHSTAR_LP_UNLOCKED_POLICY=warn: a warning the call
+            # must carry, never a silent pass (risk is held at MODERATE or worse in _risk)
+            led.veto(f"gate:{name}", UNVERIFIED_SUSPICION, "🔓 " + reason.replace(LP_WARN_TAG, "")
+                     + " — size small", grade=FACT)
+            continue
         if status == "FAIL":
             trap = name in SECURITY_GATES or (critical and name not in THRESHOLD_GATES)
+            blocking = not trap
+            if name == "holder_concentration" and not getattr(s, "u_holder_concentration_blocks", False):
+                blocking = False      # caps at WATCH; did not catch rugs on the live history
             led.veto(f"gate:{name}", CONFIRMED_CRITICAL if trap else STRONG_WARNING,
-                     f"{name.replace('_', ' ')}: {reason}", blocking=not trap)
+                     f"{name.replace('_', ' ')}: {reason}", blocking=blocking)
         elif status == "UNKNOWN" and name in CRITICAL_CHECKS:
             # without a trap check there is no way to call anything clean
             led.veto(f"gate:{name}", UNRESOLVED,
@@ -376,6 +405,8 @@ def build_vetoes(report: dict, led: Ledger, s: Any = None) -> None:
         if not key:
             continue
         crash, seen = _num(r.get("crash_rate")), _num(r.get("seen")) or 0
+        if lp_warn and HAZARD_ALIASES.get(f"flag:{key}") == "haz:lp":
+            continue          # the LP fact is already carried as the LP warning above
         if key in PROVEN_TRAPS or level == "critical":
             led.veto(f"flag:{key}", CONFIRMED_CRITICAL, text)
         elif crash is not None and seen >= 10:
@@ -847,6 +878,13 @@ def _verdict_level_deduped(verdict: dict) -> str:
 
 
 def _risk(vetoes: list[Veto], verdict: dict, completeness: float) -> str:
+    risk = _risk_raw(vetoes, verdict, completeness)
+    if risk == RISK_LOW and any(v.key == "haz:lp" and v.severity != UNRESOLVED for v in vetoes):
+        risk = RISK_MODERATE   # liquidity that can be withdrawn is never "low risk"
+    return risk
+
+
+def _risk_raw(vetoes: list[Veto], verdict: dict, completeness: float) -> str:
     if any(v.severity == CONFIRMED_CRITICAL for v in vetoes):
         return RISK_EXTREME
     strong = [v for v in vetoes if v.severity == STRONG_WARNING]
@@ -1257,11 +1295,14 @@ def panel_text(u: dict, max_lines: int = 4) -> str:
         lines.append(f"🔺 {t}")
     for t in (u.get("unresolved") or [])[:2]:
         lines.append(f"⚪ {t}")
+    for t in u.get("suspicions") or []:
+        if t.startswith("🔓"):
+            lines.append(f"⚠️ {t}")          # the LP warning always shows on the post
     for t in ((u.get("timing") or []) + (u.get("evidence_gaps") or []))[:2]:
         lines.append(f"⏳ {t}")
     for t in (u.get("conflicts") or [])[:1]:
         lines.append(f"⚠️ sources disagree — {t}")
-    for t in (u.get("penalty_reasons") or [])[:2]:
+    for t in [x for x in (u.get("penalty_reasons") or []) if not x.startswith("🔓")][:2]:
         lines.append(f"❔ {t}")
     for t in (u.get("positives") or [])[:max_lines]:
         lines.append(f"✅ {t}")

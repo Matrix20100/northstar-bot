@@ -233,13 +233,14 @@ def assess_liquidity(pair: PairInfo, rugcheck: Optional[dict], history: list[dic
 
     lp_status, lp_pct = _lp_status(pair, rugcheck, flags)
     if s.require_lp_lock_verified:
-        gates.append(lp_gate(lp_status.value, lp_pct, liq, s.min_liquidity_usd))
+        gates.append(lp_gate(lp_status.value, lp_pct, liq, s.min_liquidity_usd,
+                             getattr(s, "lp_unlocked_policy", "block")))
     return LiquidityAssessment(liq_d, liq_mcap, liq_fdv, lp_status, lp_pct, age_h, max_recent, drop, vol_liq,
                                flags, gates)
 
 
 def lp_gate(lp_text: Optional[str], lp_pct: Optional[float], liq: Optional[float],
-            min_liquidity: float) -> GateResult:
+            min_liquidity: float, policy: str = "block") -> GateResult:
     """The lp_lock gate for ONE pool, keeping PASS / FAIL / UNKNOWN semantically distinct.
 
     v2.4 returned UNKNOWN for anything that was not fully locked — including a MEASURED partial
@@ -257,9 +258,29 @@ def lp_gate(lp_text: Optional[str], lp_pct: Optional[float], liq: Optional[float
         return GateResult("lp_lock", GateStatus.PASS, text)
     if lp_text and lp_text.startswith("PARTIAL") and lp_pct is not None:
         locked = f" (about ${liq * lp_pct / 100.0:,.0f} of ${liq:,.0f})" if liq else ""
-        return GateResult("lp_lock", GateStatus.FAIL,
-                          f"{text}{locked} — the unlocked LP can be withdrawn by its holder")
+        return unlocked_lp_gate(f"{text}{locked} — the unlocked LP can be withdrawn by its holder", policy)
     return GateResult("lp_lock", GateStatus.UNKNOWN, text)
+
+
+LP_WARN_PREFIX = "LP NOT LOCKED (allowed with a warning) — "
+LP_UNLOCK_DANGER_WORDS = ("lp unlocked", "liquidity unlocked")
+
+
+def is_lp_unlock_danger(name) -> bool:
+    return any(w in str(name or "").lower() for w in LP_UNLOCK_DANGER_WORDS)
+
+
+def unlocked_lp_gate(reason: str, policy: str = "block") -> GateResult:
+    """A MEASURED unlocked/withdrawable LP. Still a FAIL either way (the fact does not change).
+
+    policy "block": critical — the coin is never called (v2.5.1).
+    policy "warn":  non-critical — the unified engine records it as a warning the call must carry,
+                    and the risk class is never LOW (operator decision, 21 Oct 2026, after the
+                    live history showed these coins rugging less often than average).
+    """
+    if policy == "warn":
+        return GateResult("lp_lock", GateStatus.FAIL, LP_WARN_PREFIX + reason, critical=False)
+    return GateResult("lp_lock", GateStatus.FAIL, reason)
 
 
 LOCKED_KINDS = ("BURNED", "LOCKED", "BONDING")
@@ -417,6 +438,14 @@ def rugcheck_findings(rc: Optional[dict], s: Settings, price_usd: Optional[float
         level = str(r.get("level", "")).lower()
         msg = f"RugCheck: {r.get('name')}" + (f" — {r.get('description')}" if r.get("description") else "")
         if level == "danger":
+            if getattr(s, "lp_unlocked_policy", "block") == "warn" and is_lp_unlock_danger(r.get("name")):
+                # under the warn policy this is a callable warning, never a silent pass: it gets
+                # its own non-critical check instead of failing the hard rugcheck_danger gate (and
+                # no generic RUGCHECK_DANGER flag, which would count the same fact a second time)
+                flags.append(Flag("LP_UNLOCKED_RUGCHECK", Severity.HIGH, msg[:200], DataStatus.OBSERVED))
+                gates.append(GateResult("lp_unlocked_rugcheck", GateStatus.FAIL,
+                                        LP_WARN_PREFIX + f"RugCheck: {r.get('name')}", critical=False))
+                continue
             dangers.append(r.get("name"))
             flags.append(Flag("RUGCHECK_DANGER", Severity.HIGH, msg[:200], DataStatus.OBSERVED))
         elif level == "warn":
@@ -435,12 +464,11 @@ def rugcheck_findings(rc: Optional[dict], s: Settings, price_usd: Optional[float
         if dev > s.max_source_price_discrepancy_pct:
             flags.append(Flag("PRICE_DISCREPANCY", Severity.HIGH,
                               f"DexScreener and RugCheck prices differ by {dev:.0f}%", DataStatus.OBSERVED))
-            # Two providers disagreeing is a confidence problem, not proof the coin is unsafe
-            # (RugCheck's price is often a cached value from an earlier pool). v2.4 FAILED a
-            # critical gate here, which rejected the coin before any analysis ran. It is now
-            # recorded as UNKNOWN (non-critical) and as a contradiction in the unified engine.
-            gates.append(GateResult("source_consistency", GateStatus.UNKNOWN,
-                                    f"price sources disagree by {dev:.0f}%", critical=False))
+            # v2.5.2: blocks calls again. v2.5.0 had made this a confidence note, but on the live
+            # history (17-21 Oct) coins rejected for it rugged 64% of the time (23 of 36) — the
+            # data does not support calling through it. Graded as a risk threshold, not a trap.
+            gates.append(GateResult("source_consistency", GateStatus.FAIL,
+                                    f"price sources disagree by {dev:.0f}%"))
     tok = rc.get("token") or {}
     try:
         rc_supply = int(tok.get("supply")) / 10 ** int(tok.get("decimals"))

@@ -44,6 +44,7 @@ from .analysis.security import (
     check_extensions,
     lp_gate,
     pool_kind,
+    unlocked_lp_gate,
     resolve_lp_floor,
     rugcheck_findings,
 )
@@ -488,7 +489,10 @@ class Researcher:
             "volume_to_liquidity_h1": la.vol_to_liq_h1,
         }
 
-        if any(g.status == GateStatus.FAIL for g in gates):
+        # stop before the expensive analysis only on CRITICAL failures; a non-critical FAIL
+        # (e.g. unlocked LP under NORTHSTAR_LP_UNLOCKED_POLICY=warn) is a warning the full
+        # analysis must still weigh
+        if any(g.status == GateStatus.FAIL and g.critical for g in gates):
             return self._finish(
                 mint,
                 pair,
@@ -2006,9 +2010,10 @@ class Researcher:
             la.lp_status = Datum(text, DataStatus.VERIFIED, "solana_rpc")
             la.lp_locked_pct = pct
             # a measured partial burn is a FACT, not an unknown (v2.4 left the gate UNKNOWN)
-            judged = lp_gate(text, pct, pair.liquidity_usd,
-                             getattr(getattr(self, "s", None), "min_liquidity_usd", 0.0))
-            gate.status, gate.reason = judged.status, judged.reason
+            s_ = getattr(self, "s", None)
+            judged = lp_gate(text, pct, pair.liquidity_usd, getattr(s_, "min_liquidity_usd", 0.0),
+                             getattr(s_, "lp_unlocked_policy", "block"))
+            gate.status, gate.reason, gate.critical = judged.status, judged.reason, judged.critical
             la.flags[:] = [f for f in la.flags if f.code != "LP_STATUS_UNKNOWN"]
             la.flags.append(Flag("LP_NOT_LOCKED", Severity.HIGH if pct < 50 else Severity.MEDIUM,
                                  f"only {pct:.0f}% of LP burned on-chain — remaining liquidity is withdrawable",
@@ -2074,6 +2079,9 @@ class Researcher:
         report["liquidity_breakdown"] = res
         status = {"PASS": GateStatus.PASS, "FAIL": GateStatus.FAIL}.get(res["status"], GateStatus.UNKNOWN)
         gate.status, gate.reason = status, res["reason"]
+        if status == GateStatus.FAIL:
+            judged = unlocked_lp_gate(res["reason"], getattr(self.s, "lp_unlocked_policy", "block"))
+            gate.reason, gate.critical = judged.reason, judged.critical
         verified = any(r.get("verified") for r in rows)
         partial = [r for r in rows if r.get("kind") == "PARTIAL"]
         if status == GateStatus.PASS:
