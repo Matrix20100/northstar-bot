@@ -3,6 +3,54 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.1.4 - The brain's paper account trades again, and shows why it does or doesn't
+
+Operator: "the AI brain does not paper trade, he started a bit then stopped for like a week now."
+
+- Cause: since v4.5.0 (23 Oct) any coin the risk system rated HIGH, or whose decision class was RISK_THRESHOLD /
+  SERIOUS_WARNINGS, was a flat no for the brain. Most researched coins carry one of those, so it almost never bought.
+  Its skip reasons were thrown away, so nobody could see it.
+- HIGH risk and those two classes are now weighed instead: the brain may buy when the setup's conviction grade (which
+  already counts that risk against the coin) is at least `paper_brain_min_conviction` (50). The trade's note says
+  "bought despite HIGH risk (conviction N)". CRITICAL risk, failed launch/holder/creator checks, rug flags, safety
+  failures and RUG LIKELY still block. `paper_brain_min_conviction=101` restores the old blanket veto.
+- Every decision is counted: the Paper tab's brain account shows "What the brain decided" for the last 24 h, and the
+  log prints a summary every hour (`paper[brain]: last 24 h: ...`).
+- Still true: the brain only rates coins with a DEX pool. Bonding-curve coins get no brain odds (it was not trained on
+  them), so those show up as "no brain odds" in the counts.
+
+## v5.1.3 - Verified prices: no more milestones that never happened
+
+Operator: "the bot lies to me, it posts milestones that didn't happen and lies about the current price of a coin."
+$Pumpers (called at $16.6K, real high $20.5K, still on its curve) was posted as "hit 25x, peak 27.10x ($450.7K)";
+$Pilly (called at $26.9K, real high about $40K) showed a $1.06M peak.
+
+- Cause: when a runner call's pump.fun curve could not be read (another launchpad, a non-`pump` mint, a failed RPC
+  read), the tracker took the deepest DexScreener pool listed for the mint, trusted its market cap, and marked the
+  coin migrated. One badly priced pool was enough for a fake 25x post, a fake "current price" and a fake peak.
+- New `northstar/price_guard.py`:
+  - A DexScreener pool is only used if it is quoted in SOL/USDC/USDT and holds real liquidity (at least $1,500 and
+    at least 2% of the market cap it claims). Used by the tracker, paper trading and live trading.
+  - A DexScreener move of 2x or more (up or down) since the last accepted price is checked against Jupiter: what a
+    real 0.05 SOL buy gets now, times the token supply read from the chain. If they disagree, Jupiter's price is used
+    and the disagreement is logged ("price check ... DexScreener says $X but a real buy on Jupiter prices it at $Y").
+    If Jupiter cannot route a buy, an up-jump is not used. If Jupiter cannot be asked, the jump waits.
+  - Only the chain's own "curve complete" moves a call to the pool phase.
+- Covers the milestone posts, the call's current price and peak (Calls tab, VIP embed edits), and the prices paper
+  trading and live trading sell on. Chain reads of a pump.fun curve are exact and are not second-guessed.
+- Peaks already stored for older calls are not rewritten (the true high cannot be known after the fact); their current
+  price corrects itself on the next checked read.
+
+## v5.1.2 - Test mode needs a funded wallet, and says so
+
+- Every simulated buy failed with "simulation failed: AccountNotFound": the bot's wallet had 0 SOL. A simulation spends
+  nothing, but Solana runs it against the wallet's real balance, and an empty wallet does not exist on-chain yet.
+  The balance check (trade + fee reserve) now applies in test mode too, so the Trading tab shows "wallet balance 0 SOL
+  under 0.13 ... test mode spends nothing, but a simulated buy still needs the SOL in the wallet" instead of a failed
+  simulation, and an AccountNotFound simulation error is explained in plain words.
+- Tests: the fake Discord bot in tests/test_commands.py gained `event`, `copy_global_to` and `sync(guild=...)`, used by
+  the VIP role commands; the 15 command tests run again.
+
 ## v5.1.0 - Conviction-graded exits: educated risks
 
 Operator: "the bot was down on coins and sold, now it ran to 2x. A bot should have a risk factor by analysing

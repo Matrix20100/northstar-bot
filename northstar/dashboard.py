@@ -309,6 +309,11 @@ def view_paper(c, s, now: float, account: str = "calls") -> dict:
         r[1] == "account" for r in c.execute("PRAGMA table_info(paper_runs)").fetchall())
     brain = {"min_p": getattr(s, "paper_brain_min_p", 0.15), "max_rug": getattr(s, "paper_brain_max_rug", 0.3),
              "max_open": getattr(s, "paper_brain_max_open", 10), "hold_hours": getattr(s, "paper_brain_hold_hours", 24)}
+    try:                                    # v5.1.4: why the brain did (not) buy, last 24 h
+        row = c.execute("SELECT value FROM meta WHERE key = ?", (PT.SKIP_META_KEY,)).fetchone()
+        brain["skips"] = json.loads(row[0]) if row and row[0] else None
+    except (sqlite3.Error, ValueError, TypeError):
+        brain["skips"] = None
     if not has_account:
         return {"ready": False, "account": account, "brain": brain, "defaults": {"start_usd": getattr(s, "paper_start_usd", 1000.0),
                                              "position_pct": getattr(s, "paper_position_pct", 10.0),

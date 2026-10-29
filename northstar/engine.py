@@ -161,7 +161,10 @@ class Engine:
         self.events = EventFeeds(s, db, cg_markets=getattr(providers, "coingecko_markets", None))
         self.judge = AIJudge(s, db)
         self.early = EarlyCaller(s, db, publisher, self.events, self.judge)
-        self.early_calls = EarlyCallTracker(s, db, publisher, providers.rpc, providers.dex, providers.sol_price)
+        from .price_guard import PriceGuard
+        self.price_guard = PriceGuard(providers.rpc, getattr(providers, "jupiter", None), providers.sol_price)
+        self.early_calls = EarlyCallTracker(s, db, publisher, providers.rpc, providers.dex, providers.sol_price,
+                                            guard=self.price_guard)
         self.curve_radar = (CurveRadar(s, db, providers.dex)
                             if s.early_call_enabled and s.curve_radar_enabled and providers.dex is not None else None)
         self.outcomes = OutcomeTracker(db, providers.dex) if providers.dex else None
@@ -298,6 +301,7 @@ class Engine:
         self.live = (LiveTrader.from_settings(self.s, self.db, getattr(self.p, "rpc", None), getattr(self.p, "dex", None))
                      if getattr(self.s, "trade_wallet_private_key", None) is not None else None)
         if self.live is not None:
+            self.live.guard = getattr(self, "price_guard", None)
             tasks.append(asyncio.create_task(self._loop("live-trader", float(getattr(self.s, "exit_poll_seconds", 10)),
                                                         self._live)))
         if getattr(self.s, "paper_enabled", True):
@@ -1289,7 +1293,8 @@ class Engine:
         """v5.0.0: the exit engine re-reads every open position's pool and sells by the chart (exits.py)."""
         from .paper import ExitManager
         if getattr(self, "exit_manager", None) is None:
-            self.exit_manager = ExitManager(self.s, self.db, getattr(self.p, "dex", None))
+            self.exit_manager = ExitManager(self.s, self.db, getattr(self.p, "dex", None),
+                                            guard=getattr(self, "price_guard", None))
         c = await self.exit_manager.run_once()
         if c["sold"] or c["closed"]:
             log.info("exit engine: %s", c)

@@ -395,6 +395,11 @@ class Settings(BaseSettings):
     paper_brain_max_rug: float = 0.3       # skip coins whose rug odds are at least this
     paper_brain_max_open: int = 10
     paper_brain_hold_hours: float = 24.0
+    # v5.1.4: a coin the risk system rates HIGH (not CRITICAL), or whose decision class is RISK_THRESHOLD /
+    # SERIOUS_WARNINGS, is no longer a flat "no" for the brain: it may buy it when the setup's conviction grade
+    # (which already counts that risk against it) is at least this. CRITICAL risk, failed launch/holder checks,
+    # rug flags, safety failures and RUG LIKELY still block. 101 = the v4.5.0 blanket veto.
+    paper_brain_min_conviction: float = 50.0
     # v5.0.0 LIVE TRADING with real money (live.py). OFF by default; TEST MODE (simulate only) by default.
     trade_enabled: bool = False
     trade_test_mode: bool = True             # build, sign and SIMULATE every trade; never send. Switch off for real money

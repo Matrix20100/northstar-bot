@@ -400,6 +400,10 @@ async function paper(){const d=await api('/api/paper?account='+paperAcct);const 
   +m('Cash',usd2(d.cash),`${num(d.open)} open position${d.open===1?'':'s'} worth ${usd2(d.open_value)}`)
   +m('Closed trades',num(d.closed),d.closed?`${num(d.wins)} in profit · best ${signed(d.best)} · worst ${signed(d.worst)}`:'none closed yet')
   +((d.by_grade||[]).length?`<div class="card metric" style="grid-column:1/-1"><label>Results by conviction grade (closed trades)</label><small>${d.by_grade.map(g=>`<b>${esc(g.grade)}</b>: ${num(g.closed)} closed · ${num(g.wins)} in profit · ${signed(g.pnl)} (${g.cost?spct(100*g.pnl/g.cost):''} of what was put in)`).join(' &nbsp;·&nbsp; ')}</small></div>`:'');
+ // v5.1.4: why the brain did (not) buy in the last 24 h
+ const sk=paperAcct==='brain'?(bz.skips||null):null;
+ if(sk&&sk.considered){const rows=Object.entries(sk.counts||{}).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  $('paperMetrics').innerHTML+=`<div class="card metric" style="grid-column:1/-1"><label>What the brain decided (since ${ago(sk.since)}, ${num(sk.considered)} coins)</label><small>${rows.map(([k,n])=>`<div><b>${num(n)}</b> × ${esc(k==='bought'?'✅ bought':k)}</div>`).join('')}</small></div>`}
  $('paperTrades').innerHTML=d.trades.length?d.trades.map(t=>{const sells=(t.fills||[]).filter(f=>f.kind!=='BUY').map(f=>`<span class="pill ${/STOP|DANGER|TIME/.test(f.kind)?'bad':/TP|TRAIL/.test(f.kind)?'good':'dim'}" style="margin:1px" title="${esc(f.sold_pct)}% at ${esc(usd(f.mcap))}">${esc(f.kind==='END'?'END':f.kind)} ${num(f.multiple,2)}x</span>`).join('');
   return `<tr class="click" data-mint="${esc(t.mint)}"><td>${coin(t.mint,t.symbol)}</td><td><span class="pill ${t.kind==='brain'?'violet':'dim'}">${esc(t.kind||'')}</span>${t.note?`<br><span class="sub">${esc(t.note)}</span>`:''}${convTag(t.conv)}${t.engine_note?`<br><span class="sub">${esc(t.engine_note)}</span>`:''}</td><td class="num">${usd(t.entry_mcap)}</td><td class="num">${t.status==='SKIPPED'?'—':usd(t.cost)}</td>
   <td>${sells||'<span class="sub">holding</span>'}</td><td class="num">${x(t.peak_x)}</td><td class="num">${t.pnl==null?'—':signed(t.pnl)+'<br>'+spct(t.pnl_pct)}</td>

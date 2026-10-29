@@ -516,14 +516,29 @@ class EarlyCaller:
 
 
 # ----------------------------------------------------------------------------- tracker
+def report_symbol(r) -> Optional[str]:
+    try:
+        return ((json.loads(r["report"]) or {}).get("identity") or {}).get("symbol")
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
 class EarlyCallTracker:
-    def __init__(self, s, db, publisher, rpc=None, dex=None, sol_price=None):
+    def __init__(self, s, db, publisher, rpc=None, dex=None, sol_price=None, guard=None):
         self.s, self.db, self.pub, self.rpc, self.dex, self.sol_price = s, db, publisher, rpc, dex, sol_price
+        # v5.1.3: DexScreener readings are checked before they move a price, a peak or a milestone
+        from .price_guard import PriceGuard
+        self.guard = guard or PriceGuard(rpc, None, sol_price)
+        self._source: dict[str, str] = {}             # mint -> "chain" / "dex" for the last _caps() read
+        self._chain_migrated: set = set()
         init_schema(db)
 
     async def _caps(self, rows: list[dict]) -> dict[str, tuple[Optional[float], bool]]:
-        """mint -> (market cap USD, migrated?)"""
+        """mint -> (market cap USD, migrated?). self._source says where each number came from."""
+        from . import price_guard as PG
         out: dict[str, tuple[Optional[float], bool]] = {}
+        self._source = {}
+        self._chain_migrated: set = set()
         curve = [r for r in rows if r["phase"] == "CURVE"]
         pool = [r for r in rows if r["phase"] != "CURVE"]
         if curve and self.rpc is not None:
@@ -550,9 +565,11 @@ class EarlyCallTracker:
                     continue
                 if st.get("complete"):
                     out[r["mint"]] = (None, True)
+                    self._chain_migrated.add(r["mint"])      # the chain says so: a fact, whatever the price
                     pool.append(r)
                 elif st.get("market_cap_sol") and sol_usd:
                     out[r["mint"]] = (st["market_cap_sol"] * sol_usd, False)
+                    self._source[r["mint"]] = "chain"
                 elif not sol_usd:
                     self._why_unread(r["mint"], "no SOL/USD price")
         # v3.4.1: a curve coin the chain read could not price is read from DexScreener instead (it lists
@@ -568,27 +585,33 @@ class EarlyCallTracker:
             best: dict = {}
             curve_pair: dict = {}
             for p in pairs:
-                if (p.dex_id or "").lower() in ("pumpfun", "pump.fun", "pump"):
-                    if (p.market_cap or p.fdv) and p.base_mint not in curve_pair:
+                if PG.is_curve(p):
+                    if PG.mcap_of(p) and p.base_mint not in curve_pair:
                         curve_pair[p.base_mint] = p
+                    continue
+                # v5.1.3: only a believable pool (SOL/USD quote, real liquidity for the market cap it claims)
+                if not PG.trusted(p):
                     continue
                 if p.base_mint not in best or (p.liquidity_usd or 0) > (best[p.base_mint].liquidity_usd or 0):
                     best[p.base_mint] = p
             for r in pool:
                 p = best.get(r["mint"])
-                if p and (p.market_cap or p.fdv):
-                    out[r["mint"]] = (p.market_cap or p.fdv, True)
+                if p and PG.mcap_of(p):
+                    out[r["mint"]] = (PG.mcap_of(p), True)
+                    self._source[r["mint"]] = "dex"
                 elif r["mint"] not in out:
                     out[r["mint"]] = (None, True)
             for r in fallback:
                 p = best.get(r["mint"])
-                if p and (p.market_cap or p.fdv):                 # it migrated after all
-                    out[r["mint"]] = (p.market_cap or p.fdv, True)
+                if p and PG.mcap_of(p):                            # it migrated after all
+                    out[r["mint"]] = (PG.mcap_of(p), True)
+                    self._source[r["mint"]] = "dex"
                 elif r["mint"] in curve_pair:
                     cp = curve_pair[r["mint"]]
-                    out[r["mint"]] = (cp.market_cap or cp.fdv, False)
+                    out[r["mint"]] = (PG.mcap_of(cp), False)
+                    self._source[r["mint"]] = "dex"
                 else:
-                    self._why_unread(r["mint"], "DexScreener has no price for it either")
+                    self._why_unread(r["mint"], "DexScreener has no believable price for it either")
         return out
 
     def _why_unread(self, mint: str, why: str) -> None:
@@ -614,6 +637,15 @@ class EarlyCallTracker:
             except (TypeError, ValueError):
                 report = {"mint": mint}
             mc, migrated = caps.get(mint, (None, False))
+            if mc and self._source.get(mint) == "dex":
+                # v5.1.3: a DexScreener number is checked before it moves the price, the peak or a milestone
+                checked = await self.guard.verify(mint, mc, r["current_mcap"] or r["entry_mcap"],
+                                                  (report_symbol(r) or ""))
+                if checked is None:
+                    # not confirmed: keep the last price; only the chain's own word moves the coin to POOL
+                    mc, migrated = None, mint in self._chain_migrated
+                else:
+                    mc = checked
             fields: dict = {}
             if migrated and r["phase"] == "CURVE":
                 fields["phase"] = "POOL"

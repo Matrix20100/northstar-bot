@@ -312,7 +312,11 @@ def test_tracker_follows_the_coin_into_its_pool(db, monkeypatch):
     st, tr = tracker(db, pub, monkeypatch, complete=True, pairs=[pair])
     asyncio.run(tr.run_once(NOW))
     r = db.fetchone("SELECT * FROM early_calls WHERE mint=?", (MINT,))
-    assert r["phase"] == "POOL" and r["current_mcap"] == 250_000 and r["peak_mcap"] == 250_000
+    # v5.1.3: the chain says it migrated (a fact); the 6x DexScreener price waits for a second read
+    assert r["phase"] == "POOL" and r["peak_mcap"] < 250_000
+    asyncio.run(tr.run_once(NOW + 30))
+    r = db.fetchone("SELECT * FROM early_calls WHERE mint=?", (MINT,))
+    assert r["current_mcap"] == 250_000 and r["peak_mcap"] == 250_000
 
 
 def test_tracking_closes_after_the_window(db, monkeypatch):

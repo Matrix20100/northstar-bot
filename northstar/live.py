@@ -103,6 +103,7 @@ class LiveTrader:
         self.balance_at = 0.0
         self.last_error: Optional[str] = None
         self.kill_requested = False
+        self.guard = None                    # v5.1.3 price_guard.PriceGuard (set by the engine)
         init_schema(db)
 
     # ------------------------------------------------------------------ setup
@@ -168,6 +169,9 @@ class LiveTrader:
                                                                    "commitment": "confirmed"}])
             err = (r or {}).get("value", {}).get("err") if isinstance(r, dict) else None
             if err:
+                if err == "AccountNotFound":
+                    raise TradeError("simulation failed: the wallet has no SOL on-chain yet. Fund it (test mode spends "
+                                     "nothing, but the simulation needs the SOL to be there)")
                 logs = ((r or {}).get("value") or {}).get("logs") or []
                 raise TradeError(f"simulation failed: {err} {' | '.join(logs[-2:])[:200]}")
             return "SIMULATED"
@@ -264,11 +268,15 @@ class LiveTrader:
         today = self.today_result_sol()
         if limit and today <= -limit:
             return f"daily loss limit reached ({today:+.3f} SOL today, limit -{limit:g})"
-        if not self.test_mode:
-            bal = await self.balance(force=True)
-            need = float(getattr(self.s, "trade_sol_per_trade", 0.1)) + float(getattr(self.s, "trade_min_sol_reserve", 0.03))
-            if bal is None or bal < need:
-                return f"wallet balance {bal if bal is not None else '?'} SOL under {need:g} (trade + fee reserve)"
+        # v5.1.2: test mode needs the SOL too. A simulation runs the buy against the wallet's real balance (it
+        # spends nothing), so an empty wallet fails every simulated buy with "AccountNotFound".
+        bal = await self.balance(force=True)
+        need = float(getattr(self.s, "trade_sol_per_trade", 0.1)) + float(getattr(self.s, "trade_min_sol_reserve", 0.03))
+        if bal is None or bal < need:
+            mode = " - test mode spends nothing, but a simulated buy still needs the SOL in the wallet" \
+                if self.test_mode else ""
+            return (f"wallet balance {bal if bal is not None else '?'} SOL under {need:g} (trade + fee reserve)"
+                    f"{mode}")
         return None
 
     # ------------------------------------------------------------------ buying
@@ -385,6 +393,13 @@ class LiveTrader:
         for r in rows:
             pair = pick_pair(pairs, r["mint"])
             tick = EX.Tick.from_pair(pair, now) if pair else None
+            if tick and self.guard is not None and not self.kill_requested:
+                checked = await self.guard.verify(r["mint"], tick.mcap, r["last_mcap"] or r["entry_mcap"],
+                                                  r.get("symbol") or "")
+                if checked is None:
+                    tick = None                    # an unconfirmed jump: no exit decision on it
+                else:
+                    tick.mcap = checked
             if self.kill_requested:
                 actions = [EX.Action("KILL", EX.ALL, "kill switch: sell everything")]
                 mcap = tick.mcap if tick else (r["last_mcap"] or r["entry_mcap"])
