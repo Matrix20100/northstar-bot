@@ -103,6 +103,7 @@ class LiveTrader:
         self.balance_at = 0.0
         self.last_error: Optional[str] = None
         self.kill_requested = False
+        self.guard = None                    # v5.1.3 price_guard.PriceGuard (set by the engine)
         init_schema(db)
 
     # ------------------------------------------------------------------ setup
@@ -392,6 +393,13 @@ class LiveTrader:
         for r in rows:
             pair = pick_pair(pairs, r["mint"])
             tick = EX.Tick.from_pair(pair, now) if pair else None
+            if tick and self.guard is not None and not self.kill_requested:
+                checked = await self.guard.verify(r["mint"], tick.mcap, r["last_mcap"] or r["entry_mcap"],
+                                                  r.get("symbol") or "")
+                if checked is None:
+                    tick = None                    # an unconfirmed jump: no exit decision on it
+                else:
+                    tick.mcap = checked
             if self.kill_requested:
                 actions = [EX.Action("KILL", EX.ALL, "kill switch: sell everything")]
                 mcap = tick.mcap if tick else (r["last_mcap"] or r["entry_mcap"])

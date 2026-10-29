@@ -3,6 +3,28 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.1.3 - Verified prices: no more milestones that never happened
+
+Operator: "the bot lies to me, it posts milestones that didn't happen and lies about the current price of a coin."
+$Pumpers (called at $16.6K, real high $20.5K, still on its curve) was posted as "hit 25x, peak 27.10x ($450.7K)";
+$Pilly (called at $26.9K, real high about $40K) showed a $1.06M peak.
+
+- Cause: when a runner call's pump.fun curve could not be read (another launchpad, a non-`pump` mint, a failed RPC
+  read), the tracker took the deepest DexScreener pool listed for the mint, trusted its market cap, and marked the
+  coin migrated. One badly priced pool was enough for a fake 25x post, a fake "current price" and a fake peak.
+- New `northstar/price_guard.py`:
+  - A DexScreener pool is only used if it is quoted in SOL/USDC/USDT and holds real liquidity (at least $1,500 and
+    at least 2% of the market cap it claims). Used by the tracker, paper trading and live trading.
+  - A DexScreener move of 2x or more (up or down) since the last accepted price is checked against Jupiter: what a
+    real 0.05 SOL buy gets now, times the token supply read from the chain. If they disagree, Jupiter's price is used
+    and the disagreement is logged ("price check ... DexScreener says $X but a real buy on Jupiter prices it at $Y").
+    If Jupiter cannot route a buy, an up-jump is not used. If Jupiter cannot be asked, the jump waits.
+  - Only the chain's own "curve complete" moves a call to the pool phase.
+- Covers the milestone posts, the call's current price and peak (Calls tab, VIP embed edits), and the prices paper
+  trading and live trading sell on. Chain reads of a pump.fun curve are exact and are not second-guessed.
+- Peaks already stored for older calls are not rewritten (the true high cannot be known after the fact); their current
+  price corrects itself on the next checked read.
+
 ## v5.1.2 - Test mode needs a funded wallet, and says so
 
 - Every simulated buy failed with "simulation failed: AccountNotFound": the bot's wallet had 0 SOL. A simulation spends

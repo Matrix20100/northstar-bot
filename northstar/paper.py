@@ -548,8 +548,10 @@ def position_from_row(r: dict, s=None):
 
 
 def pick_pair(pairs: list, mint: str, pool: Optional[str] = None):
-    """The pool a position is priced from: the one it was bought in, else the curve, else the deepest."""
-    mine = [p for p in pairs if p.base_mint == mint and (p.market_cap or p.fdv)]
+    """The pool a position is priced from: the one it was bought in, else the curve, else the deepest.
+    v5.1.3: only believable pools (price_guard.trusted: SOL/USD quote, real liquidity for the claimed market cap)."""
+    from .price_guard import trusted
+    mine = [p for p in pairs if trusted(p, mint)]
     if not mine:
         return None
     if pool:
@@ -566,8 +568,9 @@ class ExitManager:
     """v5.0.0: every `exit_poll_seconds`, re-read the pool of every open paper position (both accounts)
     and let the exit engine (exits.py) decide what to sell. Also used by live trading (live.py)."""
 
-    def __init__(self, s, db, dex):
+    def __init__(self, s, db, dex, guard=None):
         self.s, self.db, self.dex = s, db, dex
+        self.guard = guard                       # v5.1.3 price_guard.PriceGuard: big jumps are checked first
 
     async def pairs_for(self, mints: list[str]) -> list:
         out = []
@@ -602,6 +605,11 @@ class ExitManager:
             ref = r["last_mcap"] or r["entry_mcap"]
             if tick and ref and not (ref / MAX_TICK_JUMP <= tick.mcap <= ref * MAX_TICK_JUMP):
                 tick = None                                # a bad quote, not a move
+            if tick and self.guard is not None and ref:
+                checked = await self.guard.verify(r["mint"], tick.mcap, ref, r.get("symbol") or "")
+                if checked is None:
+                    continue                               # an unconfirmed jump: wait for the next read
+                tick.mcap = checked
             if tick is None:
                 # no price: after the hold time the position is closed at the last price seen
                 if hold and now - r["opened_at"] >= hold * 1.5:
