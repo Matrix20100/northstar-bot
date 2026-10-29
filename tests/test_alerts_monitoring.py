@@ -147,10 +147,11 @@ async def test_liquidity_collapse_after_publication(settings, db):
     await mon.run_once()
     a = db.get_alert(aid)
     assert "LIQUIDITY_COLLAPSE" in json.loads(a["warnings"]) and a["state"] == "WARNING"
-    assert any("WARNING" in e["title"] and ch == 999 for ch, e in pub.sent)
+    # v5.2.0 operator: no drawdown messages in Discord, even with a warning channel; the warning is recorded
+    assert not any("WARNING" in e["title"] for _, e in pub.sent)
     assert pub.edits, "original embed edited, not spammed"
     await mon.run_once()
-    assert sum("WARNING" in e["title"] for _, e in pub.sent) == 1, "warning sent once"
+    assert sum("LIQUIDITY_COLLAPSE" == w for w in json.loads(db.get_alert(aid)["warnings"])) == 1, "recorded once"
 
 
 async def test_creator_dump_after_publication(settings, db):
@@ -164,8 +165,9 @@ async def test_creator_dump_after_publication(settings, db):
     await mon.run_once()                      # applies its result
     a = db.get_alert(aid)
     assert "CREATOR_DUMP" in json.loads(a["warnings"])
-    warn = [e for _, e in pub.sent if "WARNING" in e["title"]]
-    assert warn and "VERIFIED on-chain" in warn[0]["description"]
+    assert not [e for _, e in pub.sent if "WARNING" in e["title"]]          # v5.2.0: recorded, not posted
+    ev = db.fetchall("SELECT detail FROM alert_events WHERE alert_id = ? AND kind = 'warning'", (aid,))
+    assert any("VERIFIED on-chain" in (r["detail"] or "") for r in ev)
 
 
 async def test_milestones_and_performance_math(settings, db):
@@ -221,10 +223,9 @@ async def test_a_rugged_call_is_closed_once_not_tracked_for_hours(settings, db):
     a = db.get_alert(aid)
     assert a["state"] == "CLOSED" and "RUGGED" in json.loads(a["warnings"])
     assert db.get_candidate(MINT)["state"] == "CLOSED"
-    rugged = [e for _, e in pub.sent if "RUGGED" in json.dumps(e)]
-    assert len(rugged) == 1
-    await mon.run_once()                                  # closed: no more tracking, no second warning
-    assert len([e for _, e in pub.sent if "RUGGED" in json.dumps(e)]) == 1
+    assert not [e for _, e in pub.sent if "RUGGED" in json.dumps(e)]       # v5.2.0: recorded, not posted
+    await mon.run_once()                                  # closed: no more tracking
+    assert json.loads(db.get_alert(aid)["warnings"]).count("RUGGED") == 1
 
 
 async def test_a_dip_above_the_rug_line_stays_open(settings, db):

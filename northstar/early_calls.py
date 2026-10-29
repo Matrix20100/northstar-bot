@@ -666,8 +666,8 @@ class EarlyCallTracker:
                     counts["events"] += 1
                     if kind == "ENTRY_CLOSED":
                         continue
-                    if kind in TP.EXIT_KINDS and not getattr(self.s, "post_drawdowns", False):
-                        continue          # v4.0.0: only good news is posted; the exit is recorded
+                    if not TP.posts_to_discord(kind, mult):
+                        continue          # v5.2.0: no stop-loss / drawdown posts; the exit is recorded
                     ident = report.get("identity") or {}
                     try:
                         await self.pub.publish(plan_event_embed(

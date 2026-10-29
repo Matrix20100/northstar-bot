@@ -92,6 +92,21 @@ EVENTS = {
 EXIT_KINDS = {"TRAIL", "STOP", "TIME", "DANGER"}
 
 
+def posts_to_discord(kind: str, multiple=None) -> bool:
+    """v5.2.0 operator: "remove the drawdown or stop loss discord msgs". Take-profit messages are posted. A stop
+    loss, time stop or danger exit never is (it is still recorded for paper trading and learning). A trailing-stop
+    exit is posted only when it sells above the entry (locking in profit); one under the entry is a loss and is not.
+    Replaces the `post_drawdowns` setting, which no longer posts anything."""
+    if kind not in EXIT_KINDS:
+        return True
+    if kind == "TRAIL":
+        try:
+            return multiple is not None and float(multiple) >= 1.0
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
 def evaluate(p: Plan, multiple: Optional[float], peak: float, age_seconds: float, sent: set,
              fmt) -> list[tuple[str, str]]:
     """New plan events for the current observation, in the order they should be posted.

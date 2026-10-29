@@ -3,6 +3,24 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.2.0 - Daily recap in the free channel; no more stop-loss / drawdown posts
+
+Operator: "make a recap system that posts in the free channel every day of all the multipliers and remove the
+drawdown or stop loss discord msgs".
+
+- **Daily recap** (`northstar/recap.py`): every day at `daily_recap_hour_utc` (19:00 UTC = 21:00 South Africa), one
+  post lists every call of the last 24 hours with its peak multiple since the call, best first: runner/early calls and
+  standard calls (rug scalps left out). Every call is listed, not only the winners. The header gives the count, how
+  many reached 2x and the best. Goes to `discord_recap_channel_id`, else the free channel. Posted once a day (a
+  restart does not repeat it); a failed post is retried every 5 minutes; a day with no calls posts nothing; a long day
+  is split over several messages. Settings: "Discord & posting" (`daily_recap_enabled`, `daily_recap_hour_utc`,
+  `discord_recap_channel_id`).
+- **No stop-loss or drawdown messages:** stop loss, time stop, exit-now (danger) and drawdown / liquidity / creator-dump
+  / rugged warnings are recorded (Calls tab, paper trading, learning) but never posted, in any channel. Take-profit
+  posts and milestones stay. A trailing-stop exit is posted only when it sells above the entry (locking in profit).
+  The `post_drawdowns` setting is retired: switched on, it no longer posts anything. Early watches that rug end with
+  "Tracking ended" instead of a "Rugged" line.
+
 ## v5.1.5 - Curves that finished are read as migrated; unreadable curves say why
 
 - After the v5.1.4 restart, 9 of 17 open runner calls logged "curve account did not parse", so their prices came
