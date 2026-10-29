@@ -561,7 +561,7 @@ class EarlyCallTracker:
                 st = Researcher._parse_pump_curve_account(acc) if acc else None
                 if not st:
                     self._why_unread(r["mint"], "curve account missing or unreadable" if acc is None
-                                     else "curve account did not parse")
+                                     else "curve account did not parse: " + Researcher.curve_parse_problem(acc))
                     continue
                 if st.get("complete"):
                     out[r["mint"]] = (None, True)

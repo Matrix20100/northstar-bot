@@ -704,12 +704,18 @@ class Researcher:
         except (struct.error, IndexError):
             return None
 
-        if (
-            not virtual_tokens
-            or not virtual_sol
-            or not total_supply
-            or raw[48] not in (0, 1)
-        ):
+        if raw[48] not in (0, 1):
+            return None
+        if complete and (not virtual_tokens or not virtual_sol):
+            # v5.1.5: a finished curve whose reserves pump.fun emptied when it moved the coin to its pool. This was
+            # thrown away as "did not parse", so the tracker priced the coin from whatever pool DexScreener listed.
+            # The coin has migrated: say so, with no curve price.
+            creator = b58encode(raw[49:81]) if any(raw[49:81]) else None
+            return {"creator": creator, "quote_mint": WSOL_MINT, "quote_is_sol": True,
+                    "virtual_token_reserves_raw": virtual_tokens, "virtual_sol_reserves_lamports": virtual_sol,
+                    "real_token_reserves_raw": real_tokens, "real_sol_reserves_lamports": real_sol,
+                    "token_total_supply_raw": total_supply, "complete": True, "market_cap_sol": None}
+        if not virtual_tokens or not virtual_sol or not total_supply:
             return None
 
         # Pump.fun curves are SOL-quoted, and the caller has already checked that this account
@@ -753,6 +759,34 @@ class Researcher:
             "complete": complete,
             "market_cap_sol": market_cap_sol,
         }
+
+    @staticmethod
+    def curve_parse_problem(account) -> str:
+        """Why `_parse_pump_curve_account` could not read this account (v5.1.5 diagnostics, logged once per coin).
+        Public chain data only: owner, size, the first bytes and the fields the parser checks."""
+        if not isinstance(account, dict):
+            return "no account"
+        owner = account.get("owner")
+        data = account.get("data")
+        if owner != PUMP_FUN_PROGRAM:
+            return f"owner {owner} is not the pump.fun program"
+        if not isinstance(data, (list, tuple)) or not data or not isinstance(data[0], str):
+            return f"data is not base64 (encoding {type(data).__name__}: {str(data)[:60]})"
+        try:
+            raw = base64.b64decode(data[0], validate=True)
+        except (ValueError, TypeError):
+            return "data does not decode as base64"
+        head = raw[:96].hex()
+        if raw[:8] != PUMP_CURVE_DISCRIMINATOR:
+            return f"unknown account type (discriminator {raw[:8].hex()}), {len(raw)} bytes, head {head}"
+        if len(raw) < 81:
+            return f"only {len(raw)} bytes (an old curve layout), head {head}"
+        try:
+            vt, vs, rt, rs, ts = struct.unpack_from("<QQQQQ", raw, 8)
+        except struct.error:
+            return f"{len(raw)} bytes, reserves unreadable, head {head}"
+        return (f"{len(raw)} bytes, complete byte {raw[48]}, virtual tokens {vt}, virtual SOL {vs}, real tokens {rt}, "
+                f"real SOL {rs}, supply {ts}, head {head}")
 
     async def _probe_curve(self, mint: str, report: dict) -> Optional[tuple[str, dict]]:
         """Find and verify this mint's Pump.fun bonding curve on-chain (no DexScreener needed).

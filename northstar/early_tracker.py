@@ -176,6 +176,16 @@ class EarlyWatchTracker:
             mint = row["mint"]
             state = Researcher._parse_pump_curve_account(accounts[i]) if batch_ok else None
             cap = state.get("market_cap_sol") if state else None
+            if state and state.get("complete") and cap is None:
+                # v5.1.5: the curve finished and its reserves were emptied: the coin migrated
+                await self._finish(row, "MIGRATED", counts)
+                continue
+            if batch_ok and state is None and accounts[i] is not None:
+                seen = self.__dict__.setdefault("_unparsed_logged", set())
+                if mint not in seen:
+                    seen.add(mint)
+                    log.warning("early-watch: curve account for %s did not parse: %s", mint,
+                                Researcher.curve_parse_problem(accounts[i]))
             if cap is None or not (cap > 0):
                 self._failures[mint] = self._failures.get(mint, 0) + 1
                 counts["failed_reads"] += 1
