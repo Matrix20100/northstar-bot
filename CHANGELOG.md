@@ -3,6 +3,19 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.1.5 - Curves that finished are read as migrated; unreadable curves say why
+
+- After the v5.1.4 restart, 9 of 17 open runner calls logged "curve account did not parse", so their prices came
+  from DexScreener: the path behind the fake milestones (now checked by the v5.1.3 price guard).
+- A finished curve whose reserves pump.fun emptied when it moved the coin to its pool was thrown away as unreadable.
+  It is now read as migrated (no curve price); the tracker follows the coin in its pool, and the early-watch tracker
+  closes the watch as MIGRATED instead of counting a failed read every 30 s.
+- Curve accounts are now read as raw bytes (base64) instead of the "parsed" format. Live, $Hyper (still on its curve
+  at $17K) failed once and read fine a minute later, which pointed at the RPC answering the parsed format
+  inconsistently, not at a migrated curve.
+- Every curve that still cannot be read logs why, once per coin: owner, size, the fields the parser checks and the
+  first bytes (public chain data), so a new pump.fun layout can be added from one log line.
+
 ## v5.1.4 - The brain's paper account trades again, and shows why it does or doesn't
 
 Operator: "the AI brain does not paper trade, he started a bit then stopped for like a week now."
