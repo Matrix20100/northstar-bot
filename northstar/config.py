@@ -27,10 +27,16 @@ class Settings(BaseSettings):
     discord_channel_id: Optional[int] = None  # legacy/default channel; use as VIP channel
     discord_free_channel_id: Optional[int] = None  # optional public funnel channel
     free_callout_delay_minutes: int = 20  # v4.0.0: was 15; free gets every VIP call this much later
-    post_drawdowns: bool = False          # v4.0.0: stop/exit/drawdown messages are recorded, not posted
+    post_drawdowns: bool = False          # retired in v5.2.0: stop/drawdown messages are never posted (kept so old
+                                          # .env / dashboard values still load)
     free_milestones: str = "2,3,5,10"  # free channel gets selected milestones only
     discord_warning_channel_id: Optional[int] = None  # defaults to main/VIP channel
     discord_scalp_channel_id: Optional[int] = None    # v4.5.0: rug scalps post ONLY here (none set = scalps are not posted)
+    # v5.2.0 daily recap: every day at daily_recap_hour_utc, one post listing every call of the last 24 h with its
+    # peak multiple since the call. Goes to discord_recap_channel_id, or the free channel when that is not set.
+    daily_recap_enabled: bool = True
+    daily_recap_hour_utc: int = 19                    # 19:00 UTC = 21:00 in South Africa
+    discord_recap_channel_id: Optional[int] = None
     dry_run: bool = False  # True = never post; write embeds to data/dry_run_alerts.jsonl
 
     # ---------------------------------------------------------------- API keys
@@ -547,6 +553,14 @@ class Settings(BaseSettings):
     @classmethod
     def _non_negative_int(cls, v: int) -> int:
         return max(0, int(v))
+
+    @field_validator("daily_recap_hour_utc")
+    @classmethod
+    def _recap_hour(cls, v: int) -> int:
+        v = int(v)
+        if not 0 <= v <= 23:
+            raise ValueError("daily_recap_hour_utc must be an hour from 0 to 23 (UTC)")
+        return v
 
     @field_validator("trade_follow")
     @classmethod

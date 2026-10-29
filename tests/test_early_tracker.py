@@ -386,10 +386,12 @@ class TradePlanMessages(Base):
         rep = json.loads(self.db.fetchone("SELECT report FROM early_signals WHERE mint=?", (MINT,))["report"])
         self.assertIn("STOP", rep["early_tracking"]["plan_sent"])          # recorded all the same
 
-    def test_stop_loss(self):
-        self.rpc.cap = 60.0
+    def test_stop_loss_is_never_posted(self):
+        self.rpc.cap = 60.0                     # v5.2.0: even with post_drawdowns on (these tests set it)
         asyncio.run(self.tr.run_once())
-        self.assertTrue(any(e["title"].startswith("🛑 EXIT — STOP LOSS") for _, e in self.pub.posts))
+        self.assertFalse(any("STOP LOSS" in e["title"] for _, e in self.pub.posts))
+        rep = json.loads(self.db.fetchone("SELECT report FROM early_signals WHERE mint=?", (MINT,))["report"])
+        self.assertIn("STOP", rep["early_tracking"]["plan_sent"])
 
     def test_silent_watch_posts_nothing(self):
         self.db.execute("UPDATE early_signals SET status='SILENT', channel_id=NULL, message_id=NULL WHERE mint=?",
@@ -407,9 +409,8 @@ class RugClose(Base):
         c = self.run_once()
         self.assertEqual((c["closed"], c["rugged"]), (1, 1))
         self.assertEqual(self.row()["status"], "CLOSED")
-        self.assertIn("Rugged", text(self.pub.edits[-1][2]))
-        self.assertIn("0.20x", text(self.pub.edits[-1][2]))
-        self.assertTrue(any(e["title"].startswith("🛑 EXIT — STOP LOSS") for _, e in self.pub.posts))
+        self.assertIn("Tracking ended", text(self.pub.edits[-1][2]))       # v5.2.0: no "Rugged" drawdown text
+        self.assertFalse(any("STOP LOSS" in e["title"] for _, e in self.pub.posts))
         self.assertEqual(self.run_once()["open"], 0)
         self.assertEqual(len(self.pub.edits), 1)  # no more edits after closing
 

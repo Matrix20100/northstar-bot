@@ -142,20 +142,22 @@ async def test_monitor_posts_tp_then_exit_once(settings, db):
     await mon.run_once()
     await mon.run_once()
     exits = [e for _, e in pub.sent if e["title"].startswith("🚪 EXIT")]
-    assert exits == [], "v4.0.0: exits are recorded, never posted (only good news)"
+    # v5.2.0: a trailing stop that sells above the entry (here 1.05x) locks in profit and is posted, once
+    assert len(exits) == 1 and "keep the profit" in exits[0]["description"]
     a = db.get_alert(aid)
     assert {"PLAN:TP1", "PLAN:TRAIL"} <= set(json.loads(a["warnings"]))
     assert a["state"] != "WARNING", "plan events are not risk warnings"
     assert not any("exited" in x for x in pub.edits[-1][1]["description"].split("\n"))
 
 
-async def test_monitor_time_stop(settings, db):
-    settings.post_drawdowns = True                   # the old behaviour, still available as a setting
+async def test_monitor_time_stop_is_recorded_not_posted(settings, db):
+    settings.post_drawdowns = True                   # v5.2.0: retired, posts nothing even when on
     aid, pub, p, out = await published(settings, db)
     db.update_alert(aid, sent_at=time.time() - 31 * 60)
     p.dex.pairs = [make_pair(price_usd=out.pair.price_usd * 1.1, market_cap=out.pair.market_cap * 1.1)]
     await Monitor(settings, db, pub, p.dex, None).run_once()
-    assert any(e["title"].startswith("⏱️ EXIT — TIME STOP") for _, e in pub.sent)
+    assert not any(e["title"].startswith("⏱️ EXIT — TIME STOP") for _, e in pub.sent)
+    assert "PLAN:TIME" in json.loads(db.get_alert(aid)["warnings"])
 
 
 async def test_monitor_liquidity_collapse_is_an_exit(settings, db):
@@ -163,7 +165,8 @@ async def test_monitor_liquidity_collapse_is_an_exit(settings, db):
     aid, pub, p, _ = await published(settings, db)
     p.dex.pairs = [make_pair(liquidity_usd=30_000.0, price_usd=0.0009)]
     await Monitor(settings, db, pub, p.dex, None).run_once()
-    assert any(e["title"].startswith("🚨 EXIT NOW") for _, e in pub.sent)
+    assert not any(e["title"].startswith("🚨 EXIT NOW") for _, e in pub.sent)      # v5.2.0: not posted
+    assert "PLAN:DANGER" in json.loads(db.get_alert(aid)["warnings"])               # but recorded as an exit
 
 
 async def test_plan_can_be_disabled(settings, db):

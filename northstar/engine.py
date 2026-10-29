@@ -295,7 +295,8 @@ class Engine:
                  asyncio.create_task(self._loop("alert-retry", 120, self.alerts.resume_pending)),
                  asyncio.create_task(self._loop("free-channel-delivery", 15, self.alerts.publish_due_free_posts)),
                  asyncio.create_task(self._loop("heartbeat", 300, self._heartbeat)),
-                 asyncio.create_task(self._loop("db-retention", 3600, self._prune))]
+                 asyncio.create_task(self._loop("db-retention", 3600, self._prune)),
+                 asyncio.create_task(self._loop("daily-recap", 300, self._daily_recap))]
         # v5.0.0 live trading: loaded whenever a wallet key is set (to show its balance); trades only when switched on
         from .live import LiveTrader
         self.live = (LiveTrader.from_settings(self.s, self.db, getattr(self.p, "rpc", None), getattr(self.p, "dex", None))
@@ -1325,6 +1326,11 @@ class Engine:
         if any(v for v in (res.get("pruned") or {}).values()) \
                 or any(isinstance(v, int) and v for v in res.values()):
             log.info("database retention: %s", res)
+
+    async def _daily_recap(self) -> None:
+        """v5.2.0: once a day, every call of the last 24 h with its peak multiple, to the free (or recap) channel."""
+        from . import recap
+        await recap.run_once(self.db, self.s, self.pub)
 
     async def _heartbeat(self) -> None:
         h = {r["provider"]: r["status"] for r in self.db.provider_health()}
