@@ -550,7 +550,8 @@ class EarlyCallTracker:
                     sol_usd = None
             keys = [pump_bonding_curve_address(r["mint"]) for r in curve]
             try:
-                accounts = await self.rpc.get_multiple_accounts([k for k in keys if k])
+                from .research import read_curve_accounts
+                accounts = await read_curve_accounts(self.rpc, [k for k in keys if k])
             except Exception as e:  # noqa: BLE001
                 log.info("early-call curve read failed: %s", e)
                 accounts = []

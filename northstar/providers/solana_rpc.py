@@ -189,20 +189,22 @@ class SolanaRpc:
         # Defensive; the loop always returns or raises.
         raise RpcError(self.client.name, f"{method}: exhausted retries")
 
-    async def get_account_info(self, address: str) -> Optional[dict]:
+    async def get_account_info(self, address: str, encoding: str = "jsonParsed") -> Optional[dict]:
         r = await self.call(
             "getAccountInfo",
             [
                 address,
-                {"encoding": "jsonParsed", "commitment": "confirmed"},
+                {"encoding": encoding, "commitment": "confirmed"},
             ],
             cache_ttl=60,
         )
         return (r or {}).get("value")
 
     async def get_multiple_accounts(
-        self, addresses: list[str]
+        self, addresses: list[str], encoding: str = "jsonParsed"
     ) -> list[Optional[dict]]:
+        """v5.1.5: `encoding="base64"` for program accounts read as raw bytes (pump.fun curves): with jsonParsed an
+        RPC node may answer in a parsed shape some of the time, and the curve then "did not parse"."""
         out: list[Optional[dict]] = []
         for i in range(0, len(addresses), 100):
             r = await self.call(
@@ -210,7 +212,7 @@ class SolanaRpc:
                 [
                     addresses[i : i + 100],
                     {
-                        "encoding": "jsonParsed",
+                        "encoding": encoding,
                         "commitment": "confirmed",
                     },
                 ],

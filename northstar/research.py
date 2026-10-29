@@ -113,6 +113,23 @@ def data_hash(pair: Optional[PairInfo]) -> Optional[str]:
     return hashlib.sha1(json.dumps(key).encode()).hexdigest()[:16]
 
 
+async def read_curve_accounts(rpc, keys: list[str]) -> list:
+    """Pump.fun curve accounts as raw bytes (base64). v5.1.5: "jsonParsed" let an RPC node answer in another shape
+    now and then, and a live curve read as "did not parse" (seen live on $Hyper at $17K). Falls back for RPC
+    clients that take no encoding (tests, older providers)."""
+    try:
+        return await rpc.get_multiple_accounts(keys, encoding="base64")
+    except TypeError:
+        return await rpc.get_multiple_accounts(keys)
+
+
+async def read_curve_account(rpc, key: str):
+    try:
+        return await rpc.get_account_info(key, encoding="base64")
+    except TypeError:
+        return await rpc.get_account_info(key)
+
+
 class Researcher:
     def __init__(self, s: Settings, db: Database, p: Providers):
         self.s, self.db, self.p = s, db, p
@@ -800,7 +817,7 @@ class Researcher:
         if not key:
             return None
         try:
-            state = self._parse_pump_curve_account(await self.p.rpc.get_account_info(key))
+            state = self._parse_pump_curve_account(await read_curve_account(self.p.rpc, key))
         except ProviderError as e:
             report["sources"]["pump_fun_curve_rpc"] = f"FAILED: {e}"
             return None
@@ -898,9 +915,7 @@ class Researcher:
             bonding_curve_key, curve_state = curve
         elif self.p.rpc is not None and bonding_curve_key:
             try:
-                curve_account = await self.p.rpc.get_account_info(
-                    str(bonding_curve_key)
-                )
+                curve_account = await read_curve_account(self.p.rpc, str(bonding_curve_key))
 
                 curve_state = self._parse_pump_curve_account(
                     curve_account

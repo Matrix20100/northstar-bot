@@ -45,3 +45,38 @@ def test_every_failure_says_why():
     assert "old curve layout" in P(curve(cut=49))
     assert "virtual tokens 0" in P(curve(vt=0, vs=0))
     assert "not base64" in P({"owner": PUMP_FUN_PROGRAM, "data": {"parsed": {}}})
+
+
+def test_curves_are_read_as_raw_bytes_not_the_parsed_shape():
+    """Live: $Hyper (on its curve at $17K) "did not parse" once, then read fine: a parsed-format answer."""
+    import asyncio
+
+    from northstar.research import read_curve_accounts
+
+    class Rpc:
+        def __init__(self):
+            self.encodings = []
+
+        async def get_multiple_accounts(self, keys, encoding="jsonParsed"):
+            self.encodings.append(encoding)
+            if encoding == "jsonParsed":                          # what a node may answer with jsonParsed
+                return [{"owner": PUMP_FUN_PROGRAM, "data": {"parsed": {"type": "bondingCurve"}}} for _ in keys]
+            return [curve() for _ in keys]
+
+    rpc = Rpc()
+    accs = asyncio.run(read_curve_accounts(rpc, ["k1", "k2"]))
+    assert rpc.encodings == ["base64"]
+    assert all(Researcher._parse_pump_curve_account(a)["market_cap_sol"] > 0 for a in accs)
+    assert "not base64" in Researcher.curve_parse_problem(
+        {"owner": PUMP_FUN_PROGRAM, "data": {"parsed": {"type": "bondingCurve"}}})
+
+
+def test_old_rpc_clients_without_an_encoding_still_work():
+    import asyncio
+
+    from northstar.research import read_curve_accounts
+
+    class Old:
+        async def get_multiple_accounts(self, keys):
+            return [curve() for _ in keys]
+    assert len(asyncio.run(read_curve_accounts(Old(), ["k"]))) == 1

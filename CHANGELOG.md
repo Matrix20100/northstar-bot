@@ -10,6 +10,9 @@ the complete code (`python scripts/make_release.py`), never from a partial patch
 - A finished curve whose reserves pump.fun emptied when it moved the coin to its pool was thrown away as unreadable.
   It is now read as migrated (no curve price); the tracker follows the coin in its pool, and the early-watch tracker
   closes the watch as MIGRATED instead of counting a failed read every 30 s.
+- Curve accounts are now read as raw bytes (base64) instead of the "parsed" format. Live, $Hyper (still on its curve
+  at $17K) failed once and read fine a minute later, which pointed at the RPC answering the parsed format
+  inconsistently, not at a migrated curve.
 - Every curve that still cannot be read logs why, once per coin: owner, size, the fields the parser checks and the
   first bytes (public chain data), so a new pump.fun layout can be added from one log line.
 

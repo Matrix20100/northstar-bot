@@ -166,7 +166,8 @@ class EarlyWatchTracker:
 
         mints = [r["mint"] for r in live]
         try:
-            accounts = await self.rpc.get_multiple_accounts([keyed[m] for m in mints])
+            from .research import read_curve_accounts
+            accounts = await read_curve_accounts(self.rpc, [keyed[m] for m in mints])
             batch_ok = len(accounts) == len(mints)
         except ProviderError as exc:
             log.warning("early-watch curve refresh failed: %s", exc)
