@@ -85,14 +85,19 @@ MIN_POSITION_USD = 1.0
 MIN_ENTRY_MCAP = 5_000.0
 MIN_BRAIN_LIQUIDITY = 10_000.0
 MAX_TICK_JUMP = 20.0
-BRAIN_SKIP_CLASSES = ("PREFILTER", "SAFETY_FAIL", "RISK_THRESHOLD", "SERIOUS_WARNINGS")
+BRAIN_SKIP_CLASSES = ("PREFILTER", "SAFETY_FAIL")
+# v5.1.4: these were hard skips too (v4.5.0). The brain stopped buying almost entirely, because most researched
+# coins carry one of them. They now need the setup's conviction grade (paper_brain_min_conviction) instead.
+BRAIN_SOFT_CLASSES = ("RISK_THRESHOLD", "SERIOUS_WARNINGS")
 # v4.5.0 operator: "THE BRAIN CHOSE TO TRADE A COIN THAT WAS SO OBVIOUSLY A RUG, EVEN OUR RISK SYSTEM AGREED.
 # THE AI AND RISK SYSTEM MUST WORK TOGETHER". The risk system now has a veto over the brain's buys:
 # a failed one of these checks, a HIGH/CRITICAL risk level or any rug flag means no buy.
 BRAIN_RISK_GATES = {"launch_buys", "launch_shape", "bundled_supply", "sniper_holdings", "creator_dumping",
                     "insider_micro_trades", "wallet_network", "holder_concentration", "creator_history",
                     "launch_bundle"}
-BRAIN_BLOCK_RISK = ("ELEVATED", "CRITICAL")
+BRAIN_BLOCK_RISK = ("CRITICAL",)
+BRAIN_SOFT_RISK = ("ELEVATED",)                  # v5.1.4: HIGH risk needs conviction, not a flat no
+SKIP_META_KEY = "brain_skips"                    # why the brain did not buy (dashboard Paper tab, brain account)
 
 
 def init_schema(db) -> None:
@@ -362,9 +367,49 @@ class BrainTrader:
         return bool(getattr(self.s, "paper_enabled", True) and getattr(self.s, "paper_brain_enabled", True))
 
     def consider(self, out, now: Optional[float] = None) -> Optional[str]:
-        """Called once per finished research. Returns "bought" or why not (None when the brain gave no odds)."""
+        """Called once per finished research. Returns "bought" or why not (None when the brain gave no odds).
+        v5.1.4: every answer is counted, so the Paper tab shows why the brain is (not) buying."""
         if not self.enabled():
             return None
+        res = self._consider(out, now)
+        self._count(res or "no brain odds: a bonding-curve coin or no DEX pool (the brain only rates pool coins)",
+                    now or time.time())
+        return res
+
+    def _count(self, res: str, now: float) -> None:
+        import re
+        key = "bought" if res == "bought" else re.sub(r"\$?[\d][\d.,]*%?", "#", str(res))[:80]
+        st = self.__dict__.setdefault("skips", {"since": now, "counts": {}, "considered": 0})
+        if now - st["since"] >= 86400:                       # a fresh 24 h window; the last one is kept
+            self.__dict__["skips_prev"] = st
+            st = self.skips = {"since": now, "counts": {}, "considered": 0}
+        st["considered"] += 1
+        st["counts"][key] = st["counts"].get(key, 0) + 1
+        if now - self.__dict__.get("_skips_saved", 0) >= 60:
+            self.flush_skips(now)
+
+    def flush_skips(self, now: Optional[float] = None) -> None:
+        """Save the decision counts for the dashboard (at most once a minute from consider())."""
+        st = self.__dict__.get("skips")
+        if not st:
+            return
+        now = now or time.time()
+        self._skips_saved = now
+        try:
+            self.db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                            (SKIP_META_KEY, json.dumps({**st, "updated": now,
+                                                        "previous": self.__dict__.get("skips_prev")})))
+        except Exception:  # noqa: BLE001 - the counter must never stop paper trading
+            pass
+
+    def skip_summary(self, top: int = 6) -> str:
+        st = self.__dict__.get("skips")
+        if not st or not st["considered"]:
+            return "nothing considered yet"
+        rows = sorted(st["counts"].items(), key=lambda kv: -kv[1])[:top]
+        return f"{st['considered']} coins considered: " + "; ".join(f"{k} x{n}" for k, n in rows)
+
+    def _consider(self, out, now: Optional[float] = None) -> Optional[str]:
         r = out.report or {}
         p = (r.get("brain") or {}).get("p")
         pair = getattr(out, "pair", None)
@@ -384,7 +429,7 @@ class BrainTrader:
                     if rug is not None else f"runner odds {p:.0%} under {need:.0%}")
         risk = getattr(getattr(out, "risk", None), "value", None) or r.get("risk")
         if risk in BRAIN_BLOCK_RISK:
-            return f"risk system: {'HIGH' if risk == 'ELEVATED' else risk} risk"
+            return f"risk system: {risk} risk"
         failed = [str(g.get("name")) for g in r.get("gates") or []
                   if isinstance(g, dict) and g.get("status") == "FAIL" and g.get("name") in BRAIN_RISK_GATES]
         if failed:
@@ -397,6 +442,17 @@ class BrainTrader:
                                                                   isinstance(r.get("unified"), dict) else "") or "")
         if rc in BRAIN_SKIP_CLASSES:
             return f"failed {rc.lower().replace('_', ' ')}"
+        # v5.1.4: HIGH risk / a risk-threshold class is weighed, not a flat no: the conviction grade already counts
+        # it against the coin, and the buy needs paper_brain_min_conviction
+        from . import conviction as CV
+        soft = (["HIGH risk"] if risk in BRAIN_SOFT_RISK else []) + \
+               ([rc.lower().replace("_", " ")] if rc in BRAIN_SOFT_CLASSES else [])
+        graded = CV.assess(r, self.s)
+        if soft:
+            floor = float(getattr(self.s, "paper_brain_min_conviction", 50.0))
+            if graded.score < floor:
+                return f"risk system: {', '.join(soft)} and conviction {graded.score:.0f} under {floor:.0f}"
+        conv = graded if engine_mode(self.s) and CV.enabled(self.s) else None
         if (r.get("verdict") or {}).get("level") == "RUG LIKELY":
             return "rug check: RUG LIKELY"
         if (pair.liquidity_usd or 0) < MIN_BRAIN_LIQUIDITY:
@@ -418,11 +474,8 @@ class BrainTrader:
             plan = TP.build_plan(mc, self.s, "standard")
         except (AttributeError, KeyError, TypeError):
             plan = None
-        note = f"runner odds {p:.0%}" + (f" · rug odds {rug:.0%}" if rug is not None else "")
-        conv = None
-        if engine_mode(self.s):
-            from . import conviction as CV
-            conv = CV.assess(r, self.s) if CV.enabled(self.s) else None
+        note = f"runner odds {p:.0%}" + (f" · rug odds {rug:.0%}" if rug is not None else "") + \
+            (f" · bought despite {', '.join(soft)} (conviction {graded.score:.0f})" if soft else "")
         why = _buy(self.db, run, ref, out.mint, pair.base_symbol, "brain", mc, plan.__dict__ if plan else None, now,
                    note=note, pool=pair.pair_address, conv=conv, entry_liq=pair.liquidity_usd)
         return why or "bought"
@@ -449,6 +502,11 @@ class BrainTrader:
 
     async def run_once(self, now: Optional[float] = None) -> dict:
         counts = {"followed": 0, "closed": 0, "priced": 0}
+        t = now or time.time()
+        if self.enabled() and t - self.__dict__.get("_skips_logged", t - 3600) >= 3600:
+            self._skips_logged = t
+            log.info("paper[brain]: last 24 h: %s", self.skip_summary())
+            self.flush_skips(t)
         if not self.enabled() or engine_mode(self.s):
             return counts                          # v5.0.0: in engine mode the ExitManager sells
         now = now or time.time()

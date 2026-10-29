@@ -227,7 +227,8 @@ def test_brain_never_buys_what_the_risk_system_rejects(settings, db):
     bt = PT.BrainTrader(settings, db, None)
     mcnugget = _brain_out(addr("mcn"), risk="ELEVATED", gates=[
         {"name": "launch_buys", "status": "FAIL"}, {"name": "launch_shape", "status": "FAIL"}])
-    assert bt.consider(mcnugget) == "risk system: HIGH risk"
+    # v5.1.4: HIGH risk is weighed (conviction), but its failed launch checks still refuse it
+    assert bt.consider(mcnugget) == "risk system: failed launch buys, launch shape"
     bundled = _brain_out(addr("bnd"), gates=[{"name": "launch_buys", "status": "FAIL"}])
     assert bt.consider(bundled) == "risk system: failed launch buys"
     flagged = _brain_out(addr("flg"), gates=[{"name": "mint_authority", "status": "FAIL"}])

@@ -3,6 +3,22 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.1.4 - The brain's paper account trades again, and shows why it does or doesn't
+
+Operator: "the AI brain does not paper trade, he started a bit then stopped for like a week now."
+
+- Cause: since v4.5.0 (23 Oct) any coin the risk system rated HIGH, or whose decision class was RISK_THRESHOLD /
+  SERIOUS_WARNINGS, was a flat no for the brain. Most researched coins carry one of those, so it almost never bought.
+  Its skip reasons were thrown away, so nobody could see it.
+- HIGH risk and those two classes are now weighed instead: the brain may buy when the setup's conviction grade (which
+  already counts that risk against the coin) is at least `paper_brain_min_conviction` (50). The trade's note says
+  "bought despite HIGH risk (conviction N)". CRITICAL risk, failed launch/holder/creator checks, rug flags, safety
+  failures and RUG LIKELY still block. `paper_brain_min_conviction=101` restores the old blanket veto.
+- Every decision is counted: the Paper tab's brain account shows "What the brain decided" for the last 24 h, and the
+  log prints a summary every hour (`paper[brain]: last 24 h: ...`).
+- Still true: the brain only rates coins with a DEX pool. Bonding-curve coins get no brain odds (it was not trained on
+  them), so those show up as "no brain odds" in the counts.
+
 ## v5.1.3 - Verified prices: no more milestones that never happened
 
 Operator: "the bot lies to me, it posts milestones that didn't happen and lies about the current price of a coin."
