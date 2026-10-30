@@ -3,6 +3,17 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.5.1 - Recap: winners only, and every 2x+ checked on the chart
+
+- Operator: "We dont show the coins that didnt go above a 1x peak, 1.4x's show". The daily recap now lists only
+  calls that reached 1.4x (`daily_recap_min_multiple`, on the dashboard). The header still counts every call of the day.
+- The 30 Oct recap showed $UP at 58.16x* (the real high was about 2.7x). Cause: a runner call that had migrated
+  off its pump.fun curve was never checked against the chart, so its stored (wrong) peak went out marked "*". Now the
+  check reads the curve's candles plus the coin's pools on GeckoTerminal (the PumpSwap pool after migration), and
+  uses 5-minute candles for calls more than 15 hours old, so the moment of the call is covered.
+- A 2x+ peak that still cannot be checked is no longer shown; the recap says how many were left out.
+- A wrong stored peak is corrected in the database when the recap checks it.
+
 ## v5.5.0 - "Why not called?": paste a coin, get the reason
 
 - New "Why not called?" button on the dashboard next to Research (`northstar/why_not.py`, `/api/why`). Paste any coin

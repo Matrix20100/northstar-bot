@@ -75,34 +75,52 @@ def calls_between(db, start: float, end: float) -> list[dict]:
     return sorted([c for c in out if c["x"]], key=lambda c: (-c["x"], c["at"]))
 
 
-def _chart_pool(c: dict) -> Optional[str]:
-    """The pool whose candles show this call's whole run: a standard call's pool; a runner call still on its pump.fun
-    curve, the curve (after migration the curve's candles stop, so a migrated runner is not chart-checked)."""
+async def _chart_pools(c: dict, cg) -> list[str]:
+    """Every pool whose candles show part of this call's run: a standard call's pool; for a runner call its pump.fun
+    curve (the run before migration) plus the coin's busiest pools on GeckoTerminal (the run after it). v5.5.1: before
+    this, a migrated runner was never chart-checked, so its stored peak went out unchecked (the false $UP 58x)."""
     if c.get("kind") == "standard":
-        return c.get("pool")
-    if c.get("phase") == "CURVE" and c["mint"].endswith("pump"):
+        return [c["pool"]] if c.get("pool") else []
+    pools = []
+    if c["mint"].endswith("pump"):
         from .analysis.pda import pump_bonding_curve_address
-        return pump_bonding_curve_address(c["mint"])
-    return None
+        curve = pump_bonding_curve_address(c["mint"])
+        if curve:
+            pools.append(curve)
+    if c.get("phase") != "CURVE" and hasattr(cg, "token_pools"):
+        try:
+            pools += [p for p in await cg.token_pools(c["mint"]) if p not in pools]
+        except Exception:  # noqa: BLE001 - optional source
+            pass
+    return pools
 
 
-async def verify_peaks(db, calls: list[dict], cg) -> None:
-    """Check every 2x+ peak against the chart; correct a peak the chart does not show (in place and in the db)."""
+async def verify_peaks(db, calls: list[dict], cg, now: Optional[float] = None) -> None:
+    """Check every 2x+ peak against the chart; correct a peak the chart does not show (in place and in the db).
+
+    The chart multiple is the highest high since the call over the price at the call (the first candle at or after
+    it), across all the coin's pools. A day's call can be up to 24 h old, more than 1,000 one-minute candles, so calls
+    older than 15 h are read in 5-minute candles."""
+    now = now or time.time()
     for c in calls:
         if c["x"] < 2:
             continue
-        pool = _chart_pool(c) if cg is not None else None
         candles = []
-        if pool:
-            try:
-                candles = await cg.candles(pool, c["at"] - 60, token=c["mint"])
-            except Exception:  # noqa: BLE001 - optional source: the call is marked unchecked
-                candles = []
-        after = [k for k in candles if k[0] >= c["at"] - 60]
+        if cg is not None:
+            agg = 1 if now - c["at"] < 15 * 3600 else 5
+            for pool in await _chart_pools(c, cg):
+                try:
+                    candles += await cg.candles(pool, c["at"] - 60 * agg, token=c["mint"], aggregate=agg)
+                except TypeError:                      # an older client without ``aggregate``
+                    candles += await cg.candles(pool, c["at"] - 60, token=c["mint"])
+                except Exception:  # noqa: BLE001 - optional source: the call is marked unchecked
+                    continue
+        after = sorted(k for k in candles if k[0] >= c["at"] - 300)
         if len(after) < 2 or not after[0][1]:
             c["unchecked"] = True
             continue
         chart_x = max(k[2] for k in after) / after[0][1]           # highest high since the call / open at the call
+        c["checked"] = True
         if c["x"] > chart_x * 1.25:
             log.warning("daily recap: %s ($%s) peak %.2fx is not on the chart (chart %.2fx); corrected", c["mint"],
                         c.get("symbol"), c["x"], chart_x)
@@ -119,20 +137,30 @@ async def verify_peaks(db, calls: list[dict], cg) -> None:
 
 
 def _icon(x: float) -> str:
-    return "🚀" if x >= 5 else "🔥" if x >= 3 else "📈" if x >= 2 else "✅" if x >= 1.5 else "▫️"
+    return "🚀" if x >= 5 else "🔥" if x >= 3 else "📈" if x >= 2 else "✅" if x >= 1.4 else "▫️"
 
 
-def build(calls: list[dict], day_label: str) -> list[dict]:
-    """The recap embeds (more than one only when the list does not fit in one)."""
+def build(calls: list[dict], day_label: str, min_x: float = 1.4) -> list[dict]:
+    """The recap embeds (more than one only when the list does not fit in one).
+
+    v5.5.1, operator: "We dont show the coins that didnt go above a 1x peak, 1.4x's show". Only calls that reached
+    ``min_x`` are listed; the header still counts every call of the day. A 2x+ peak the chart could not confirm is not
+    shown at all (it is counted in a footnote): the free channel only shows multiples that were checked."""
     n = len(calls)
-    two = sum(1 for c in calls if c["x"] >= 2)
-    best = next((c for c in calls if not c.get("unchecked")), calls[0])
-    head = (f"**{n} call{'s' if n != 1 else ''} in the last 24 hours** · {two} reached 2x or more · "
-            f"best **${best.get('symbol') or '?'} {best['x']:.2f}x**\n\n")
-    lines = [f"{_icon(c['x'])} **${c.get('symbol') or c['mint'][:6]}** — **{c['x']:.2f}x**{'*' if c.get('unchecked') else ''}"
-             f" peak ({_money(c['entry'])} → {_money(c['peak'])})" for c in calls]
-    if any(c.get("unchecked") for c in calls):
-        lines.append("\n*peak not confirmed by chart data")
+    unconfirmed = [c for c in calls if c["x"] >= 2 and c.get("unchecked")]
+    shown = [c for c in calls if c["x"] >= min_x and not (c["x"] >= 2 and c.get("unchecked"))]
+    two = sum(1 for c in shown if c["x"] >= 2)
+    head = f"**{n} call{'s' if n != 1 else ''} in the last 24 hours**"
+    if shown:
+        head += (f" · {len(shown)} went {min_x:g}x or more · {two} reached 2x or more · "
+                 f"best **${shown[0].get('symbol') or '?'} {shown[0]['x']:.2f}x**\n\n")
+    else:
+        head += f" · none went {min_x:g}x or more\n\n"
+    lines = [f"{_icon(c['x'])} **${c.get('symbol') or c['mint'][:6]}** — **{c['x']:.2f}x**"
+             f" peak ({_money(c['entry'])} → {_money(c['peak'])})" for c in shown]
+    if unconfirmed:
+        lines.append(f"\n{len(unconfirmed)} more call{'s' if len(unconfirmed) != 1 else ''} not shown: the peak "
+                     "could not be checked against chart data.")
     pages, cur = [], head
     for ln in lines:
         if len(cur) + len(ln) + 1 > MAX_DESC:
@@ -144,7 +172,7 @@ def build(calls: list[dict], day_label: str) -> list[dict]:
     embeds = []
     for i, desc in enumerate(pages):
         e = {"description": desc.rstrip(), "color": COLOR, "timestamp": ts,
-             "footer": {"text": "Peak since each call, from tracked prices · observed, not guaranteed executable "
+             "footer": {"text": "Peak since each call, 2x+ checked against chart data · observed, not guaranteed executable "
                                 "profit · not financial advice"}}
         if i == 0:
             e["title"] = f"📊 Daily recap · {day_label}"
@@ -182,7 +210,7 @@ async def run_once(db, s, publisher, now: Optional[float] = None, cg=None) -> di
     if day is None:
         return {"posted": 0}
     calls = calls_between(db, now - DAY, now)
-    await verify_peaks(db, calls, cg)
+    await verify_peaks(db, calls, cg, now)
 
     def done() -> None:
         db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (META_KEY, day))
@@ -192,7 +220,7 @@ async def run_once(db, s, publisher, now: Optional[float] = None, cg=None) -> di
         return {"posted": 0, "calls": 0}
     label = time.strftime("%d %b %Y", time.gmtime(now))
     posted = 0
-    for e in build(calls, label):
+    for e in build(calls, label, float(getattr(s, "daily_recap_min_multiple", 1.4))):
         try:
             await publisher.publish(e, channel(s))
             posted += 1

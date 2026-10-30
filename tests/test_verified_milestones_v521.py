@@ -160,4 +160,5 @@ def test_a_peak_the_chart_cannot_check_is_marked(db):
     calls = R.calls_between(db, DAY_20H - R.DAY, DAY_20H)
     asyncio.run(R.verify_peaks(db, calls, Candles([])))
     desc = R.build(calls, "30 Oct 2026")[0]["description"]
-    assert "**7.70x***" in desc and "peak not confirmed by chart data" in desc
+    assert "7.70x" not in desc and "$BER" not in desc                      # v5.5.1: unconfirmed 2x+ is not shown
+    assert "1 more call not shown: the peak could not be checked against chart data." in desc

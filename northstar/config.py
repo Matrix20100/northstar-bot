@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     daily_recap_enabled: bool = True
     daily_recap_hour_utc: int = 19                    # 19:00 UTC = 21:00 in South Africa
     discord_recap_channel_id: Optional[int] = None
+    daily_recap_min_multiple: float = 1.4             # v5.5.1: only calls that reached this are listed
     dry_run: bool = False  # True = never post; write embeds to data/dry_run_alerts.jsonl
 
     # ---------------------------------------------------------------- API keys
