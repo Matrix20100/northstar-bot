@@ -3,6 +3,18 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.4.0 - Call review: what separated the calls that died from the ones that ran
+
+- New "Call review" card on the Learning tab (`northstar/call_review.py`, `/api/call_review`). Every runner/early call
+  of the last 30 days is put in a group: DIED (never 1.3x, then dead or 0.5x and lower), RAN (2x+) or in between;
+  calls under 2 h old that have done neither are left out.
+- For each signal the bot had at the moment of the call (launch wave, copycat name, bundled / sniped / organic launch,
+  snipers still holding, dev %, top-10 holders, tracked wallets, a 50%+ pump before the call, buy pressure, score,
+  conviction grade C, rug odds, entry market cap) it shows how often calls with it died or ran against calls without
+  it, biggest difference first; signals with under 5 calls on a side are marked "too few to tell". A second table shows
+  the median of each number for the calls that died and the calls that ran.
+- Evidence only: it changes nothing about how the bot calls. A rule is chosen from it.
+
 ## v5.3.0 - Chart-aware exits: the runner rides higher lows
 
 Operator: "a trailing stop should be disabled for a retest and second pump... The bot sold on BIBI which is doing

@@ -772,6 +772,12 @@ class DashboardServer:
                         return self._send(200, T.summary(_Ro(c), max(1.0, min(hours, 24 * 14)), now))
                     if u.path == "/api/learning":
                         return self._send(200, view_learning(c, s, now))
+                    if u.path == "/api/call_review":            # v5.4.0
+                        from . import call_review as CR
+                        if not _table_ok(c, "early_calls"):
+                            return self._send(200, {"ready": False, "calls": 0})
+                        days = float((parse_qs(u.query).get("days") or ["30"])[0] or 30)
+                        return self._send(200, CR.review(_Ro(c), now, max(1.0, min(days, 90.0))))
                     if u.path == "/api/settings":
                         return self._send(200, view_settings(c, s))
                     if u.path == "/api/token":
