@@ -3,6 +3,28 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.2.1 - Milestones are checked in dollars before they post; the SOL price needs agreeing sources
+
+Operator: "bot lied again". $UP (`EQ7g...pump`), called 06:17 UTC at $16.8K with a real high of $44.7K (Axiom ATH),
+was posted in the free channel as "hit 40x" and "hit 50x" at $975.4K.
+
+- The inflation (about 22x to 58x, the same order as $Pumpers and $Pilly) fits a wrong SOL/USD price: every curve
+  price is SOL x that price, and the v5.1.3 Jupiter check priced in SOL with the same number, so it could not catch it.
+  The server log was not available to confirm the exact path, so every path is closed:
+- **Every milestone is checked before it posts** (early/runner calls and standard calls), from any price source,
+  against a real 10 USDC buy quote on Jupiter times the supply read from the chain: a dollar price that does not
+  depend on the bot's SOL price. A milestone Jupiter does not back is not posted, the false price and peak are
+  replaced by Jupiter's, and the log says "milestone check ... milestone NOT posted, price corrected". If Jupiter
+  cannot be asked, the milestone waits.
+- **SOL/USD price:** the median of the three deepest SOL/USDC/USDT pools (not the single deepest), cross-checked with
+  CoinGecko; when they disagree the one closer to the last good price wins (with no history, neither: dollars are
+  not guessed); a jump over 30% from one source is not used until confirmed. Changes and disagreements are logged.
+- **Physical limit:** a pump.fun curve that has not completed cannot read more than 450 SOL of market cap (a curve
+  completes near 410); a bigger reading is not used.
+- **Daily recap:** every call listed at 2x or more is checked against GeckoTerminal's 1-minute candles (highest price
+  since the call / price at the call). A peak more than 25% above the chart's is corrected in the recap and the
+  database. A peak the chart could not confirm is marked with *. So today's $UP shows about 2.7x, not 58x.
+
 ## v5.2.0 - Daily recap in the free channel; no more stop-loss / drawdown posts
 
 Operator: "make a recap system that posts in the free channel every day of all the multipliers and remove the

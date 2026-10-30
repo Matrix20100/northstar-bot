@@ -163,6 +163,7 @@ class Engine:
         self.early = EarlyCaller(s, db, publisher, self.events, self.judge)
         from .price_guard import PriceGuard
         self.price_guard = PriceGuard(providers.rpc, getattr(providers, "jupiter", None), providers.sol_price)
+        self.monitor.guard = self.price_guard           # v5.2.1: standard-call milestones are checked too
         self.early_calls = EarlyCallTracker(s, db, publisher, providers.rpc, providers.dex, providers.sol_price,
                                             guard=self.price_guard)
         self.curve_radar = (CurveRadar(s, db, providers.dex)
@@ -1330,7 +1331,7 @@ class Engine:
     async def _daily_recap(self) -> None:
         """v5.2.0: once a day, every call of the last 24 h with its peak multiple, to the free (or recap) channel."""
         from . import recap
-        await recap.run_once(self.db, self.s, self.pub)
+        await recap.run_once(self.db, self.s, self.pub, cg=getattr(self.p, "coingecko", None))
 
     async def _heartbeat(self) -> None:
         h = {r["provider"]: r["status"] for r in self.db.provider_health()}

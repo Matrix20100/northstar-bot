@@ -45,7 +45,11 @@ JUMP_X = 2.0                       # a move this big (up or down) since the last
 AGREE_X = 1.67                     # two prices within this ratio agree
 CONFIRM_X = 1.35                   # a second DexScreener read must be within this of the first
 PENDING_TTL = 300.0                # an unconfirmed reading is forgotten after this many seconds
-QUOTE_SOL = 0.05                   # the Jupiter buy quote size
+QUOTE_SOL = 0.05                   # (kept for older callers)
+QUOTE_USDC = 10.0                  # v5.2.1: the Jupiter buy quote is in USDC: a dollar price that does not depend
+                                   # on the bot's own SOL/USD price (a wrong SOL price fooled the SOL-based check)
+CONFIRM_TTL = 60.0                 # a milestone check result is reused for this long
+CURVE_MAX_MCAP_SOL = 450.0         # a pump.fun curve completes near 410 SOL of market cap: more is not a curve price
 
 
 def mcap_of(p) -> Optional[float]:
@@ -109,21 +113,16 @@ class PriceGuard:
         return self._supply[mint]
 
     async def jupiter_mcap(self, mint: str):
-        """Market cap implied by a real 0.05 SOL buy on Jupiter now. None = cannot ask; "NO_ROUTE" = nothing fills."""
-        if self.jupiter is None or self.sol_price is None:
+        """Market cap implied by a real 10 USDC buy on Jupiter now, times the supply read from the chain. In dollars
+        directly, so it does not depend on the bot's SOL/USD price. None = cannot ask; "NO_ROUTE" = nothing fills."""
+        if self.jupiter is None:
             return None
         sup = await self._supply_of(mint)
         if not sup:
             return None
+        from .providers.solana_rpc import USDC_MINT
         try:
-            sol_usd = await self.sol_price.get()
-        except Exception:  # noqa: BLE001
-            sol_usd = None
-        if not sol_usd:
-            return None
-        from .providers.jupiter import SOL
-        try:
-            q = await self.jupiter.quote(SOL, int(QUOTE_SOL * 1e9), out_mint=mint)
+            q = await self.jupiter.quote(USDC_MINT, int(QUOTE_USDC * 1e6), out_mint=mint)
         except Exception:  # noqa: BLE001
             return None
         if q is None:
@@ -134,7 +133,37 @@ class PriceGuard:
         tokens = float(q["out_amount"]) / 10 ** dec
         if tokens <= 0:
             return "NO_ROUTE"
-        return QUOTE_SOL * sol_usd / tokens * supply
+        return QUOTE_USDC / tokens * supply
+
+    async def confirm_milestone(self, mint: str, mcap: float, label: str = "") -> tuple[bool, Optional[float]]:
+        """v5.2.1: may a milestone be posted at this market cap? (ok, Jupiter's market cap). Every milestone, from any
+        price source (chain curve, DexScreener), is checked against a real dollar buy quote first. Operator: "bot
+        lied again" ($UP posted 40x and 50x at $975K; its real high was $44.7K)."""
+        if self.jupiter is None:
+            if not self.__dict__.get("_no_jup_logged"):
+                self._no_jup_logged = True
+                log.warning("milestone check: Jupiter is switched off (NORTHSTAR_ENABLE_JUPITER); milestones are "
+                            "posted unchecked")
+            return True, None
+        now = self._now()
+        cache = self.__dict__.setdefault("_confirm", {})
+        hit = cache.get(mint)
+        if hit and now - hit[0] < CONFIRM_TTL:
+            jup = hit[1]
+        else:
+            jup = await self.jupiter_mcap(mint)
+            if jup is not None:
+                cache[mint] = (now, jup)
+        if isinstance(jup, float):
+            if jup * AGREE_X >= mcap:                       # a real buy prices it at least this high (within 1.67x)
+                return True, jup
+            log.warning("milestone check %s%s: the bot read $%.0f but a real buy on Jupiter prices it at $%.0f; "
+                        "milestone NOT posted, price corrected", mint, f" ({label})" if label else "", mcap, jup)
+            return False, jup
+        if jup == "NO_ROUTE":
+            log.warning("milestone check %s%s: nothing can buy it on Jupiter; milestone not posted", mint,
+                        f" ({label})" if label else "")
+        return False, None
 
     async def verify(self, mint: str, reading: float, last: Optional[float], label: str = "") -> Optional[float]:
         """The market cap to use for this DexScreener `reading` (None = do not use it yet). `last` is the last

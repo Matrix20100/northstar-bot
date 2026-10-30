@@ -32,7 +32,9 @@ class Jup:
         if self.mcap == "NO_ROUTE":
             return {"no_route": True}
         price = self.mcap / 1e9                               # USD per token
-        tokens = 0.05 * 200.0 / price
+        from northstar.providers.solana_rpc import USDC_MINT
+        usd = amount_raw / 1e6 if mint == USDC_MINT else amount_raw / 1e9 * 200.0   # v5.2.1: USDC quotes
+        tokens = usd / price
         return {"no_route": False, "out_amount": tokens * 1e6}
 
 

@@ -568,6 +568,10 @@ class EarlyCallTracker:
                     out[r["mint"]] = (None, True)
                     self._chain_migrated.add(r["mint"])      # the chain says so: a fact, whatever the price
                     pool.append(r)
+                elif st.get("market_cap_sol") and st["market_cap_sol"] > PG.CURVE_MAX_MCAP_SOL:
+                    # v5.2.1: a curve that has not completed cannot be worth more than the curve's end value
+                    self._why_unread(r["mint"], f"curve read {st['market_cap_sol']:.0f} SOL of market cap, more than a "
+                                                f"pump.fun curve can hold ({PG.CURVE_MAX_MCAP_SOL:.0f}): not used")
                 elif st.get("market_cap_sol") and sol_usd:
                     out[r["mint"]] = (st["market_cap_sol"] * sol_usd, False)
                     self._source[r["mint"]] = "chain"
@@ -694,6 +698,18 @@ class EarlyCallTracker:
                         "current_mcap": row.get("current_mcap"), "peak_mcap": row.get("peak_mcap"),
                         "sent_at": r["created_at"], "image_url": ident.get("image_url")}
             new_ms = [x for x in self.s.milestone_list if x >= 2 and peak_x >= x and x not in done_ms]
+            if new_ms and self.guard is not None and r["entry_mcap"]:
+                # v5.2.1: every milestone is checked against a real dollar buy quote before it is posted
+                ok, real = await self.guard.confirm_milestone(mint, row.get("current_mcap") or row.get("peak_mcap"),
+                                                              ident.get("symbol") or "")
+                if not ok:
+                    if real:                     # the reading was wrong: keep Jupiter's price, drop the false peak
+                        before = r["peak_mcap"] or r["entry_mcap"]
+                        keep = before if before < min(new_ms) * r["entry_mcap"] else r["entry_mcap"]
+                        fields.update(current_mcap=real, peak_mcap=max(real, keep))
+                        row.update(current_mcap=real, peak_mcap=max(real, keep))
+                        ms_alert.update(current_mcap=real, peak_mcap=max(real, keep))
+                    new_ms = []                  # not posted now (re-checked next pass when it could not be asked)
             free_ch = self.s.discord_free_channel_id
             free_sent = bool(r.get("free_message_id"))
             for x in new_ms:
