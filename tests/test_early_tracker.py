@@ -223,7 +223,7 @@ class TrackerTests(Base):
 
     def test_embed_never_exceeds_discord_limits(self):
         self.db.set_state(MINT, "REJECTED", last_action="REJECT", last_score=50.0, reasons=["y" * 5000])
-        self.rpc.cap = 500.0
+        self.rpc.cap = 400.0                    # v5.2.1: a curve cannot read over 450 SOL
         self.run_once()
         e = self.pub.edits[-1][2]
         self.assertLessEqual(len(e["description"]), 4096)

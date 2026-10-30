@@ -271,6 +271,8 @@ def tracker(db, pub, monkeypatch, cap_sol=300.0, complete=False, pairs=()):
 def test_tracker_records_peak_posts_milestones_and_a_delayed_free_copy(db, monkeypatch):
     """v4.0.0: milestones go to VIP as they happen; the free channel gets the call 20 minutes later
     with every milestone so far at once; exits are recorded but never posted."""
+    from northstar import price_guard as PG
+    monkeypatch.setattr(PG, "CURVE_MAX_MCAP_SOL", 10_000.0)   # v5.2.1: this test's 650 SOL "curve" predates the limit
     s, pub, c = caller(db)
     row = asyncio.run(c.consider(outcome(curve_report())))
     assert row["entry_mcap"] == 40_000

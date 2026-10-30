@@ -173,6 +173,9 @@ class EarlyWatchTracker:
             mint = row["mint"]
             state = Researcher._parse_pump_curve_account(accounts[i]) if batch_ok else None
             cap = state.get("market_cap_sol") if state else None
+            from .price_guard import CURVE_MAX_MCAP_SOL
+            if cap is not None and cap > CURVE_MAX_MCAP_SOL and not state.get("complete"):
+                cap = None                       # v5.2.1: more than a pump.fun curve can hold: not a real reading
             if state and state.get("complete") and cap is None:
                 # v5.1.5: the curve finished and its reserves were emptied: the coin migrated
                 await self._finish(row, "MIGRATED", counts)

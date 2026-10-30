@@ -34,8 +34,8 @@ class Gecko:
 
 def test_deepest_stable_pool_wins_and_is_cached():
     dex = Dex([pair(150.0, 5_000_000), pair(149.0, 200_000), pair(999.0, 50)])
-    p = SolUsdPrice(dex, Gecko(1.0))
-    assert asyncio.run(p.get()) == 150.0 and p.source == "dexscreener"
+    p = SolUsdPrice(dex, Gecko(150.4))
+    assert asyncio.run(p.get()) == 150.0 and p.source == "dexscreener+coingecko"
     asyncio.run(p.get())
     assert dex.calls == 1
 

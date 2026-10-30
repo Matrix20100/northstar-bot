@@ -33,6 +33,16 @@ control - 5-min buys >= sells, no fast 5-min dump, liquidity at least 60% of wha
 `exit_grace_seconds` for a bounce ("dip-hold"). Never below `exit_hard_stop_pct`, and never once the coin had run
 past the trailing-stop start (then the trailing stop is in charge). "Never got going" waits longer for strong setups.
 
+v5.3.0 CHART-AWARE RUNNER (operator: "a trailing stop should be disabled for a retest and second pump... the bot sold
+on BIBI which is doing higher highs, called at 20k now at 200k, but the trailing stop activated at a dip. The chart
+should be analysed and an educated choice made"). Every position keeps a chart memory (`Position.path`: one point every
+30 s). Once take profit 1 is sold, what is left is a runner, managed by the chart's structure instead of a fixed
+percentage: its stop sits just under the last higher low (a swing low the price bounced 10%+ from), so a retest that
+holds the higher low is ridden and a break of it sells. A cap still limits the give-back from the high (45%, more for
+strong setups, less for weak ones), sellers dumping hard (-35% in 5 min with more sells than buys) or liquidity leaving
+sells at once, and the hold time stretches to 6 h while new highs keep coming (1 h without a new high = time stop).
+Take profit 2 still sells its share. `exit_structure_enabled=false` restores the percentage trail.
+
 Every rule is a setting (dashboard Settings, "Exits"). Nothing here buys, signs or sends anything.
 """
 from __future__ import annotations
@@ -46,7 +56,10 @@ REASONS = {
     "STOP": "stop loss", "TRAIL": "trailing stop", "SELLERS": "sellers took over", "FADING": "volume faded",
     "NO_PROGRESS": "never got going", "TIME": "held too long", "TP1": "take profit 1", "TP2": "take profit 2",
     "DEAD": "coin died", "KILL": "kill switch", "END": "tracking ended", "HARD_STOP": "hard stop",
+    "STRUCTURE": "broke the higher low", "GIVEBACK": "gave back too much", "CRASH": "crash",
 }
+PATH_STEP = 30.0                 # seconds between chart-memory points
+PATH_KEEP = 720                  # points kept (6 h at 30 s)
 GRACE_MIN_LIQ_SHARE = 0.6        # a dip-hold needs at least this share of the liquidity seen at the buy
 
 
@@ -86,6 +99,8 @@ class Position:
     conviction: Optional[float] = None    # 0-100
     entry_liq: Optional[float] = None     # pool liquidity at the buy
     note: Optional[str] = None            # what the engine is doing right now (e.g. holding through a dip)
+    path: list = field(default_factory=list)   # v5.3.0 chart memory: [[t, x], ...] one point per PATH_STEP
+    runner: bool = False                  # v5.3.0: the chart-aware runner mode is on (after take profit 1)
 
 
 @dataclass
@@ -132,12 +147,99 @@ def _dip_hold(pos: Position, tick: Tick, peak_x: float, s=None) -> tuple[bool, s
     return True, f"{b} buys vs {sl} sells"
 
 
-def decide(pos: Position, tick: Tick, s=None) -> list[Action]:
-    """What to sell now. Updates pos.peak_mcap and pos.stop_x."""
+def remember(pos: Position, at: float, x: float) -> None:
+    """Add a chart-memory point (one per PATH_STEP; the lowest and highest of a step are kept by replacing the last
+    point when the new one is more extreme in the direction of travel)."""
+    p = pos.path
+    if p and at - p[-1][0] < PATH_STEP:
+        if len(p) >= 2 and ((x < p[-1][1] <= p[-2][1]) or (x > p[-1][1] >= p[-2][1])):
+            p[-1] = [p[-1][0], round(x, 5)]
+        return
+    p.append([at, round(x, 5)])
+    if len(p) > PATH_KEEP:
+        del p[: len(p) - PATH_KEEP]
+
+
+def swing_lows(path: list, bounce_pct: float = 10.0) -> list:
+    """Confirmed swing lows in the chart memory: a local low the price later rose at least `bounce_pct` above
+    (before going lower). Oldest first: [[t, x], ...]."""
+    out, i, n = [], 1, len(path)
+    while i < n - 1:
+        if path[i][1] <= path[i - 1][1] and path[i][1] <= path[i + 1][1]:
+            low = path[i][1]
+            for j in range(i + 1, n):
+                if path[j][1] < low:
+                    break                                   # went lower first: not a swing low
+                if path[j][1] >= low * (1 + bounce_pct / 100):
+                    out.append(path[i])
+                    break
+        i += 1
+    return out
+
+
+def higher_low(path: list, bounce_pct: float = 10.0) -> Optional[float]:
+    """The last swing low that is above the swing low before it (the uptrend's latest higher low), else the last
+    swing low."""
+    lows = swing_lows(path, bounce_pct)
+    if not lows:
+        return None
+    for k in range(len(lows) - 1, 0, -1):
+        if lows[k][1] > lows[k - 1][1]:
+            return lows[k][1]
+    return lows[-1][1]
+
+
+def _runner(pos: Position, tick: Tick, x: float, peak_x: float, new_high: bool, minutes: float, s) -> list[Action]:
+    """The chart-aware runner (what is left after take profit 1)."""
+    floor = 1.0 + _g(s, "exit_breakeven_buffer_pct", 2.0) / 100
+    c = max(0.0, min(1.0, (pos.conviction if pos.conviction is not None else 50.0) / 100))
+    give = max(0.15, min(0.8, _g(s, "exit_structure_max_giveback_pct", 45.0) / 100 + (c - 0.5) * 0.2))
+    hl = higher_low(pos.path, _g(s, "exit_structure_bounce_pct", 10.0))
+    if hl is not None and hl > floor:
+        # the chart shows an uptrend with a higher low above break-even: room for a retest down to just under it,
+        # never more than the give-back cap
+        line = max(floor, peak_x * (1 - give), hl * 0.97)
+    else:
+        # no higher low yet (a straight pump): the old percentage trail. Room is only given where the chart earns it
+        hl = None
+        line = trail_line(peak_x, s) or floor
+    pos.runner = True
+    pos.stop_x = line                              # every part of the line only rises with new highs / higher lows
+    buys, sells = tick.buys_m5, tick.sells_m5
+    if (tick.chg_m5 is not None and tick.chg_m5 <= -35 and buys is not None and sells is not None and sells > buys):
+        return [Action("CRASH", ALL, f"{tick.chg_m5:+.0f}% in 5 min with {sells} sells vs {buys} buys")]
+    if pos.entry_liq and tick.liquidity is not None and tick.liquidity < 0.5 * pos.entry_liq:
+        return [Action("CRASH", ALL, f"liquidity down to {tick.liquidity / pos.entry_liq:.0%} of the buy")]
+    if x <= pos.stop_x:
+        if hl is None:
+            return [Action("TRAIL", ALL, f"fell to {x:.2f}x from a {peak_x:.2f}x high (stop {pos.stop_x:.2f}x, no "
+                                         "higher low on the chart)")]
+        if pos.stop_x <= hl * 0.97 + 1e-9:
+            return [Action("STRUCTURE", ALL, f"broke the last higher low ({hl:.2f}x): {x:.2f}x from a "
+                                             f"{peak_x:.2f}x high")]
+        return [Action("GIVEBACK", ALL, f"gave back {100 * (1 - x / peak_x):.0f}% of the {peak_x:.2f}x high "
+                                        f"(cap {give:.0%})")]
+    last_high = max((p[0] for p in pos.path if p[1] >= peak_x * 0.999), default=tick.at)
+    if minutes >= _g(s, "exit_structure_max_hold_minutes", 360.0) or \
+            (tick.at - last_high) / 60 >= _g(s, "exit_structure_stale_minutes", 60.0):
+        return [Action("TIME", ALL, f"no new high for {(tick.at - last_high) / 60:.0f} min ({minutes:.0f} min held)")]
+    pos.note = (f"riding the runner: {x:.2f}x, high {peak_x:.2f}x; stop {pos.stop_x:.2f}x"
+                + (f" (last higher low {hl:.2f}x)" if hl else " (no higher low yet: give-back cap)"))
+    out = []
+    tx = _g(s, "exit_tp2_x", 2.5)
+    if "TP2" not in pos.done and tx and x >= tx:
+        out.append(Action("TP2", _g(s, "exit_tp2_sell_pct", 35.0) / 100, f"reached {x:.2f}x (take profit at {tx:g}x)"))
+    return out
+
+
+def decide(pos: Position, tick: Tick, s=None, structure: Optional[bool] = None) -> list[Action]:
+    """What to sell now. Updates pos.peak_mcap, pos.stop_x and the chart memory. `structure=False` forces the plain
+    percentage trail (used to record what the old rules would have done)."""
     entry = pos.entry_mcap
     if not entry or entry <= 0 or not tick or tick.mcap <= 0:
         return []
     x = tick.mcap / entry
+    remember(pos, tick.at, x)
     new_high = tick.mcap > pos.peak_mcap
     pos.peak_mcap = max(pos.peak_mcap or entry, tick.mcap)
     peak_x = pos.peak_mcap / entry
@@ -166,6 +268,10 @@ def decide(pos: Position, tick: Tick, s=None) -> list[Action]:
         extra = f"; no dip-hold: {why}" if pos.grace and why else ""
         return [Action("STOP", ALL, f"down {100 * (1 - x):.0f}% from the entry (stop at -{stop_pct:.0f}%){extra}")]
     pos.grace_since = None
+    # 1b. v5.3.0: after take profit 1 the rest is a runner managed by the chart's structure
+    use_structure = bool(getattr(s, "exit_structure_enabled", True)) if structure is None else structure
+    if use_structure and "TP1" in pos.done:
+        return _runner(pos, tick, x, peak_x, new_high, minutes, s)
     # 2. trailing stop (ratchets up, never down)
     line = trail_line(peak_x, s)
     if line is not None:
@@ -217,13 +323,14 @@ def apply_conviction(pos: Position, conv) -> Position:
     return pos
 
 
-def replay(entry_mcap: float, opened_at: float, ticks: list[Tick], s=None, conv=None) -> dict:
+def replay(entry_mcap: float, opened_at: float, ticks: list[Tick], s=None, conv=None,
+           structure: Optional[bool] = None) -> dict:
     """Run the engine over a recorded price path: where would it have sold? Used for calls the bot
     only tracked (the Calls tab's "bot exit"). Returns {"x" (average sell multiple), "exit", "reason", "at"}."""
     pos = apply_conviction(Position(entry_mcap=entry_mcap, opened_at=opened_at, peak_mcap=entry_mcap), conv)
     left, got, last = 1.0, 0.0, None
     for t in ticks:
-        for a in decide(pos, t, s):
+        for a in decide(pos, t, s, structure=structure):
             part = left if a.fraction >= ALL else min(left, a.fraction)
             got += part * t.mcap / entry_mcap
             left -= part

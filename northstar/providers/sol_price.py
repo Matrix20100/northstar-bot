@@ -17,6 +17,11 @@ from .solana_rpc import USDC_MINT, USDT_MINT, WSOL_MINT
 log = logging.getLogger("northstar.sol_price")
 
 MIN_SANE, MAX_SANE = 1.0, 100_000.0
+# v5.2.1: one bad SOL/USD number multiplies every bonding-curve price by the same factor. The deepest DexScreener
+# pool is no longer trusted alone: the median of the deepest pools is used, CoinGecko is the cross-check, and a
+# sudden move needs a second source (or a second read) that agrees before it replaces the last good price.
+AGREE_PCT = 10.0                   # two sources within this % agree
+JUMP_PCT = 30.0                    # a move bigger than this from the last good price needs confirming
 
 
 class SolUsdPrice:
@@ -43,8 +48,9 @@ class SolUsdPrice:
                   and (p.liquidity_usd or 0) >= 100_000]
         if not stable:
             return None
-        best = max(stable, key=lambda p: p.liquidity_usd or 0)
-        return self._sane(best.price_usd)
+        deepest = sorted(stable, key=lambda p: -(p.liquidity_usd or 0))[:3]
+        prices = sorted(x for x in (self._sane(p.price_usd) for p in deepest) if x)
+        return prices[len(prices) // 2] if prices else None
 
     async def _from_gecko(self) -> Optional[float]:
         if self.gecko is None:
@@ -53,19 +59,50 @@ class SolUsdPrice:
                                         params={"ids": "solana", "vs_currencies": "usd"}, cache_ttl=30)
         return self._sane(((data or {}).get("solana") or {}).get("usd"))
 
+    @staticmethod
+    def _agree(a: float, b: float, pct: float) -> bool:
+        return abs(a - b) / min(a, b) * 100 <= pct
+
+    async def _read(self, name, fn) -> Optional[float]:
+        try:
+            return await fn()
+        except (ProviderError, Exception) as exc:  # noqa: BLE001 - a price source must never crash research
+            log.debug("SOL price from %s failed: %s", name, exc)
+            return None
+
     async def get(self) -> Optional[float]:
         now = time.time()
         if self._price is not None and now - self._at < self.ttl:
             return self._price
-        for name, fn in (("dexscreener", self._from_dex), ("coingecko", self._from_gecko)):
-            try:
-                price = await fn()
-            except (ProviderError, Exception) as exc:  # noqa: BLE001 - a price source must never crash research
-                log.debug("SOL price from %s failed: %s", name, exc)
-                continue
-            if price is not None:
-                self._price, self._at, self.source = price, now, name
-                return price
+        dex = await self._read("dexscreener", self._from_dex)
+        gecko = await self._read("coingecko", self._from_gecko)
+        price, source = None, None
+        if dex and gecko:
+            if self._agree(dex, gecko, AGREE_PCT):
+                price, source = dex, "dexscreener+coingecko"
+            else:
+                # disagreement: the one closer to the last good price; with no last good price, neither (callers
+                # then show SOL instead of guessing dollars)
+                if self._price:
+                    ref = self._price
+                    price, source = (dex, "dexscreener") if abs(dex - ref) < abs(gecko - ref) else (gecko, "coingecko")
+                log.warning("SOL price sources disagree: DexScreener $%.2f vs CoinGecko $%.2f; using %s", dex, gecko,
+                            source or "neither (no earlier price to compare)")
+        else:
+            price, source = (dex, "dexscreener") if dex else (gecko, "coingecko") if gecko else (None, None)
+            if price is not None and self._price and not self._agree(price, self._price, JUMP_PCT):
+                pend = self.__dict__.get("_pending")
+                if not (pend and self._agree(pend, price, AGREE_PCT)):
+                    self._pending = price                   # one source, a big jump: wait for a second read
+                    log.warning("SOL price jump from $%.2f to $%.2f (%s only) not used until confirmed",
+                                self._price, price, source)
+                    price = None
+        if price is not None:
+            self._pending = None
+            if self._price and not self._agree(price, self._price, AGREE_PCT):
+                log.info("SOL price $%.2f -> $%.2f (%s)", self._price, price, source)
+            self._price, self._at, self.source = price, now, source
+            return price
         if self._price is not None and now - self._at < self.max_stale:
             return self._price
         return None

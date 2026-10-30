@@ -77,7 +77,8 @@ SELL_KINDS = ("TP1", "TP2") + tuple(sorted(TP.EXIT_KINDS))
 REASONS = {"TP1": "take profit 1", "TP2": "take profit 2", "TRAIL": "trailing stop", "STOP": "stop loss",
            "TIME": "time stop", "DANGER": "exit now (danger)", "END": "tracking ended", "HOLD": "hold time over",
            "DEAD": "coin died ($5K or lower)", "SELLERS": "sellers took over", "FADING": "volume faded",
-           "NO_PROGRESS": "never got going", "KILL": "kill switch", "HARD_STOP": "hard stop"}
+           "NO_PROGRESS": "never got going", "KILL": "kill switch", "HARD_STOP": "hard stop",
+           "STRUCTURE": "broke the higher low", "GIVEBACK": "gave back too much", "CRASH": "crash"}
 MIN_POSITION_USD = 1.0
 # v3.3.2 sanity rails: a coin is only bought with a believable price, and a price that jumps more than
 # MAX_TICK_JUMP x (or falls under 1 / MAX_TICK_JUMP) between two checks 15 s apart is a bad quote,
@@ -108,7 +109,8 @@ def init_schema(db) -> None:
                                  ("paper_trades", "stop_x", "REAL"), ("paper_trades", "last_seen_at", "REAL"),
                                  ("paper_trades", "conviction", "REAL"), ("paper_trades", "conv", "TEXT"),
                                  ("paper_trades", "stop_pct", "REAL"), ("paper_trades", "grace_since", "REAL"),
-                                 ("paper_trades", "entry_liq", "REAL"), ("paper_trades", "engine_note", "TEXT")):
+                                 ("paper_trades", "entry_liq", "REAL"), ("paper_trades", "engine_note", "TEXT"),
+                                 ("paper_trades", "chart", "TEXT"), ("paper_trades", "shadow", "TEXT")):
             cols = {r[1] for r in db._conn.execute(f"PRAGMA table_info({table})").fetchall()}
             if col not in cols:
                 db._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
@@ -596,6 +598,11 @@ def position_from_row(r: dict, s=None):
     pos = EX.Position(entry_mcap=r["entry_mcap"], opened_at=r["opened_at"],
                       peak_mcap=r.get("peak_mcap") or r["entry_mcap"], done=set(json.loads(r.get("done") or "[]")),
                       stop_x=r.get("stop_x"), grace_since=r.get("grace_since"), entry_liq=r.get("entry_liq"))
+    try:                                         # v5.3.0 chart memory and runner mode
+        ch = json.loads(r.get("chart") or "null") or {}
+        pos.path, pos.runner = list(ch.get("p") or []), bool(ch.get("runner"))
+    except (TypeError, ValueError):
+        pass
     from . import conviction as CV
     if r.get("conv") and CV.enabled(s):
         try:
@@ -603,6 +610,35 @@ def position_from_row(r: dict, s=None):
         except (TypeError, ValueError):
             pass
     return pos
+
+
+def shadow_step(r: dict, tick, s=None) -> Optional[dict]:
+    """v5.3.0: run the pre-v5.3.0 rules (percentage trailing stop, no runner mode) on the same price reads, so the
+    Paper tab can show, trade by trade, whether the chart-aware runner did better or worse. Returns the new shadow
+    state ({peak, stop_x, done, left, got, closed, exit, reason}) or None when there is nothing to do."""
+    from . import exits as EX
+    try:
+        sh = json.loads(r.get("shadow") or "null")
+    except (TypeError, ValueError):
+        sh = None
+    if sh is None:
+        sh = {"peak": r["entry_mcap"], "stop_x": None, "done": [], "left": 1.0, "got": 0.0, "closed": False}
+    if sh.get("closed") or tick is None:
+        return None
+    pos = position_from_row({**r, "peak_mcap": sh["peak"], "stop_x": sh["stop_x"], "done": json.dumps(sh["done"]),
+                             "chart": None, "grace_since": sh.get("grace_since")}, s)
+    acts = EX.decide(pos, tick, s, structure=False)
+    x = tick.mcap / r["entry_mcap"]
+    for a in acts:
+        part = sh["left"] if a.fraction >= EX.ALL else min(sh["left"], a.fraction)
+        sh["got"] += part * x
+        sh["left"] -= part
+        sh["done"] = sorted(set(sh["done"]) | {a.kind})
+        if sh["left"] <= 1e-9:
+            sh.update(closed=True, left=0.0, exit=a.kind, reason=a.reason[:120], exit_x=round(x, 4))
+            break
+    sh.update(peak=pos.peak_mcap, stop_x=pos.stop_x, grace_since=pos.grace_since, last_x=round(x, 4))
+    return sh
 
 
 def pick_pair(pairs: list, mint: str, pool: Optional[str] = None):
@@ -682,8 +718,10 @@ class ExitManager:
                 counts["sold"] += 1
             if pos.note:
                 counts["dip_holds"] = counts.get("dip_holds", 0) + 1
-            self.db.execute("UPDATE paper_trades SET grace_since = ?, engine_note = ? WHERE id = ?",
-                            (pos.grace_since, pos.note, r["id"]))
+            shadow = shadow_step(r, tick, self.s)        # v5.3.0: what the old % trail would have done
+            self.db.execute("UPDATE paper_trades SET grace_since = ?, engine_note = ?, chart = ?, shadow = ? WHERE id = ?",
+                            (pos.grace_since, pos.note, json.dumps({"p": pos.path, "runner": pos.runner}),
+                             json.dumps(shadow) if shadow else r.get("shadow"), r["id"]))
             if apply_actions(self.db, r, run, tick.mcap, actions, now, pos.stop_x):
                 counts["closed"] += 1
         return counts
@@ -713,6 +751,19 @@ def repair(db, s=None, now: Optional[float] = None) -> list[str]:
 
 
 # ----------------------------------------------------------------------------- reporting
+def _old_rules(r: dict) -> Optional[dict]:
+    """v5.3.0: what the pre-v5.3.0 percentage trail did on this trade's price reads: average sell multiple (anything it
+    still held is valued at the last price both saw), how it ended and whether it had closed."""
+    try:
+        sh = json.loads(r.get("shadow") or "null")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(sh, dict) or "got" not in sh:
+        return None
+    x = sh["got"] + sh.get("left", 0) * (sh.get("last_x") or 0)
+    return {"x": round(x, 4), "exit": sh.get("exit"), "exit_x": sh.get("exit_x"), "closed": bool(sh.get("closed"))}
+
+
 def _conv_view(r: dict) -> Optional[dict]:
     try:
         c = json.loads(r.get("conv") or "null")
@@ -749,9 +800,25 @@ def summary(db, s=None, now: Optional[float] = None, trades_limit: int = 60, run
                        "pnl_pct": 100 * pnl / r["cost_usd"] if pnl is not None and r["cost_usd"] else None,
                        "exit": REASONS.get(r["exit_reason"] or "", r["exit_reason"]), "note": r.get("note"),
                        "fills": json.loads(r["fills"] or "[]"), "conv": _conv_view(r),
-                       "engine_note": r.get("engine_note") if r["status"] == "OPEN" else None})
+                       "engine_note": r.get("engine_note") if r["status"] == "OPEN" else None,
+                       "old_rules": _old_rules(r)})
     equity = cash_now + open_value
     wins = [p for p in closed if p > 0]
+    # v5.3.0: the chart-aware runner against the old % trail, on the same closed trades
+    fee = float(run["fee_pct"]) / 100
+    cmp_new = cmp_old = cmp_cost = 0.0
+    cmp_n = better = worse = 0
+    for t in trades:
+        o = t.get("old_rules")
+        if t["status"] != "CLOSED" or not o or t["pnl"] is None or not t["cost"]:
+            continue
+        cmp_n += 1
+        cmp_cost += t["cost"]
+        cmp_new += t["pnl"]
+        old_pnl = t["cost"] * (o["x"] * (1 - fee) ** 2 - 1)
+        cmp_old += old_pnl
+        better += 1 if t["pnl"] > old_pnl + 0.01 else 0
+        worse += 1 if t["pnl"] < old_pnl - 0.01 else 0
     by_grade = {}
     for t in trades:
         g = (t.get("conv") or {}).get("grade")
@@ -776,4 +843,6 @@ def summary(db, s=None, now: Optional[float] = None, trades_limit: int = 60, run
             "best": max(closed) if closed else None, "worst": min(closed) if closed else None,
             "skipped": sum(1 for t in trades if t["status"] == "SKIPPED"),
             "trades": trades[:trades_limit], "past_runs": past, "now": now,
-            "by_grade": [by_grade[g] for g in ("A", "B", "C") if g in by_grade]}
+            "by_grade": [by_grade[g] for g in ("A", "B", "C") if g in by_grade],
+            "vs_old_rules": {"trades": cmp_n, "new_pnl": round(cmp_new, 2), "old_pnl": round(cmp_old, 2),
+                             "cost": round(cmp_cost, 2), "better": better, "worse": worse} if cmp_n else None}

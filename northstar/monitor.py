@@ -134,8 +134,21 @@ class Monitor:
             upd["current_top10_adj_pct"] = self._slow_top10.pop(a["id"])
 
         merged = {**a, **upd}
+        pending = [m for m in s.milestone_list if (merged.get("max_multiple") or 0) >= m and m not in hit]
+        guard = getattr(self, "guard", None)
+        if pending and guard is not None and merged.get("current_mcap"):
+            # v5.2.1: every milestone is checked against a real dollar buy quote before it is posted
+            ok, real = await guard.confirm_milestone(a["mint"], merged["current_mcap"], a.get("symbol") or "")
+            if not ok:
+                if real and a.get("entry_mcap"):
+                    before = a.get("max_multiple") or 1.0
+                    keep = before if before < min(pending) else 1.0     # drop a peak only this false read made
+                    fixed = max(keep, real / a["entry_mcap"])
+                    upd.update(current_mcap=real, max_multiple=fixed, peak_mcap=fixed * a["entry_mcap"])
+                    merged.update(current_mcap=real, max_multiple=fixed, peak_mcap=fixed * a["entry_mcap"])
+                pending = []
         for m in s.milestone_list:
-            if (merged.get("max_multiple") or 0) >= m and m not in hit:
+            if m in pending:
                 hit.append(m)
                 self.db.add_alert_event(a["id"], "milestone", {"multiple": m})
                 milestone = milestone_embed(merged, m)
