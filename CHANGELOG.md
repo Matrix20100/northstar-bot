@@ -3,6 +3,19 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.5.0 - "Why not called?": paste a coin, get the reason
+
+- New "Why not called?" button on the dashboard next to Research (`northstar/why_not.py`, `/api/why`). Paste any coin
+  address (stray punctuation, a trailing backslash or a full link are cleaned off) and get one plain answer from what
+  the bot itself recorded: never seen by any feed, blocked as a confirmed rug, seen but never researched, stopped by the
+  runner-call check (with the first blocker), rejected by research (with the top reason), or called (when and at what
+  market cap).
+- Below the answer: how the coin did after entering the early band, the last research decisions with reasons and
+  runner blockers, and a timeline (discovered, entered the band, runner check, each research, each call). A
+  "Research it now" button runs a fresh manual research.
+- Manual research and manual calls now clean the pasted address the same way.
+- Nothing is fetched or guessed: it only reads the bot's own database.
+
 ## v5.4.0 - Call review: what separated the calls that died from the ones that ran
 
 - New "Call review" card on the Learning tab (`northstar/call_review.py`, `/api/call_review`). Every runner/early call
