@@ -220,6 +220,7 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
         <div class="tablewrap"><table><thead><tr><th>Setting</th><th>Now</th><th>Your .env / default</th><th>Range it can try</th></tr></thead><tbody id="tunables"></tbody></table></div></div>
       <div class="card"><h2>Change log <span>every change and why</span></h2><div id="learnLog"></div></div>
     </div>
+    <div class="card" style="margin-top:14px"><h2>🔎 Call review <span id="reviewSub">what separated the runner calls that died from the ones that ran</span></h2><div id="callReview"></div></div>
     <div class="card" style="margin-top:14px"><h2>🧭 Narratives <span id="themeSub">what each kind of coin did this week (early band)</span></h2><div id="themes"></div></div>
     <div class="card" style="margin-top:14px"><h2>🎯 Curve learner <span id="curveLearnSub">learns the runner-call score floor from what young pump.fun coins really did</span></h2><div id="curveLearn"></div></div>
     <div class="card" style="margin-top:14px"><h2>What predicts a rug <span>learned from the bot's own 24h tracking</span></h2><div id="flagStats"></div></div>
@@ -419,7 +420,19 @@ $('paperForm').onsubmit=async e=>{e.preventDefault();$('paperMsg').textContent='
 async function themesCard(){try{const d=await api('/api/social');const th=d.themes||{},all=th.all||{};const rows=Object.entries(th.themes||{});
  $('themes').innerHTML=rows.length?`<div class="tablewrap"><table><thead><tr><th>Narrative</th><th>Coins</th><th>Hit 2x</th><th>Fell to 0.3x</th><th>vs all coins</th></tr></thead><tbody>${rows.map(([k,v])=>{const lift=(v.hit_2x||0)-(all.hit_2x||0);
   return `<tr><td>${esc(k.replace('_',' '))}</td><td class="num">${num(v.n)}${v.n<d.min_theme_coins?' <span class="sub">(too few to count)</span>':''}</td><td class="num">${num(v.hit_2x,1)}%</td><td class="num">${num(v.fell_0_3x,1)}%</td><td class="num"><span class="${lift>=0?'up':'down'}">${lift>=0?'+':''}${num(lift,1)} pts</span></td></tr>`}).join('')}<tr><td><b>all coins</b></td><td class="num">${num(all.n)}</td><td class="num">${num(all.hit_2x,1)}%</td><td class="num">${num(all.fell_0_3x,1)}%</td><td></td></tr></tbody></table></div><p class="sub" style="margin:8px 0 0">A narrative that beats the average earns a coin up to +15 attention points; one that does worse costs up to 10. A narrative needs ${d.min_theme_coins} finished coins before it counts.</p>`:'<div class="empty">No finished coins with a narrative yet (recorded from this version on)</div>'}catch(e){}}
-async function learning(){themesCard();const d=await api('/api/learning');if(!d.ready){$('brain').innerHTML='<div class="empty">Learning tables not created yet — the bot creates them on start.</div>';return}
+// v5.4.0 call review: the signals at the moment of each runner call, died vs ran
+async function callReview(){const d=await api('/api/call_review?days=30');const el=$('callReview');
+ if(!d.ready||!d.calls){el.innerHTML='<div class="empty">No runner calls with a known outcome yet (a call needs 2 h, or to die or reach 2x).</div>';return}
+ const c=d.counts||{};$('reviewSub').textContent=`last ${d.days} days · ${d.calls} calls with an outcome: ${c.DIED||0} died (${d.died_rate}%), ${c.RAN||0} reached 2x+ (${d.ran_rate}%), ${c.OTHER||0} in between`;
+ const pct=v=>v==null?'—':num(v,0)+'%';
+ const rows=(d.flags||[]).map(f=>{const diff=f.died_diff;const cls=!f.enough?'sub':diff>=15?'down':diff<=-15?'up':'';
+  return `<tr class="${f.enough?'':'sub'}"><td>${esc(f.signal)}${f.enough?'':' <span class="pill dim">too few to tell</span>'}</td><td class="num">${num(f.with)}</td><td class="num ${cls}">${pct(f.died_with)}</td><td class="num">${pct(f.died_without)}</td><td class="num">${pct(f.ran_with)}</td><td class="num">${pct(f.ran_without)}</td></tr>`}).join('');
+ const nums=(d.numbers||[]).map(n=>`<tr><td>${esc(n.label)}</td><td class="num">${n.died_median==null?'—':num(n.died_median,2)} <span class="sub">(${n.died_n})</span></td><td class="num">${n.ran_median==null?'—':num(n.ran_median,2)} <span class="sub">(${n.ran_n})</span></td></tr>`).join('');
+ el.innerHTML=`<p class="sub">Each signal as the bot saw it at the moment of the call. Red = calls with the signal died much more often (15+ points) than calls without it; green = much less often. ${esc(d.note||'')}</p>
+  <div class="tablewrap"><table><thead><tr><th>Signal at the call</th><th>Calls with it</th><th>Died with</th><th>Died without</th><th>Ran 2x+ with</th><th>Ran 2x+ without</th></tr></thead><tbody>${rows}</tbody></table></div>
+  <h3 style="margin-top:14px">Typical numbers <span class="sub">median (number of calls)</span></h3>
+  <div class="tablewrap"><table><thead><tr><th>At the call</th><th>Calls that died</th><th>Calls that reached 2x+</th></tr></thead><tbody>${nums}</tbody></table></div>`}
+async function learning(){themesCard();callReview();const d=await api('/api/learning');if(!d.ready){$('brain').innerHTML='<div class="empty">Learning tables not created yet — the bot creates them on start.</div>';return}
  const cv=d.curve;if(!cv){$('curveLearn').innerHTML='<div class="empty">No curve outcomes yet.</div>'}else{
   const lc=cv.last_change;$('curveLearnSub').textContent=`floor now ${num(cv.floor)} · ${num(cv.safe_coins)} safe coins in ${cv.days} days`+(lc?` · last change ${num(lc.from)} → ${num(lc.to)} ${ago(lc.at)}`:' · no change yet (needs 25+ coins)');
   const pc=v=>v==null?'—':`<span class="${v>=0?'up':'down'}">${v>=0?'+':''}${num(v*100,1)}%</span>`;
