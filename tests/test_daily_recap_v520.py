@@ -47,8 +47,8 @@ def test_every_call_of_the_day_is_listed_best_first(db):
     assert [c["symbol"] for c in calls] == ["BER", "BIG", "DUD"]          # no scalp, nothing older than 24 h
     assert round(calls[0]["x"], 2) == 7.70 and calls[-1]["x"] == 1.0
     desc = R.build(calls, "29 Oct 2026")[0]["description"]
-    assert "**3 calls in the last 24 hours** · 2 reached 2x or more · best **$BER 7.70x**" in desc
-    assert "🚀 **$BER** — **7.70x** peak ($16.5K → $127.1K)" in desc and "▫️ **$DUD** — **1.00x**" in desc
+    assert "**3 calls in the last 24 hours** · 2 went 1.4x or more · 2 reached 2x or more · best **$BER 7.70x**" in desc
+    assert "🚀 **$BER** — **7.70x** peak ($16.5K → $127.1K)" in desc and "$DUD" not in desc   # v5.5.1: 1.4x+ only
 
 
 def test_posted_once_a_day_after_the_hour_to_the_free_channel(db):

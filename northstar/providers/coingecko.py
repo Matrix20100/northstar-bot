@@ -59,7 +59,7 @@ class CoinGeckoOnchain:
         return None
 
     async def candles(self, pool: str, start: float, end: Optional[float] = None, urgent: bool = False,
-                      timeframe: str = "minute", token: Optional[str] = None
+                      timeframe: str = "minute", token: Optional[str] = None, aggregate: int = 1
                       ) -> list[tuple[float, float, float, float, float, float]]:
         """1-minute OHLCV (ts, open, high, low, close, volume_usd) for start..end, oldest first.
 
@@ -67,9 +67,9 @@ class CoinGeckoOnchain:
         some DEXes is SOL, and candles for SOL would look like a 1,000,000x move.
         """
         end = end or time.time()
-        span_min = max(1, int((end - start) / 60) + 2)
+        span_min = max(1, int((end - start) / (60 * aggregate)) + 2)
         data = await self._get(f"/networks/{NETWORK}/pools/{pool}/ohlcv/{timeframe}",
-                               {"aggregate": 1, "before_timestamp": int(end) + 60, "limit": min(1000, span_min),
+                               {"aggregate": aggregate, "before_timestamp": int(end) + 60, "limit": min(1000, span_min),
                                 "currency": "usd", "token": token or "base"}, urgent, cache_ttl=30)
         rows = (((data or {}).get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
         out = []
@@ -77,10 +77,20 @@ class CoinGeckoOnchain:
             if not isinstance(r, (list, tuple)) or len(r) < 6:
                 continue
             vals = [_f(x) for x in r[:6]]
-            if None in vals[:5] or vals[0] < start - 60 or vals[0] > end:
+            if None in vals[:5] or vals[0] < start - 60 * aggregate or vals[0] > end:
                 continue
             out.append(tuple(vals))  # type: ignore[arg-type]
         return sorted(out)
+
+    async def token_pools(self, mint: str, limit: int = 3, urgent: bool = False) -> list[str]:
+        """v5.5.1: the coin's pools on GeckoTerminal, busiest first (a migrated pump.fun coin's PumpSwap pool)."""
+        data = await self._get(f"/networks/{NETWORK}/tokens/{mint}/pools", {"page": 1}, urgent, cache_ttl=300)
+        out = []
+        for p in (data or {}).get("data") or []:
+            a = (p.get("attributes") or {}).get("address") if isinstance(p, dict) else None
+            if a and a not in out:
+                out.append(a)
+        return out[:limit]
 
     async def trending_pools(self, duration: str = "5m", urgent: bool = False) -> list[dict]:
         """Trending Solana pools: [{mint, pool, name, market_cap, fdv, liquidity, vol_m5, vol_h1, ...}]."""
