@@ -109,6 +109,7 @@ transform:translateX(100%);transition:transform .2s;overflow-y:auto;padding:20px
   <form class="research" id="researchForm" autocomplete="off">
     <input id="researchMint" aria-label="Token mint to research" placeholder="Paste a token mint to research it — security, holders, bubblemap, exit, AI read" spellcheck="false">
     <button class="btn primary" type="submit" id="researchBtn">Research</button>
+    <button class="btn" type="button" id="whyBtn" title="What the bot recorded about this coin, and why it was or was not called">Why not called?</button>
   </form>
   <nav class="tabs" id="tabs">
     <button data-tab="overview" class="on">Overview</button><button data-tab="pulse">Pulse</button><button data-tab="watching">Watching</button>
@@ -544,6 +545,20 @@ async function runResearch(mint){mint=(mint||'').trim();if(!mint)return;
  catch(e){if(e.message!=='auth')$('drawer').innerHTML='<div class="empty">Research failed — the panel lost contact with the bot.</div>'}
  finally{b.disabled=false}}
 $('researchForm').addEventListener('submit',e=>{e.preventDefault();runResearch($('researchMint').value)});
+// v5.5.0 "why wasn't this called?": what the bot recorded about a coin, from its own database
+async function whyNot(text){if(!(text||'').trim())return;$('drawer').classList.add('on');$('overlay').classList.add('on');
+ $('drawer').innerHTML='<div class="empty"><span class="spin"></span> Looking it up…</div>';
+ let d;try{d=await api('/api/why?mint='+encodeURIComponent(text.trim()))}catch(e){return}
+ if(!d||d.error||!d.mint){$('drawer').innerHTML=`<div class="empty">${esc((d&&d.error)||'Lookup failed.')}<br><br><button class="btn" onclick="closeDrawer()">Close</button></div>`;return}
+ const tl=(d.timeline||[]).map(e=>`<tr><td class="sub num">${esc(new Date(e.at*1000).toLocaleString())}</td><td><b>${esc(e.what)}</b>${e.detail?`<br><span class="sub">${esc(e.detail)}</span>`:''}</td></tr>`).join('');
+ const rs=(d.research||[]).slice().reverse().map(r=>`<li><b>${esc(r.action||'?')}</b> ${r.score!=null?'· score '+num(r.score,0):''} <span class="sub">${esc(new Date(r.at*1000).toLocaleString())}</span>${(r.runner_blockers||[]).length?`<br><span class="sub">runner check: ${esc(r.runner_blockers.join('; '))}</span>`:''}${(r.reasons||[]).length?`<br><span class="sub">${esc(r.reasons.join(' · '))}</span>`:''}</li>`).join('');
+ $('drawer').innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px"><h2>${d.symbol?'$'+esc(d.symbol):'Coin'} <span class="sub"><code>${esc(short(d.mint))}</code></span></h2><button class="btn" onclick="closeDrawer()">Close</button></div>
+  <div class="card" style="margin-bottom:12px"><h2>Why ${d.verdict==='CALLED'?'it was':'it was not'} called</h2><p style="font-size:15px">${esc(d.answer)}</p>${d.after?`<p class="sub">${esc(d.after)}</p>`:''}
+  <div class="row"><button class="btn primary" id="whyResearch">Research it now</button></div></div>
+  ${rs?`<div class="card" style="margin-bottom:12px"><h2>Its research decisions <span>newest first</span></h2><ul class="reasons">${rs}</ul></div>`:''}
+  ${tl?`<div class="card"><h2>Timeline</h2><div class="tablewrap"><table><tbody>${tl}</tbody></table></div></div>`:''}`;
+ $('whyResearch').onclick=()=>runResearch(d.mint)}
+$('whyBtn').onclick=()=>whyNot($('researchMint').value);
 function callCard(t,mint){const mn=t.manual;
  if(!mn)return `<div class="card callcard" style="margin-bottom:12px"><h2>📣 Call this token</h2><div class="sub">A call is posted from fresh research only. Research this token now, then the call button appears here.</div></div>`;
  if(!mn.callable)return `<div class="card callcard" style="margin-bottom:12px"><h2>📣 Call this token</h2><div class="sub">Nothing to call yet: this token has no pool with a usable price.</div></div>`;

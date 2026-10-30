@@ -28,6 +28,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
 from . import selftest as ST
+from .why_not import clean_mint as _clean_mint
 
 PAGE = Path(__file__).with_name("dashboard.html")
 ROOT = Path(__file__).resolve().parents[1]
@@ -772,6 +773,12 @@ class DashboardServer:
                         return self._send(200, T.summary(_Ro(c), max(1.0, min(hours, 24 * 14)), now))
                     if u.path == "/api/learning":
                         return self._send(200, view_learning(c, s, now))
+                    if u.path == "/api/why":                    # v5.5.0 "why wasn't this called?"
+                        from . import why_not as WN
+                        mint = WN.clean_mint((parse_qs(u.query).get("mint") or [""])[0])
+                        if not mint:
+                            return self._send(400, {"error": "that does not look like a coin address"})
+                        return self._send(200, WN.explain(_Ro(c), mint, now))
                     if u.path == "/api/call_review":            # v5.4.0
                         from . import call_review as CR
                         if not _table_ok(c, "early_calls"):
@@ -953,7 +960,8 @@ class DashboardServer:
                 if eng is None or loop is None:
                     return self._send(503, {"ok": False, "error": "The bot is not running, so it cannot "
                                                                   "research or post right now."})
-                mint = str(body.get("mint") or "").strip()[:64]
+                raw = str(body.get("mint") or "").strip()
+                mint = _clean_mint(raw) or raw[:64]
                 if path == "/api/research":
                     coro, wait = eng.manual_research(mint), 150
                 else:
