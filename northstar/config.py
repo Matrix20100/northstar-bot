@@ -445,6 +445,12 @@ class Settings(BaseSettings):
     exit_grace_min_conviction: float = 60.0  # conviction (0-100) needed for that dip-hold
     exit_size_by_conviction: bool = True     # smaller size for weaker setups and for wider stops (never bigger)
     trade_min_conviction: float = 40.0       # live trading skips calls graded under this (0 = buy every call)
+    # v5.3.0 chart-aware runner (exits.py): after take profit 1, the rest rides the chart's higher lows
+    exit_structure_enabled: bool = True
+    exit_structure_max_giveback_pct: float = 45.0   # most of the high a runner may give back (+/-10 by conviction)
+    exit_structure_bounce_pct: float = 10.0         # a swing low counts once the price bounced this much from it
+    exit_structure_max_hold_minutes: float = 360.0  # a runner is held at most this long
+    exit_structure_stale_minutes: float = 60.0      # ... and sold after this long without a new high
     early_call_min_mc: float = 30_000
     early_call_max_mc: float = 50_000
     early_call_min_ai_score: int = 70

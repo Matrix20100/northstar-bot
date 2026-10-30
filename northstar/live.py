@@ -74,7 +74,7 @@ def init_schema(db) -> None:
         db._conn.executescript(SCHEMA)
         cols = {r[1] for r in db._conn.execute("PRAGMA table_info(live_trades)").fetchall()}
         for col, decl in (("conviction", "REAL"), ("conv", "TEXT"), ("grace_since", "REAL"), ("entry_liq", "REAL"),
-                          ("engine_note", "TEXT")):
+                          ("engine_note", "TEXT"), ("chart", "TEXT")):
             if col not in cols:
                 db._conn.execute(f"ALTER TABLE live_trades ADD COLUMN {col} {decl}")
 
@@ -410,8 +410,9 @@ class LiveTrader:
                 pos = position_from_row(r, self.s)
                 actions = EX.decide(pos, tick, self.s)
                 mcap = tick.mcap
-                self.db.execute("UPDATE live_trades SET last_mcap=?, peak_mcap=?, stop_x=?, grace_since=?, engine_note=? "
-                                "WHERE id=?", (tick.mcap, pos.peak_mcap, pos.stop_x, pos.grace_since, pos.note, r["id"]))
+                self.db.execute("UPDATE live_trades SET last_mcap=?, peak_mcap=?, stop_x=?, grace_since=?, engine_note=?, "
+                                "chart=? WHERE id=?", (tick.mcap, pos.peak_mcap, pos.stop_x, pos.grace_since, pos.note,
+                                                       json.dumps({"p": pos.path, "runner": pos.runner}), r["id"]))
                 r.update(last_mcap=tick.mcap, peak_mcap=pos.peak_mcap, stop_x=pos.stop_x)
             for a in actions:
                 closed = await self._sell(r, a, mcap, now)

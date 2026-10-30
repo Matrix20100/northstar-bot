@@ -3,6 +3,28 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.3.0 - Chart-aware exits: the runner rides higher lows
+
+Operator: "a trailing stop should be disabled for a retest and second pump... The bot sold on BIBI which is doing
+higher highs, it was called at 20k now it's at 200k, but the trailing stop activated at a dip. The chart should be
+analysed... THEN an educated choice should be made."
+
+- **Chart memory:** every paper and live position keeps its price path (one point every 30 s, up to 6 h), saved with
+  the trade, so the exit engine can see swing highs and lows instead of only "the high" and "now".
+- **The runner rides the structure:** once take profit 1 is sold, what is left is a runner. When the chart shows an
+  uptrend with a higher low (a swing low the price bounced 10%+ from, above the one before it, above break-even), the
+  runner's stop sits just under that higher low: a retest that holds it is ridden, a break of it sells ("broke the
+  higher low"). A give-back cap still applies (45% of the high, +/-10 by the conviction grade).
+- **No higher low on the chart = the old trail.** A straight pump-and-dump is sold exactly as before; room is only
+  given where the chart shows it.
+- Also for the runner: a crash (-35% in 5 min with more sells than buys) or liquidity under half of the buy sells at
+  once; held up to 6 h while new highs come, sold after 1 h without one. Take profit 2 still sells its share.
+- **Measured, not claimed:** on every paper trade the old rules run alongside on the same price reads. The Paper tab
+  shows, per trade, what the old trail would have made, and a card "Chart-aware exits vs the old trailing stop" with
+  both totals and how many trades did better or worse. Settings: "Exits" (`exit_structure_*`;
+  `exit_structure_enabled=false` restores the old trail).
+- Not changed: the trade plan posted to Discord (TP / trailing-stop messages) still uses its own fixed rules.
+
 ## v5.2.1 - Milestones are checked in dollars before they post; the SOL price needs agreeing sources
 
 Operator: "bot lied again". $UP (`EQ7g...pump`), called 06:17 UTC at $16.8K with a real high of $44.7K (Axiom ATH),
