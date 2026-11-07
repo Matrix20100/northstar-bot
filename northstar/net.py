@@ -426,6 +426,17 @@ class ProviderClient:
                         retry_after,
                     )
 
+                    # v5.5.2: say once in a while WHY (Helius answers "max usage reached" when the plan's monthly
+                    # credits are used up, which no cooldown fixes). The body never contains the request URL/key.
+                    now_m = time.monotonic()
+                    if now_m - getattr(self, "_last_429_body_log", 0.0) >= 300:
+                        self._last_429_body_log = now_m
+                        try:
+                            body_txt = " ".join(response.text.split())[:200]
+                        except Exception:  # noqa: BLE001
+                            body_txt = "?"
+                        log.warning("provider %s HTTP 429 says: %s", self.name, body_txt or "(empty)")
+
                     attempt += 1
 
                     if attempt > max(0, self.max_retries):
