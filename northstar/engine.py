@@ -101,8 +101,16 @@ def build_providers(s: Settings, db: Optional[Database],
         url = httpx.URL(s.effective_rpc_url)
         origin = f"{url.scheme}://{url.host}" + (f":{url.port}" if url.port else "")
         path = url.raw_path.decode() or "/"
+        fb, fb_path = None, "/"
+        fb_url = (getattr(s, "solana_rpc_fallback_url", "") or "").strip()
+        if fb_url and fb_url != s.effective_rpc_url:
+            fu = httpx.URL(fb_url)
+            fb = mk("solana_rpc_fallback", f"{fu.scheme}://{fu.host}" + (f":{fu.port}" if fu.port else ""),
+                    getattr(s, "rpc_fallback_rpm", 90), 0, headers={"Content-Type": "application/json"})
+            fb.max_retries = 1
+            fb_path = fu.raw_path.decode() or "/"
         p.rpc = SolanaRpc(mk("solana_rpc", origin, s.rpc_rpm, s.rpc_daily_budget,
-                             headers={"Content-Type": "application/json"}), path)
+                             headers={"Content-Type": "application/json"}), path, fallback=fb, fallback_path=fb_path)
     from .providers.sol_price import SolUsdPrice
     p.sol_price = SolUsdPrice(p.dex, mk("coingecko", "https://api.coingecko.com", 20, 20_000))
     if s.enable_coingecko:
@@ -430,8 +438,11 @@ class Engine:
         now = time.time()
         # v5.0.0: while the Solana RPC circuit is open (rate limited past its budget) every research would
         # fail its on-chain reads and end as "not ready", which keeps the RPC overloaded. Wait instead.
-        client = getattr(getattr(self.p, "rpc", None), "client", None)
-        if client is not None and getattr(client, "circuit_open", False) is True:
+        rpc = getattr(self.p, "rpc", None)
+        client = getattr(rpc, "client", None)
+        fb = getattr(rpc, "fallback", None)                 # v5.5.2: with a working fallback RPC, keep researching
+        if client is not None and getattr(client, "circuit_open", False) is True and (
+                fb is None or getattr(fb, "circuit_open", False) is True):
             if now - self.__dict__.get("_rpc_pause_logged", 0) > 120:
                 self._rpc_pause_logged = now
                 log.warning("research paused: the Solana RPC is over its rate limit (circuit open). Lower "

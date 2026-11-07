@@ -137,7 +137,8 @@ class LiveTrader:
         now = self._now()
         if self.wallet is None:
             return None
-        if force or now - self.balance_at > 30:
+        # v5.5.2: every 30 s while trading is on; every 10 min while it is off (saves RPC credits)
+        if force or now - self.balance_at > (30 if self.enabled() else 600):
             try:
                 r = await self.rpc.call("getBalance", [self.wallet.address, {"commitment": "confirmed"}])
                 self.balance_sol = (r.get("value") if isinstance(r, dict) else r) / LAMPORTS

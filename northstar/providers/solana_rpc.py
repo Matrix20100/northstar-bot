@@ -16,7 +16,7 @@ import time
 from collections import Counter
 from typing import Any, Optional
 
-from ..net import ProviderClient, ProviderError
+from ..net import CircuitOpen, ProviderClient, ProviderError, RateLimited
 
 log = logging.getLogger("northstar.solana_rpc")
 
@@ -62,9 +62,16 @@ class SolanaRpc:
         max_retries: int = 2,
         retry_base_seconds: float = 0.35,
         retry_max_seconds: float = 2.0,
+        fallback: Optional[ProviderClient] = None,
+        fallback_path: str = "/",
     ):
         self.client = client
         self.path = path
+        # v5.5.2: a second RPC (by default the free public Solana endpoint) used while the main one (Helius) is rate
+        # limited or out of credits, so the safety checks that need the chain (mint authority, holders, LP) still run.
+        self.fallback = fallback
+        self.fallback_path = fallback_path
+        self._fallback_logged = 0.0
         self._ids = itertools.count(1)
         self.max_retries = max(0, min(int(max_retries), 4))
         self.retry_base_seconds = max(0.05, float(retry_base_seconds))
@@ -89,6 +96,35 @@ class SolanaRpc:
         params: list,
         cache_ttl: float = 0,
     ) -> Any:
+        """One JSON-RPC call on the main RPC; while it is rate limited (HTTP 429, or its circuit is open after
+        repeated failures) the call goes to the fallback RPC instead, when one is set."""
+        fb = self.fallback
+        if fb is not None and self.client.circuit_open and not fb.circuit_open:
+            return await self._via_fallback(method, params, cache_ttl, "the main RPC's circuit is open")
+        try:
+            return await self._call(self.client, self.path, method, params, cache_ttl)
+        except (RateLimited, CircuitOpen) as exc:
+            if fb is None or fb.circuit_open:
+                raise
+            return await self._via_fallback(method, params, cache_ttl, type(exc).__name__)
+
+    async def _via_fallback(self, method: str, params: list, cache_ttl: float, why: str) -> Any:
+        self._stats["fallback.calls"] += 1
+        now = time.monotonic()
+        if now - self._fallback_logged >= 300:
+            self._fallback_logged = now
+            log.warning("main Solana RPC unavailable (%s): using the fallback RPC (%d calls so far)", why,
+                        self._stats["fallback.calls"])
+        return await self._call(self.fallback, self.fallback_path, method, params, cache_ttl)
+
+    async def _call(
+        self,
+        client: ProviderClient,
+        path: str,
+        method: str,
+        params: list,
+        cache_ttl: float = 0,
+    ) -> Any:
         body = {
             "jsonrpc": "2.0",
             "id": next(self._ids),
@@ -105,16 +141,16 @@ class SolanaRpc:
             try:
                 # A stable ID is fine because the request is made once per
                 # attempt; cache identity should not depend on the JSON-RPC ID.
-                data = await self.client.request(
+                data = await client.request(
                     "POST",
-                    self.path,
+                    path,
                     json_body=body | {"id": 1},
                     cache_ttl=cache_ttl,
                 )
 
                 if not isinstance(data, dict):
                     raise RpcError(
-                        self.client.name,
+                        client.name,
                         f"{method}: malformed JSON-RPC response",
                     )
 
@@ -124,15 +160,15 @@ class SolanaRpc:
                     message = str(err.get("message") or "unknown RPC error")
                     # RPC error messages should not contain the request URL,
                     # but redact it if a provider unexpectedly echoes it.
-                    message = message.replace(self.path, "[RPC_PATH]")
+                    message = message.replace(path, "[RPC_PATH]") if path != "/" else message
                     raise RpcError(
-                        self.client.name,
+                        client.name,
                         f"{method}: RPC code={code}, message={message}",
                     )
 
                 if "result" not in data:
                     raise RpcError(
-                        self.client.name,
+                        client.name,
                         f"{method}: JSON-RPC response missing result",
                     )
 
@@ -181,13 +217,13 @@ class SolanaRpc:
                     raise
 
                 raise RpcError(
-                    self.client.name,
+                    client.name,
                     f"{method}: request failed after {attempt + 1} "
                     f"attempt(s): {type(exc).__name__}: {str(exc)[:250]}",
                 ) from exc
 
         # Defensive; the loop always returns or raises.
-        raise RpcError(self.client.name, f"{method}: exhausted retries")
+        raise RpcError(client.name, f"{method}: exhausted retries")
 
     async def get_account_info(self, address: str, encoding: str = "jsonParsed") -> Optional[dict]:
         r = await self.call(

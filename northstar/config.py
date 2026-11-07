@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------- API keys
     helius_api_key: Optional[SecretStr] = None
     solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
+    # v5.5.2: used while the main RPC (Helius) is rate limited or out of credits. Free public endpoint, no key.
+    # Set to an empty value to switch it off.
+    solana_rpc_fallback_url: str = "https://api.mainnet-beta.solana.com"
+    rpc_fallback_rpm: int = 90                        # the public endpoint allows about 100 requests / 10 s per IP
     pumpportal_api_key: Optional[SecretStr] = None
     # CoinGecko on-chain API (providers/coingecko.py). Without a key the free GeckoTerminal API is used.
     coingecko_api_key: Optional[SecretStr] = None

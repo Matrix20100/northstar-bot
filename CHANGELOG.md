@@ -3,6 +3,18 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.5.2 - Calls keep working when Helius is rate limited
+
+- 7 Nov log: the Solana RPC (Helius) answered HTTP 429 to everything (318 failures in a row, circuit open). Every
+  runner call was blocked by "trap check: mint authority not passed" and research ended INSUFFICIENT_DATA ("token
+  extensions could not be verified"), so nothing could be called.
+- New fallback RPC (`solana_rpc_fallback_url`, default the free public endpoint https://api.mainnet-beta.solana.com,
+  `rpc_fallback_rpm` 90). While the main RPC is rate limited or its circuit is open, reads go there, and research is
+  no longer paused. Unavailable data is still never treated as clean. Set the URL empty to switch it off.
+- The log now says once every 5 min what the RPC's 429 actually says (Helius answers "max usage reached" when the
+  plan's monthly credits are used up, which no cooldown fixes).
+- The wallet balance is read every 10 min while trading is off (was every 30 s).
+
 ## v5.5.1 - Recap: winners only, and every 2x+ checked on the chart
 
 - Operator: "We dont show the coins that didnt go above a 1x peak, 1.4x's show". The daily recap now lists only
