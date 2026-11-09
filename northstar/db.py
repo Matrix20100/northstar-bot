@@ -308,20 +308,80 @@ CREATE TABLE IF NOT EXISTS funnel_events (
     score REAL
 );
 CREATE INDEX IF NOT EXISTS idx_funnel_ts ON funnel_events(ts);
+
+-- v5.6.0: indexes for the queries the loops, learners, retention and "Why not called?" run by time or by id
+-- (before, each was a full scan of a table with hundreds of thousands of rows on a 1-vCPU server)
+CREATE INDEX IF NOT EXISTS ix_snap_ts ON research_snapshots(ts);
+CREATE INDEX IF NOT EXISTS ix_msnap_ts ON market_snapshots(ts);
+CREATE INDEX IF NOT EXISTS ix_price_ts ON price_history(ts);
+CREATE INDEX IF NOT EXISTS ix_price_alert ON price_history(alert_id, ts);
+CREATE INDEX IF NOT EXISTS ix_alert_events_alert ON alert_events(alert_id, ts);
+CREATE INDEX IF NOT EXISTS ix_disc_ts ON discovery_events(ts);
+CREATE INDEX IF NOT EXISTS ix_disc_mint_source ON discovery_events(mint, source);
+CREATE INDEX IF NOT EXISTS idx_funnel_mint ON funnel_events(mint, ts);
 """
 
 
 class Database:
+    """One SQLite file, one connection per thread (v5.6.0).
+
+    Before v5.6.0 every thread shared one connection behind one lock, so a retention pass, a brain training run or a
+    learning backfill in a worker thread held the lock for seconds while the asyncio loop (Discord, radar, exits)
+    waited on its next tiny query: "Shard ID None heartbeat blocked for more than 10 seconds", with the traceback in
+    `db.fetchall`. Now the thread that opened the database (the asyncio loop) keeps the main connection and every
+    other thread gets its own; in WAL mode readers never wait for writers, and two writers wait for each other only
+    for the length of one short transaction (`busy_timeout`). `_conn` and `_lock` stay as names so the modules that
+    use them directly keep working: each resolves to the calling thread's connection and lock.
+    """
+
     def __init__(self, path: str | os.PathLike):
         self.path = Path(path)
-        self._lock = threading.RLock()
-        self._conn: Optional[sqlite3.Connection] = None
+        self._main_lock = threading.RLock()
+        self._main_conn: Optional[sqlite3.Connection] = None
+        self._owner_ident: Optional[int] = None
+        self._tls = threading.local()
+        self._thread_conns: list[sqlite3.Connection] = []
+        self._thread_conns_lock = threading.Lock()
         self.recovered_from_corruption: Optional[str] = None
+
+    # -------------------------------------------------------------- per-thread connections
+    def _is_owner(self) -> bool:
+        return self._owner_ident is None or threading.get_ident() == self._owner_ident or self._main_conn is None
+
+    def _thread_conn(self) -> sqlite3.Connection:
+        c = getattr(self._tls, "conn", None)
+        if c is None:
+            c = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=30)
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA synchronous=NORMAL")
+            c.execute("PRAGMA foreign_keys=ON")
+            c.execute("PRAGMA temp_store=MEMORY")
+            c.execute("PRAGMA cache_size=-2000")            # 2 MB per background thread
+            self._tls.conn, self._tls.lock = c, threading.RLock()
+            with self._thread_conns_lock:
+                self._thread_conns.append(c)
+        return c
+
+    @property
+    def _conn(self) -> Optional[sqlite3.Connection]:
+        return self._main_conn if self._is_owner() else self._thread_conn()
+
+    @_conn.setter
+    def _conn(self, value: Optional[sqlite3.Connection]) -> None:
+        self._main_conn = value
+
+    @property
+    def _lock(self) -> threading.RLock:
+        if self._is_owner():
+            return self._main_lock
+        self._thread_conn()
+        return self._tls.lock
 
     # -------------------------------------------------------------- lifecycle
 
     def open(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._owner_ident = threading.get_ident()
 
         try:
             self._connect()
@@ -336,6 +396,8 @@ class Database:
 
         self._conn.executescript(SCHEMA)
         self._add_missing_columns()
+        # v5.6.0: on a column added after the first release, so only once that column exists
+        self._conn.execute("CREATE INDEX IF NOT EXISTS ix_dt_done ON decision_tracking(done, last_polled_at)")
         # Undo priority inflation from older versions (repeated feed events added +0.5 each time).
         self._conn.execute("UPDATE candidates SET priority = ? WHERE priority > ?", (MAX_PRIORITY, MAX_PRIORITY))
 
@@ -392,6 +454,12 @@ class Database:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
+        self._conn.execute("PRAGMA temp_store=MEMORY")       # v5.6.0: sorts and temp tables in RAM, not on disk
+        self._conn.execute("PRAGMA cache_size=-8000")        # 8 MB page cache for the main (asyncio) connection
+        try:
+            self._conn.execute("PRAGMA mmap_size=67108864")  # 64 MB: reads without a copy through the OS cache
+        except sqlite3.DatabaseError:
+            pass
 
     def _quarantine(self, reason: str) -> None:
         if self._conn:
@@ -426,10 +494,17 @@ class Database:
         )
 
     def close(self) -> None:
-        with self._lock:
-            if self._conn:
-                self._conn.close()
-                self._conn = None
+        with self._main_lock:
+            if self._main_conn:
+                self._main_conn.close()
+                self._main_conn = None
+        with self._thread_conns_lock:
+            for c in self._thread_conns:
+                try:
+                    c.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._thread_conns.clear()
 
     # -------------------------------------------------------------- primitives
 
@@ -1738,6 +1813,28 @@ class Database:
 
         self._tx(tx)
 
+    def record_provider_batch(self, rows: list[tuple]) -> None:
+        """v5.6.0: one transaction for many providers' deltas (from ProviderLedger.flush).
+        rows: (provider, day, ok_delta, err_delta, consecutive_errors, last_ok, last_err, last_error, status,
+               budget_used_total)."""
+        if not rows:
+            return
+
+        def tx(c: sqlite3.Connection) -> None:
+            for (provider, day, ok_d, err_d, consec, last_ok, last_err, last_error, status, used) in rows:
+                c.execute("INSERT OR IGNORE INTO provider_health(provider) VALUES (?)", (provider,))
+                c.execute(
+                    """
+                    UPDATE provider_health
+                    SET ok_count = ok_count + ?, err_count = err_count + ?, consecutive_errors = ?,
+                        last_ok = COALESCE(?, last_ok), last_err = COALESCE(?, last_err),
+                        last_error = COALESCE(?, last_error), status = ?, budget_day = ?, budget_used = ?
+                    WHERE provider = ?
+                    """,
+                    (ok_d, err_d, consec, last_ok, last_err, last_error, status, day, used, provider))
+
+        self._tx(tx)
+
     def record_social_links(self, mint: str, links, now: Optional[float] = None) -> None:
         now = now or time.time()
         rows = [(mint, l.kind, l.key, now) for l in links]
@@ -1948,3 +2045,82 @@ class Database:
                 json.dumps(data, default=str),
             ),
         )
+
+class ProviderLedger:
+    """v5.6.0: provider health and daily budget counted in memory, written to the database every few seconds.
+
+    Before, every HTTP request the bot made (20,000+ an hour) ran a write transaction (`record_provider`) and a read
+    (`budget_used_today`) on the shared database: the single biggest source of database work and lock waits on the
+    1-vCPU server. The dashboard, /northstar_status and the heartbeat still read `provider_health`; it is now at most
+    `flush_seconds` behind, except that a change of status (OK <-> DEGRADED/DOWN) is written at once.
+    """
+
+    def __init__(self, db: Database, flush_seconds: float = 15.0):
+        self.db, self.flush_seconds = db, float(flush_seconds)
+        self._state: dict[str, dict] = {}
+        self._last_flush = 0.0
+        self._lock = threading.Lock()
+
+    def _day(self, now: float) -> str:
+        return time.strftime("%Y-%m-%d", time.gmtime(now))
+
+    def _get(self, provider: str, now: float) -> dict:
+        st = self._state.get(provider)
+        day = self._day(now)
+        if st is None:
+            row = None
+            try:
+                row = self.db.fetchone("SELECT budget_day, budget_used, consecutive_errors, status FROM provider_health "
+                                       "WHERE provider = ?", (provider,))
+            except Exception:  # noqa: BLE001
+                pass
+            used = row["budget_used"] if row and row["budget_day"] == day else 0
+            st = {"day": day, "used": used, "ok_d": 0, "err_d": 0, "consec": (row or {}).get("consecutive_errors") or 0,
+                  "last_ok": None, "last_err": None, "last_error": None,
+                  "status": (row or {}).get("status") or "UNKNOWN", "dirty": False}
+            self._state[provider] = st
+        elif st["day"] != day:
+            st.update(day=day, used=0, dirty=True)
+        return st
+
+    def record(self, provider: str, ok: bool, error: Optional[str] = None) -> None:
+        now = time.time()
+        with self._lock:
+            st = self._get(provider, now)
+            before = st["status"]
+            st["used"] += 1
+            if ok:
+                st["ok_d"] += 1
+                st["consec"] = 0
+                st["last_ok"], st["status"] = now, "OK"
+            else:
+                st["err_d"] += 1
+                st["consec"] += 1
+                st["last_err"], st["last_error"] = now, (error or "")[:300]
+                st["status"] = "DOWN" if st["consec"] >= 5 else "DEGRADED"
+            st["dirty"] = True
+            due = now - self._last_flush >= self.flush_seconds or st["status"] != before
+        if due:
+            self.flush(now)
+
+    def used_today(self, provider: str) -> int:
+        with self._lock:
+            return self._get(provider, time.time())["used"]
+
+    def flush(self, now: Optional[float] = None) -> int:
+        now = now or time.time()
+        with self._lock:
+            rows = []
+            for name, st in self._state.items():
+                if not st["dirty"]:
+                    continue
+                rows.append((name, st["day"], st["ok_d"], st["err_d"], st["consec"], st["last_ok"], st["last_err"],
+                             st["last_error"], st["status"], st["used"]))
+                st.update(ok_d=0, err_d=0, last_ok=None, last_err=None, last_error=None, dirty=False)
+            self._last_flush = now
+        if rows:
+            try:
+                self.db.record_provider_batch(rows)
+            except Exception:  # noqa: BLE001 - health bookkeeping must never break a request
+                log.debug("provider health flush failed", exc_info=True)
+        return len(rows)

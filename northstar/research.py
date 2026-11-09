@@ -71,6 +71,19 @@ PUMP_FUN_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 PUMP_CURVE_DISCRIMINATOR = bytes([23, 183, 248, 55, 96, 216, 172, 96])
 
 
+class _Bounded(dict):
+    """A dict that forgets its oldest entries past `cap` items (insertion order)."""
+
+    def __init__(self, cap: int):
+        super().__init__()
+        self.cap = int(cap)
+
+    def __setitem__(self, key, value):
+        if key not in self and len(self) >= self.cap:
+            del self[next(iter(self))]
+        super().__setitem__(key, value)
+
+
 @dataclass
 class Providers:
     dex: Any = None
@@ -81,6 +94,7 @@ class Providers:
     coingecko_markets: Any = None
     jupiter: Any = None    # FreeSocials: token metadata links + public Telegram counts (free)
     coingecko: Any = None  # CoinGeckoOnchain: 1-minute candles + trending pools
+    ledger: Any = None     # ProviderLedger (v5.6.0): in-memory provider health, flushed to the database
 
 
 @dataclass
@@ -135,11 +149,33 @@ class Researcher:
         self.s, self.db, self.p = s, db, p
         self._metas: Optional[list[dict]] = None
         self._metas_at = 0.0
-        self._descriptions: dict[str, str] = {}   # token metadata descriptions, for the AI judge
-        self._recent_sample: dict[str, list] = {}  # verified recent trades per mint (micro-trade check)
+        # v5.6.0: both bounded; before, a post-migration coin's description and an interrupted research's sample
+        # stayed for the life of the process (a slow leak on the 1 GiB server)
+        self._descriptions: dict[str, str] = _Bounded(400)   # token metadata descriptions, for the AI judge
+        self._recent_sample: dict[str, list] = _Bounded(200)  # verified recent trades per mint (micro-trade check)
+        self._shadow_deep_at: list[float] = []     # v5.6.0: when shadow-test deep researches ran (rate limit)
         self._tracked: list = []                   # operator's tracked wallets (v2.5.9)
         self._tracked_key = None
         self._launch_cache: dict = {}              # mint -> launch-buys result (the launch never changes)
+
+    def _shadow_deep_allowed(self, now: float) -> bool:
+        """v5.6.0: deep research for the shadow test costs 200+ RPC calls per coin, and on 7 Nov it ran for
+        nearly every rejected PumpSwap coin (the LP read fails while the RPC is rate limited, which is exactly what
+        makes the coin eligible), spending the day's credits on coins that were REJECT anyway. Now at most
+        `shadow_test_deep_per_hour` an hour, and none while the RPC is rate limited or its circuit is open."""
+        cap = int(getattr(self.s, "shadow_test_deep_per_hour", 4) or 0)
+        if cap <= 0:
+            return False
+        rpc = getattr(self.p, "rpc", None)
+        client = getattr(rpc, "client", None)
+        if client is not None and (getattr(client, "circuit_open", False) or getattr(client, "bucket", None) is not None
+                                   and getattr(client.bucket, "_blocked_until", 0) > time.monotonic()):
+            return False
+        self._shadow_deep_at = [t for t in self._shadow_deep_at if now - t < 3600]
+        if len(self._shadow_deep_at) >= cap:
+            return False
+        self._shadow_deep_at.append(now)
+        return True
 
     async def trending_metas(self) -> Optional[list[dict]]:
         if self.p.dex is None:
@@ -538,7 +574,7 @@ class Researcher:
         if any(g.status == GateStatus.FAIL for g in gates):
             from . import shadow_test as SH
 
-            if SH.continue_research([g.to_dict() for g in gates], report, s):
+            if SH.continue_research([g.to_dict() for g in gates], report, s) and self._shadow_deep_allowed(now):
                 # shadow testing only: the analysis is finished so the proposed policy can be
                 # compared; the failed gates stay hard vetoes, so the live decision is REJECT
                 report["shadow_deep_research"] = True

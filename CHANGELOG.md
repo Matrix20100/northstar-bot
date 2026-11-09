@@ -3,6 +3,42 @@
 Every version contains everything from the versions before it. Each release folder is built from
 the complete code (`python scripts/make_release.py`), never from a partial patch.
 
+## v5.6.0 - Built for the small server: no more frozen loop, a tenth of the RPC spend
+
+Operator: "Go over the entire v1 repo, fix everything, make v1 the best it can be on the small server we have."
+The server is 1 vCPU / 1 GiB and the Solana RPC is Helius's free plan (about 1,000,000 credits a month).
+
+**Why the bot froze and stopped calling (7 Nov):**
+- Discord warned "heartbeat blocked for more than 10 seconds" with the traceback inside a trivial database read. Every
+  thread shared ONE database connection behind ONE lock, so while retention or a learner worked in a background
+  thread, the main loop (Discord, radar, exits, live trading) stood still waiting for the lock. Now the main loop keeps
+  its connection and each background thread has its own: readers never wait (WAL), and two writers wait only for one
+  short transaction.
+- Every HTTP request (20,000+ an hour) ran a database write (provider health) and a read (daily budget). Provider
+  health is now counted in memory and written every 15 s (at once when a provider's status changes).
+- Helius ran out of credits in five days: the daily budget was 200,000 (a month's credits in 5 days), and on every
+  rejected PumpSwap coin the shadow test went on with 200+ RPC calls of deep research (the LP read fails while the
+  RPC is rate limited, which is exactly what made the coin eligible). Now: budget 30,000 a day (`rpc_daily_budget`;
+  change it in `.env` if yours says 200000), the fallback RPC also takes over when the budget is spent, and shadow
+  deep research is capped at 4 an hour and skipped while the RPC is rate limited (`shadow_test_deep_per_hour`).
+- Coins blocked as "died: market cap $0 after a $X high" were unblocked at every restart (98 on 7 Nov) and re-blocked
+  by the radar minutes later: $0 was read as "no data". A $0 market cap is a dead coin.
+
+**Memory and CPU:**
+- The RPC response cache could hold 5,000 parsed transactions (20-50 KB each, 100+ MB); the RPC clients now keep 800
+  (fallback 400). Two research caches that grew for the life of the process are bounded.
+- Indexes for the queries the loops, learners, retention and "Why not called?" run by time or id
+  (research_snapshots, market_snapshots, price_history, discovery_events, alert_events, decision_tracking,
+  funnel_events): each was a full table scan before.
+- SQLite: temp tables and sorts in memory, an 8 MB page cache, memory-mapped reads.
+- Garbage collector: long-lived objects frozen out of its scans, young generation collected less often.
+- The duplicate "request bucket cooling down" log line is gone (each rate limit logged twice).
+- Dashboard values the server cannot live with are pulled back to a limit instead of applied: `research_concurrency`
+  at most 4 (10 workers on 1 vCPU only made bursts of 429s), `insufficient_data_recheck_seconds` at least 120
+  (30 re-researched every incomplete coin twice a minute).
+
+Tests: 932 passed.
+
 ## v5.5.2 - Calls keep working when Helius is rate limited
 
 - 7 Nov log: the Solana RPC (Helius) answered HTTP 429 to everything (318 failures in a row, circuit open). Every

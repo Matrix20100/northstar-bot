@@ -119,10 +119,8 @@ class TokenBucket:
             self.tokens = 0.0
             self.updated = self._blocked_until
 
-        log.warning(
-            "request bucket cooling down for %.1fs",
-            seconds,
-        )
+        # v5.6.0: no log line of its own; the ProviderClient logs the cooldown with the provider's name (this
+        # doubled every rate-limit line on the console)
 
 
 @dataclass
@@ -147,6 +145,9 @@ class ProviderClient:
     transport: Optional[httpx.AsyncBaseTransport] = None
     circuit_threshold: int = 8
     circuit_cooldown: float = 120.0
+    # v5.6.0: cached responses kept per client. 5,000 parsed Solana transactions (20-50 KB each) could hold
+    # 100+ MB on the 1 GiB server; the RPC clients are built with a much smaller cap.
+    cache_max: int = 5000
 
     def __post_init__(self) -> None:
         self.bucket = TokenBucket(self.rpm)
@@ -315,7 +316,7 @@ class ProviderClient:
                     value,
                 )
 
-                if len(self._cache) > 5000:
+                if len(self._cache) > self.cache_max:
                     self._evict()
 
                 if not future.done():
@@ -355,7 +356,7 @@ class ProviderClient:
         for key in expired:
             self._cache.pop(key, None)
 
-        while len(self._cache) > 4000:
+        while len(self._cache) > int(self.cache_max * 0.8):
             self._cache.pop(next(iter(self._cache)))
 
     async def _do(

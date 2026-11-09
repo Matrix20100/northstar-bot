@@ -88,7 +88,9 @@ class Settings(BaseSettings):
     # Daily request budgets (0 = unlimited). Protects free tiers.
     dexscreener_daily_budget: int = 150_000
     rugcheck_daily_budget: int = 10_000
-    rpc_daily_budget: int = 200_000
+    # v5.6.0: Helius's free plan is about 1,000,000 credits a MONTH, so 200,000 a day burned it in 5 days (7 Nov:
+    # "max usage reached" all day, no calls). 30,000 a day fits the month; past it, reads use the fallback RPC.
+    rpc_daily_budget: int = 30_000
 
     http_timeout_seconds: float = 15.0
     http_max_retries: int = 4
@@ -329,6 +331,7 @@ class Settings(BaseSettings):
     shadow_test_rules: str = "lp_unverified_warn,holder_gate_warn;pool_age_5m;liquidity_50k,pool_age_5m;deep_liquidity"  # ";" = separate policies
     shadow_test_overrides: str = ""         # JSON of unified-engine (u_*) settings to try, e.g. {"u_watch_min": 45}
     shadow_test_dedupe_minutes: float = 30.0
+    shadow_test_deep_per_hour: int = 4        # v5.6.0: at most this many such deep researches an hour (RPC credits)
     shadow_test_deep_research: bool = True  # finish analysing coins whose only failed gates the LP rule
                                             # would soften (their live decision stays REJECT)
     radar_learning: bool = True             # record near-surges so the radar thresholds can be learned
@@ -564,6 +567,18 @@ class Settings(BaseSettings):
     @classmethod
     def _non_negative_int(cls, v: int) -> int:
         return max(0, int(v))
+
+    # v5.6.0: limits the 1 vCPU / 1 GiB server and the free RPC plan can live with. A dashboard value outside them is
+    # pulled back to the limit (not rejected), so the bot still starts with the operator's other settings.
+    @field_validator("research_concurrency")
+    @classmethod
+    def _concurrency_fits_the_server(cls, v: int) -> int:
+        return max(1, min(int(v), 4))
+
+    @field_validator("insufficient_data_recheck_seconds")
+    @classmethod
+    def _recheck_not_a_hammer(cls, v: int) -> int:
+        return max(120, int(v))
 
     @field_validator("daily_recap_hour_utc")
     @classmethod

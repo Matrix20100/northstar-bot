@@ -16,7 +16,7 @@ import time
 from collections import Counter
 from typing import Any, Optional
 
-from ..net import CircuitOpen, ProviderClient, ProviderError, RateLimited
+from ..net import BudgetExceeded, CircuitOpen, ProviderClient, ProviderError, RateLimited
 
 log = logging.getLogger("northstar.solana_rpc")
 
@@ -103,7 +103,7 @@ class SolanaRpc:
             return await self._via_fallback(method, params, cache_ttl, "the main RPC's circuit is open")
         try:
             return await self._call(self.client, self.path, method, params, cache_ttl)
-        except (RateLimited, CircuitOpen) as exc:
+        except (RateLimited, CircuitOpen, BudgetExceeded) as exc:     # v5.6.0: the day's credits spent -> fallback too
             if fb is None or fb.circuit_open:
                 raise
             return await self._via_fallback(method, params, cache_ttl, type(exc).__name__)

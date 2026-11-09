@@ -65,8 +65,11 @@ def confirmed(mc: Optional[float], liq: Optional[float], pooled: bool, peak_mc: 
     # v4.5.1: blocking for good needs the coin to be really gone - at the dead market cap ($5K) after a
     # high of twice that, or down 90%+. A 70-80% fall is a rug for the learners (0.3x) but not proof the
     # coin is finished: $ChatGPT was blocked at $65K after $386K.
-    if mc and peak_mc and ((dead_mc and mc <= dead_mc and peak_mc >= B.DEAD_MIN_ENTRY_X * dead_mc)
-                           or mc <= peak_mc * DIED_FRACTION):
+    # v5.6.0: a market cap of $0 (price gone) is "died", not "unknown" (None). Before, coins blocked as
+    # "died: market cap $0 after a $176K high" were unblocked at every restart (98 of them on 7 Nov) and re-blocked
+    # by the radar minutes later: a pointless flip of ~100 rows and log lines on each start.
+    if mc is not None and peak_mc and ((dead_mc and mc <= dead_mc and peak_mc >= B.DEAD_MIN_ENTRY_X * dead_mc)
+                                       or mc <= peak_mc * DIED_FRACTION):
         return f"died: market cap ${mc:,.0f} after a ${peak_mc:,.0f} high"
     if pooled and liq is not None:
         pulled = float(getattr(s, "rug_pulled_liquidity_pct", 90.0) or 0)

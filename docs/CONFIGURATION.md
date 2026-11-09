@@ -45,7 +45,9 @@ Narrative 25, demand 20, liquidity 20, holders 15, momentum 10, wallet quality 5
 
 ## Cost controls
 
-Per-provider requests/minute (`*_RPM`) and daily budgets (`*_DAILY_BUDGET`). Research depth: `SWAP_SAMPLE_SIGNATURES` (150), `FUNDING_TRACE_WALLETS` (12). On the public RPC, one full research costs roughly 200–300 RPC calls. Lower these or add a Helius key if you see `BudgetExceeded` or many 429s.
+Per-provider requests/minute (`*_RPM`) and daily budgets (`*_DAILY_BUDGET`). Research depth: `SWAP_SAMPLE_SIGNATURES` (150), `FUNDING_TRACE_WALLETS` (12). One full research costs roughly 200–300 RPC calls.
+
+`RPC_DAILY_BUDGET` defaults to 30,000 (v5.6.0): Helius's free plan is about 1,000,000 credits a month, and the old 200,000-a-day default used a month's credits in five days. Past the budget, while Helius answers 429, or while its circuit is open, chain reads go to `SOLANA_RPC_FALLBACK_URL` (the free public endpoint by default, `RPC_FALLBACK_RPM` 90). Deep research for the shadow test is capped at `SHADOW_TEST_DEEP_PER_HOUR` (4). On a 1 vCPU / 1 GiB server `RESEARCH_CONCURRENCY` is held to at most 4 and `INSUFFICIENT_DATA_RECHECK_SECONDS` to at least 120, whatever the dashboard says.
 
 ## Monitoring
 

@@ -15,7 +15,7 @@ import httpx
 
 from .alerts import AlertService
 from .config import Settings
-from .db import Database
+from .db import Database, ProviderLedger
 from .discovery import Discovery
 from .early_tracker import EarlyWatchTracker
 from .discord_bot.publisher import DiscordPublisher, DryRunPublisher, Publisher
@@ -79,8 +79,9 @@ class InstanceLock:
 # --------------------------------------------------------------------------- factory
 def build_providers(s: Settings, db: Optional[Database],
                     transport: Optional[httpx.AsyncBaseTransport] = None) -> tuple[Providers, list[ProviderClient]]:
-    health = db.record_provider if db else None
-    budget = db.budget_used_today if db else None
+    ledger = ProviderLedger(db) if db else None           # v5.6.0: in memory, flushed every 15 s
+    health = ledger.record if ledger else None
+    budget = ledger.used_today if ledger else None
     clients: list[ProviderClient] = []
 
     def mk(name, base, rpm, daily, **kw) -> ProviderClient:
@@ -90,6 +91,7 @@ def build_providers(s: Settings, db: Optional[Database],
         return c
 
     p = Providers()
+    p.ledger = ledger
     if s.enable_dexscreener:
         p.dex = DexScreener(mk("dexscreener", "https://api.dexscreener.com", s.dexscreener_slow_rpm,
                                s.dexscreener_daily_budget),
@@ -106,11 +108,13 @@ def build_providers(s: Settings, db: Optional[Database],
         if fb_url and fb_url != s.effective_rpc_url:
             fu = httpx.URL(fb_url)
             fb = mk("solana_rpc_fallback", f"{fu.scheme}://{fu.host}" + (f":{fu.port}" if fu.port else ""),
-                    getattr(s, "rpc_fallback_rpm", 90), 0, headers={"Content-Type": "application/json"})
+                    getattr(s, "rpc_fallback_rpm", 90), 0, headers={"Content-Type": "application/json"},
+                    cache_max=400)
             fb.max_retries = 1
             fb_path = fu.raw_path.decode() or "/"
         p.rpc = SolanaRpc(mk("solana_rpc", origin, s.rpc_rpm, s.rpc_daily_budget,
-                             headers={"Content-Type": "application/json"}), path, fallback=fb, fallback_path=fb_path)
+                             headers={"Content-Type": "application/json"}, cache_max=800),
+                          path, fallback=fb, fallback_path=fb_path)
     from .providers.sol_price import SolUsdPrice
     p.sol_price = SolUsdPrice(p.dex, mk("coingecko", "https://api.coingecko.com", 20, 20_000))
     if s.enable_coingecko:
@@ -381,6 +385,11 @@ class Engine:
             await self.shutdown()
 
     async def shutdown(self) -> None:
+        if getattr(self.p, "ledger", None) is not None:
+            try:
+                self.p.ledger.flush()
+            except Exception:  # noqa: BLE001
+                pass
         for c in self.clients:
             await c.close()
         try:
@@ -397,7 +406,8 @@ class Engine:
         if ok and time.time() - self._pp_last_health < 60:
             return
         self._pp_last_health = time.time()
-        self.db.record_provider(name, ok, err)
+        led = getattr(self.p, "ledger", None)
+        (led.record if led is not None else self.db.record_provider)(name, ok, err)
 
     # ---------------------------------------------------------------- loops
     async def _loop(self, name: str, interval: float, fn) -> None:
@@ -1345,6 +1355,8 @@ class Engine:
         await recap.run_once(self.db, self.s, self.pub, cg=getattr(self.p, "coingecko", None))
 
     async def _heartbeat(self) -> None:
+        if getattr(self.p, "ledger", None) is not None:
+            self.p.ledger.flush()
         h = {r["provider"]: r["status"] for r in self.db.provider_health()}
         log.info("heartbeat stats=%s providers=%s queue=%d", self.stats, h, self.queue.qsize())
         early = getattr(self, "early", None)
