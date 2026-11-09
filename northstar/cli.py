@@ -59,6 +59,12 @@ async def _run(s: Settings) -> int:
             # Own thread + event loop, so engine load can never delay slash-command replies.
             from .discord_bot.commands import start_commands_thread
             start_commands_thread(s, str(db.path))
+        # v5.6.0 (1 vCPU): everything loaded so far (modules, models, settings) lives for the whole run, so take it out
+        # of the garbage collector's scans, and collect the young generation less often: the bot allocates tens of
+        # thousands of small dicts a minute (JSON from the feeds), and the default thresholds spent CPU re-scanning them
+        import gc
+        gc.freeze()
+        gc.set_threshold(50_000, 20, 20)
         await engine.run()
     finally:
         db.close()
